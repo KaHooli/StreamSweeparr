@@ -85,14 +85,17 @@ TV availability is the only per-title Watchmode cost. Three layers keep it low:
 
 1. **Local Title ID map** (above) resolves TMDB/IMDB → Watchmode id for free, so
    the metered `/search` endpoint is essentially never used.
-2. **Change detection.** Each sync asks
+2. **Change detection (paid plans).** Each sync asks
    `/changes/titles_episodes_changed` which title ids changed since the last
    sync (a few paginated calls total, independent of library size). Series that
    have **not** changed skip the per-series `/title/{id}/episodes/` call and
    reuse their cached availability. On a steady-state library this drops ongoing
    usage from *one call per series* to *near zero*.
-   - The Changes API requires a **paid Watchmode plan**. On free plans the
-     changes call fails gracefully and the tool falls back to layer 3.
+   - The Changes API is a **premium (paid-plan) endpoint**. StreamSweeparr
+     **auto-detects your plan** by probing the changes endpoint once (result
+     cached, re-checked weekly): a paid key enables change-detection
+     automatically; a free key falls back to layer 3 without ever making a
+     failing call. The detected plan is shown under **Settings → Watchmode**.
 3. **7-day freshness TTL.** Independent of the changes feed, a series whose
    availability was pulled within the last 7 days is not re-pulled. This is the
    safety net when the changes feed is unavailable or incomplete.

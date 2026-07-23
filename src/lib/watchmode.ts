@@ -167,6 +167,33 @@ export class WatchmodeClient {
   }
 
   /**
+   * Detect whether the account has access to the premium Changes endpoints
+   * (i.e. a paid plan). The /status endpoint does not expose the plan tier, so
+   * we probe the cheapest changes call with a 1-day window:
+   *   - success  -> "paid"  (Changes API usable → enable change-detection)
+   *   - 401/403  -> "free"  (premium endpoints not permitted → TTL fallback)
+   *   - other errors are treated as "unknown" (caller keeps prior state).
+   * Costs a single API request; the result is cached on Settings.
+   */
+  async detectPlan(): Promise<"paid" | "free" | "unknown"> {
+    const today = toYyyymmdd(new Date());
+    try {
+      await this.get<{ titles?: number[] }>("/changes/titles_episodes_changed/", {
+        start_date: today,
+        end_date: today,
+        page: 1,
+        limit: 1,
+      });
+      return "paid";
+    } catch (e) {
+      const status = (e as WatchmodeError).status;
+      if (status === 401 || status === 403) return "free";
+      // 429 / 5xx / network — inconclusive.
+      return "unknown";
+    }
+  }
+
+  /**
    * Resolve a Watchmode title id from external ids.
    *
    * Order of preference:

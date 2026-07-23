@@ -63,6 +63,13 @@ model Settings {
   // Null = never (first run pulls everything). Set to null to force a full pull.
   watchmodeChangesCursor DateTime?
 
+  // --- Watchmode plan detection ---
+  // Whether the Watchmode account can use the premium Changes API.
+  // "paid" -> change-detection enabled; "free"/"unknown" -> 7-day TTL fallback.
+  // Auto-detected by probing the changes endpoint; re-checked periodically.
+  watchmodePlan          String?   // "paid" | "free" | "unknown" | null (unchecked)
+  watchmodePlanCheckedAt DateTime?
+
   // --- OIDC single sign-on (optional) ---
   // When issuer + clientId + clientSecret are set, an "Sign in with SSO" button
   // appears on the login page.

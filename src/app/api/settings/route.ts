@@ -49,6 +49,7 @@ const settingsSchema = z.object({
 function serialize(s: Awaited<ReturnType<typeof getSettings>>) {
   return {
     watchmodeApiKeySet: !!s.watchmodeApiKey,
+    watchmodePlan: s.watchmodePlan ?? null,
     seerrUrl: s.seerrUrl ?? "",
     seerrApiKeySet: !!s.seerrApiKey,
     countries: s.countries,

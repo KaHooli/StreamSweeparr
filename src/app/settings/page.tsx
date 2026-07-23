@@ -6,6 +6,7 @@ import { fetcher, postJson, sendJson } from "@/lib/fetcher";
 
 interface SettingsDto {
   watchmodeApiKeySet: boolean;
+  watchmodePlan: "paid" | "free" | "unknown" | null;
   seerrUrl: string;
   seerrApiKeySet: boolean;
   countries: string[];
@@ -185,6 +186,23 @@ function WatchmodeCard({ settings, onChange }: { settings: SettingsDto; onChange
       <button className="btn primary" onClick={save} disabled={busy}>
         {busy ? <span className="spin" /> : null} Test &amp; save
       </button>
+
+      {settings.watchmodeApiKeySet && settings.watchmodePlan && (
+        <div className="hint" style={{ marginTop: 12 }}>
+          Detected plan:{" "}
+          <strong style={{ color: settings.watchmodePlan === "paid" ? "var(--ok)" : "var(--text)" }}>
+            {settings.watchmodePlan === "paid"
+              ? "Paid (premium Changes API)"
+              : settings.watchmodePlan === "free"
+              ? "Free / Developer"
+              : "Unknown"}
+          </strong>
+          {settings.watchmodePlan === "paid"
+            ? " — change-detection is enabled, minimising API usage."
+            : " — using a 7-day refresh cache to limit API usage. A paid plan enables change-detection for near-zero ongoing usage."}
+        </div>
+      )}
+
       {msg && <div className={`banner ${msg.kind === "ok" ? "ok" : "err"}`} style={{ marginTop: 12 }}>{msg.text}</div>}
     </div>
   );

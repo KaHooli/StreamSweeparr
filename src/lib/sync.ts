@@ -41,6 +41,10 @@ const noopProgress: ProgressFn = () => {};
 const TTL_DAYS = 7;
 const TTL_MS = TTL_DAYS * 24 * 60 * 60 * 1000;
 
+// Re-probe the Watchmode plan at most this often (in case the user upgrades
+// from free to paid, or vice versa).
+const PLAN_RECHECK_MS = 7 * 24 * 60 * 60 * 1000;
+
 function streamingInfoJson(matched: WatchmodeTitleSource[]) {
   return matched.map((s) => ({
     sourceId: s.source_id,
@@ -90,6 +94,8 @@ export async function runSync(progress: ProgressFn = noopProgress): Promise<Sync
   // present, series NOT in this set (and still within the freshness TTL) skip
   // the per-series Watchmode call entirely — the main credit saving.
   let changedIds: Set<number> | null = null;
+  // Detected Watchmode plan for this run (drives whether the Changes API is used).
+  let watchmodePlan: "paid" | "free" | "unknown" | null = null;
   // Timestamp captured *before* work starts; becomes the next changes cursor.
   const syncStartedAt = new Date();
 
@@ -103,23 +109,48 @@ export async function runSync(progress: ProgressFn = noopProgress): Promise<Sync
     }
     wm = new WatchmodeClient(settings.watchmodeApiKey);
 
-    // Ask Watchmode which titles changed since our last sync. A few paginated
-    // calls cover the whole feed regardless of library size. If the feed is
-    // unavailable (e.g. free plan → 401/403) we fall back to the TTL-only
-    // strategy (changedIds stays null).
-    if (settings.watchmodeChangesCursor) {
-      try {
-        changedIds = await wm.episodesChangedSince(settings.watchmodeChangesCursor);
-        progress("info", `Watchmode changes feed: ${changedIds.size} title(s) changed since last sync.`);
-      } catch (e) {
-        changedIds = null;
-        progress(
-          "info",
-          `Watchmode changes feed unavailable (${(e as Error).message}); using ${TTL_DAYS}-day refresh fallback.`
-        );
+    // Detect the account plan (cached). Only paid plans can use the premium
+    // Changes API; free plans use the 7-day TTL fallback. Re-probe if we've
+    // never checked or the last check is stale (user may have upgraded).
+    watchmodePlan = settings.watchmodePlan as "paid" | "free" | "unknown" | null;
+    const planStale =
+      !settings.watchmodePlanCheckedAt ||
+      Date.now() - settings.watchmodePlanCheckedAt.getTime() > PLAN_RECHECK_MS;
+    if (!watchmodePlan || watchmodePlan === "unknown" || planStale) {
+      const detected = await wm.detectPlan();
+      // Keep a previous definitive result if the probe was inconclusive.
+      watchmodePlan = detected === "unknown" ? watchmodePlan ?? "unknown" : detected;
+      await prisma.settings.update({
+        where: { id: 1 },
+        data: { watchmodePlan, watchmodePlanCheckedAt: new Date() },
+      });
+      progress("info", `Watchmode plan detected: ${watchmodePlan}.`);
+    }
+
+    if (watchmodePlan === "paid") {
+      // Ask Watchmode which titles changed since our last sync. A few paginated
+      // calls cover the whole feed regardless of library size.
+      if (settings.watchmodeChangesCursor) {
+        try {
+          changedIds = await wm.episodesChangedSince(settings.watchmodeChangesCursor);
+          progress("info", `Watchmode changes feed: ${changedIds.size} title(s) changed since last sync.`);
+        } catch (e) {
+          changedIds = null;
+          progress(
+            "info",
+            `Watchmode changes feed error (${(e as Error).message}); using ${TTL_DAYS}-day refresh fallback this run.`
+          );
+        }
+      } else {
+        progress("info", "First Watchmode sync — pulling all series (building cache).");
       }
     } else {
-      progress("info", "First Watchmode sync — pulling all series (building cache).");
+      // Free/unknown plan: no premium Changes API. Rely on the TTL only.
+      changedIds = null;
+      progress(
+        "info",
+        `Watchmode plan is "${watchmodePlan}" — Changes API unavailable; using ${TTL_DAYS}-day refresh fallback.`
+      );
     }
   }
   const regions = settings.countries;
@@ -147,10 +178,10 @@ export async function runSync(progress: ProgressFn = noopProgress): Promise<Sync
     }
   }
 
-  // Advance the changes cursor only if we had a Sonarr sync and it didn't fail
-  // outright. Using the pre-work timestamp guarantees we never miss a change
+  // Advance the changes cursor only on a paid plan (the only case the cursor is
+  // consumed). Using the pre-work timestamp guarantees we never miss a change
   // that landed while this sync was running.
-  if (hasSonarr && wm) {
+  if (hasSonarr && wm && watchmodePlan === "paid") {
     await prisma.settings.update({
       where: { id: 1 },
       data: { watchmodeChangesCursor: syncStartedAt },
