@@ -80,6 +80,32 @@ force a refresh under **Settings → Title ID map**, or via `POST /api/titlemap`
 (`{ "force": true }` to bypass the window/ETag). Set `TITLE_MAP_SCHEDULER=off`
 to disable the timer (e.g. on secondary replicas).
 
+### Minimising Watchmode credit usage (TV)
+TV availability is the only per-title Watchmode cost. Three layers keep it low:
+
+1. **Local Title ID map** (above) resolves TMDB/IMDB → Watchmode id for free, so
+   the metered `/search` endpoint is essentially never used.
+2. **Change detection.** Each sync asks
+   `/changes/titles_episodes_changed` which title ids changed since the last
+   sync (a few paginated calls total, independent of library size). Series that
+   have **not** changed skip the per-series `/title/{id}/episodes/` call and
+   reuse their cached availability. On a steady-state library this drops ongoing
+   usage from *one call per series* to *near zero*.
+   - The Changes API requires a **paid Watchmode plan**. On free plans the
+     changes call fails gracefully and the tool falls back to layer 3.
+3. **7-day freshness TTL.** Independent of the changes feed, a series whose
+   availability was pulled within the last 7 days is not re-pulled. This is the
+   safety net when the changes feed is unavailable or incomplete.
+
+Additionally, a **LIVE sweep no longer re-syncs afterwards** — the DB snapshot
+is updated in place as changes are applied, so it never doubles the Watchmode
+pull. The run log reports how many episode fetches were made vs. skipped.
+
+The first sync after setup still pulls every series once (nothing is cached
+yet); every sync after that is cheap. To force a full re-pull, clear
+`watchmodeChangesCursor` (and `providerSyncedAt`) — e.g. after changing your
+selected countries/services.
+
 ### Authentication
 The whole app is behind a login. A `middleware.ts` gate validates a signed,
 edge-safe session cookie on every route except `/login` and `/api/auth/*`;
@@ -137,8 +163,9 @@ configured on **separate tabs** under Settings.
 
 ### External API endpoints used
 - **Watchmode (TV):** `/v1/regions/`, `/v1/sources/`, `/v1/search/` (fallback
-  only), `/v1/title/{id}/sources/`, `/v1/title/{id}/episodes/`, `/v1/status/`
-  (auth via `X-API-Key`), plus the public `datasets/title_id_map.csv`.
+  only), `/v1/title/{id}/episodes/`, `/v1/changes/titles_episodes_changed/`
+  (paid plans; used for change detection), `/v1/status/` (auth via
+  `X-API-Key`), plus the public `datasets/title_id_map.csv`.
 - **TheMovieDB (movies):** `/3/watch/providers/regions`,
   `/3/watch/providers/movie`, `/3/movie/{id}/watch/providers`
   (auth via the `api_key` query param).

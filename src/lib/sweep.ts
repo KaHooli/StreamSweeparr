@@ -70,11 +70,9 @@ async function sweepBody(ctx: RunContext, dryRun: boolean): Promise<void> {
   }
 
   push("info", "Sweep complete.");
-
-  // Re-sync so the dashboard reflects the changes we just made (skip on dry-run).
-  if (!dryRun) {
-    await runSync(push).catch((e) => push("warn", `Post-run resync failed: ${(e as Error).message}`));
-  }
+  // Note: no post-run resync. The sweep already updates the DB snapshot as it
+  // toggles monitoring / deletes files, so the dashboard is current — and this
+  // avoids a second full Watchmode pull (previously doubling TV credit usage).
 }
 
 async function sweepRadarr(

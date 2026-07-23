@@ -15,7 +15,6 @@ import {
   type SonarrEpisode,
 } from "./arr";
 import { WatchmodeClient, matchSources, type WatchmodeTitleSource } from "./watchmode";
-import type { WatchmodeEpisode } from "./watchmode";
 import { lookupWatchmodeId, refreshTitleMap } from "./titlemap";
 import { TmdbClient, matchTmdbProviders } from "./tmdb";
 
@@ -25,12 +24,22 @@ export interface SyncResult {
   series: number;
   onStreamingMovies: number;
   onStreamingSeries: number;
+  // How many series actually hit the Watchmode episodes endpoint this sync,
+  // and how many were skipped as unchanged/fresh (credit-saving visibility).
+  tvProviderCalls: number;
+  tvSkipped: number;
   errors: string[];
 }
 
 // Optional progress sink so a sync can stream status into a run log.
 export type ProgressFn = (level: "info" | "action" | "warn", msg: string) => void;
 const noopProgress: ProgressFn = () => {};
+
+// A series whose Watchmode data is younger than this is not re-pulled unless
+// the changes feed says it changed. Safety net for when the changes feed is
+// unavailable or misses something.
+const TTL_DAYS = 7;
+const TTL_MS = TTL_DAYS * 24 * 60 * 60 * 1000;
 
 function streamingInfoJson(matched: WatchmodeTitleSource[]) {
   return matched.map((s) => ({
@@ -51,6 +60,8 @@ export async function runSync(progress: ProgressFn = noopProgress): Promise<Sync
     series: 0,
     onStreamingMovies: 0,
     onStreamingSeries: 0,
+    tvProviderCalls: 0,
+    tvSkipped: 0,
     errors,
   };
 
@@ -75,6 +86,13 @@ export async function runSync(progress: ProgressFn = noopProgress): Promise<Sync
 
   // TV (Watchmode) setup — only when a Sonarr connection exists.
   let wm: WatchmodeClient | null = null;
+  // Set of Watchmode ids whose episodes changed since the last sync. When
+  // present, series NOT in this set (and still within the freshness TTL) skip
+  // the per-series Watchmode call entirely — the main credit saving.
+  let changedIds: Set<number> | null = null;
+  // Timestamp captured *before* work starts; becomes the next changes cursor.
+  const syncStartedAt = new Date();
+
   if (hasSonarr && settings.watchmodeApiKey) {
     // Ensure the local Title ID map is fresh (self-throttles to a 12h window).
     // A failure here is non-fatal: findTitleId falls back to the search API.
@@ -84,6 +102,25 @@ export async function runSync(progress: ProgressFn = noopProgress): Promise<Sync
       errors.push(`Title ID map refresh failed (using search fallback): ${(e as Error).message}`);
     }
     wm = new WatchmodeClient(settings.watchmodeApiKey);
+
+    // Ask Watchmode which titles changed since our last sync. A few paginated
+    // calls cover the whole feed regardless of library size. If the feed is
+    // unavailable (e.g. free plan → 401/403) we fall back to the TTL-only
+    // strategy (changedIds stays null).
+    if (settings.watchmodeChangesCursor) {
+      try {
+        changedIds = await wm.episodesChangedSince(settings.watchmodeChangesCursor);
+        progress("info", `Watchmode changes feed: ${changedIds.size} title(s) changed since last sync.`);
+      } catch (e) {
+        changedIds = null;
+        progress(
+          "info",
+          `Watchmode changes feed unavailable (${(e as Error).message}); using ${TTL_DAYS}-day refresh fallback.`
+        );
+      }
+    } else {
+      progress("info", "First Watchmode sync — pulling all series (building cache).");
+    }
   }
   const regions = settings.countries;
   const serviceIds = settings.serviceIds;
@@ -103,12 +140,28 @@ export async function runSync(progress: ProgressFn = noopProgress): Promise<Sync
         await syncRadarr(conn, tmdb, tmdbRegions, tmdbProviderIds, tmdbCountedTypes, result, errors);
       } else {
         if (!wm) throw new Error("Watchmode is not configured.");
-        await syncSonarr(conn, wm, regions, serviceIds, countedTypes, result, errors);
+        await syncSonarr(conn, wm, regions, serviceIds, countedTypes, result, errors, changedIds);
       }
     } catch (e) {
       errors.push(`[${conn.name}] ${(e as Error).message}`);
     }
   }
+
+  // Advance the changes cursor only if we had a Sonarr sync and it didn't fail
+  // outright. Using the pre-work timestamp guarantees we never miss a change
+  // that landed while this sync was running.
+  if (hasSonarr && wm) {
+    await prisma.settings.update({
+      where: { id: 1 },
+      data: { watchmodeChangesCursor: syncStartedAt },
+    });
+  }
+
+  progress(
+    "info",
+    `Watchmode calls this sync: ${result.tvProviderCalls} episode fetch(es) across ${result.series} series ` +
+      `(${result.tvSkipped} skipped as unchanged/fresh).`
+  );
 
   return result;
 }
@@ -204,42 +257,83 @@ async function syncSonarr(
   serviceIds: number[],
   countedTypes: string[],
   result: SyncResult,
-  errors: string[]
+  errors: string[],
+  // Watchmode ids known to have changed since last sync (null = feed
+  // unavailable → rely on the TTL alone).
+  changedIds: Set<number> | null
 ) {
   const client = new SonarrClient(conn.baseUrl, conn.apiKey);
   const seriesList = await client.getSeries();
   const seen: number[] = [];
+  const now = Date.now();
 
   for (const series of seriesList) {
-    let watchmodeId: number | null = null;
-    let wmEpisodes: WatchmodeEpisode[] = [];
-    // If we couldn't resolve the show or fetch its episodes, per-episode
-    // streaming status is unknown (do not re-monitor on this basis).
-    let streamingUnknown = false;
-    try {
-      watchmodeId = await wm.findTitleId({
-        tmdbId: series.tmdbId,
-        imdbId: series.imdbId,
-        type: "tv",
-        name: series.title,
-        year: series.year,
-        resolveLocal: lookupWatchmodeId,
-      });
-      if (watchmodeId) {
-        wmEpisodes = await wm.titleEpisodes(watchmodeId, regions);
-      } else {
-        streamingUnknown = true;
+    // Existing cached snapshot (for freshness + reusing streaming data).
+    const existing = await prisma.mediaItem.findUnique({
+      where: { connectionId_type_arrId: { connectionId: conn.id, type: "TV", arrId: series.id } },
+      include: { episodes: true },
+    });
+
+    let watchmodeId: number | null = existing?.watchmodeId ?? null;
+    // Resolve the Watchmode id from the local map (free) if not already known.
+    if (!watchmodeId) {
+      try {
+        watchmodeId = await wm.findTitleId({
+          tmdbId: series.tmdbId,
+          imdbId: series.imdbId,
+          type: "tv",
+          name: series.title,
+          year: series.year,
+          resolveLocal: lookupWatchmodeId,
+        });
+      } catch (e) {
+        errors.push(`[${conn.name}] ${series.title}: ${(e as Error).message}`);
       }
-    } catch (e) {
-      streamingUnknown = true;
-      errors.push(`[${conn.name}] ${series.title}: ${(e as Error).message}`);
     }
 
-    // Index Watchmode episodes by season/episode for quick matching.
-    const wmMap = new Map<string, WatchmodeTitleSource[]>();
-    for (const ep of wmEpisodes) {
-      const matched = matchSources(ep.sources, serviceIds, countedTypes);
-      if (matched.length) wmMap.set(`${ep.season_number}x${ep.episode_number}`, matched);
+    // Decide whether we can skip the (metered) Watchmode episodes call.
+    const fresh =
+      !!existing?.providerSyncedAt &&
+      now - existing.providerSyncedAt.getTime() < TTL_MS;
+    const changed =
+      changedIds !== null && watchmodeId !== null && changedIds.has(watchmodeId);
+    // Skip only when: we have a prior successful pull, it's still fresh, and the
+    // changes feed did NOT flag it (or the feed is unavailable but data is fresh).
+    const canSkipWatchmode =
+      !!existing && !existing.streamingUnknown && fresh && !changed && watchmodeId !== null;
+
+    // Build a season×episode -> matched-sources map, either from a fresh
+    // Watchmode pull or from the cached episode rows.
+    const wmMap = new Map<string, ReturnType<typeof streamingInfoJson>>();
+    let streamingUnknown = false;
+
+    if (canSkipWatchmode) {
+      // Reuse cached streaming info — NO Watchmode call.
+      result.tvSkipped++;
+      for (const ep of existing!.episodes) {
+        const info = (ep.streamingInfo as ReturnType<typeof streamingInfoJson> | null) ?? [];
+        if (Array.isArray(info) && info.length) {
+          wmMap.set(`${ep.seasonNumber}x${ep.episodeNumber}`, info);
+        }
+      }
+    } else if (watchmodeId !== null) {
+      // Pull fresh episode availability from Watchmode.
+      try {
+        const wmEpisodes = await wm.titleEpisodes(watchmodeId, regions);
+        result.tvProviderCalls++;
+        for (const ep of wmEpisodes) {
+          const matched = matchSources(ep.sources, serviceIds, countedTypes);
+          if (matched.length) {
+            wmMap.set(`${ep.season_number}x${ep.episode_number}`, streamingInfoJson(matched));
+          }
+        }
+      } catch (e) {
+        streamingUnknown = true;
+        errors.push(`[${conn.name}] ${series.title}: ${(e as Error).message}`);
+      }
+    } else {
+      // No Watchmode id at all → availability genuinely unknown.
+      streamingUnknown = true;
     }
 
     let arrEpisodes: SonarrEpisode[] = [];
@@ -253,6 +347,9 @@ async function syncSonarr(
 
     let streamingEpisodes = 0;
     let monitoredEpisodes = 0;
+
+    // Whether this series' streaming data is considered current.
+    const pulledFresh = !canSkipWatchmode && watchmodeId !== null && !streamingUnknown;
 
     const mediaItem = await prisma.mediaItem.upsert({
       where: { connectionId_type_arrId: { connectionId: conn.id, type: "TV", arrId: series.id } },
@@ -268,6 +365,7 @@ async function syncSonarr(
         tvdbId: series.tvdbId ?? null,
         watchmodeId,
         monitored: series.monitored,
+        providerSyncedAt: pulledFresh ? new Date() : null,
       },
       update: {
         title: series.title,
@@ -279,6 +377,9 @@ async function syncSonarr(
         watchmodeId,
         monitored: series.monitored,
         lastSyncedAt: new Date(),
+        // Advance the provider timestamp only when we pulled fresh; leave it
+        // untouched when skipping so the TTL keeps counting from the real pull.
+        ...(pulledFresh ? { providerSyncedAt: new Date() } : {}),
       },
     });
 
@@ -300,7 +401,7 @@ async function syncSonarr(
         episodeFileId: ep.episodeFileId ?? null,
         onStreaming,
         streamingUnknown,
-        streamingInfo: streamingInfoJson(matched),
+        streamingInfo: matched,
       };
     });
 

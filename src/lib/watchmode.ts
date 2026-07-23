@@ -235,15 +235,6 @@ export class WatchmodeClient {
     return data.title_results ?? [];
   }
 
-  /** Streaming sources for a title in the given regions. Cached 30m. */
-  async titleSources(watchmodeId: number, regions: string[]): Promise<WatchmodeTitleSource[]> {
-    return this.get<WatchmodeTitleSource[]>(
-      `/title/${watchmodeId}/sources/`,
-      { regions: regions.join(",") },
-      30 * 60 * 1000
-    );
-  }
-
   /** Episodes for a TV title, each with per-episode sources. Cached 30m. */
   async titleEpisodes(watchmodeId: number, regions: string[]): Promise<WatchmodeEpisode[]> {
     return this.get<WatchmodeEpisode[]>(
@@ -252,6 +243,42 @@ export class WatchmodeClient {
       30 * 60 * 1000
     );
   }
+
+  /**
+   * Return the set of Watchmode title ids whose episodes changed since `since`.
+   * Paginated; a handful of calls covers the whole feed regardless of library
+   * size — the key to keeping sync quota near-zero on steady-state libraries.
+   *
+   * The Changes API is only available on paid Watchmode plans. Callers should
+   * treat a thrown error (e.g. 401/403) as "changes feed unavailable" and fall
+   * back to a time-based refresh.
+   */
+  async episodesChangedSince(since: Date): Promise<Set<number>> {
+    const start = toYyyymmdd(since);
+    const end = toYyyymmdd(new Date());
+    const changed = new Set<number>();
+    let page = 1;
+    // Hard page cap so a pathological total_pages can't run away with quota.
+    const MAX_PAGES = 20;
+    // Do not cache — this is intentionally fresh each sync.
+    for (; page <= MAX_PAGES; page++) {
+      const data = await this.get<{
+        titles?: number[];
+        page?: number;
+        total_pages?: number;
+      }>("/changes/titles_episodes_changed/", { start_date: start, end_date: end, page, limit: 250 });
+      for (const id of data.titles ?? []) changed.add(id);
+      if (!data.total_pages || page >= data.total_pages) break;
+    }
+    return changed;
+  }
+}
+
+function toYyyymmdd(d: Date): number {
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(d.getUTCDate()).padStart(2, "0");
+  return Number(`${y}${m}${day}`);
 }
 
 /**

@@ -56,6 +56,13 @@ model Settings {
   titleMapSyncedAt     DateTime?
   titleMapRowCount     Int      @default(0)
 
+  // --- Watchmode changes-feed cursor ---
+  // Timestamp of the last successful sync that consulted the Watchmode
+  // /changes/titles_episodes_changed feed. On the next sync we ask "what changed
+  // since then" so we only re-pull episodes for series that actually changed.
+  // Null = never (first run pulls everything). Set to null to force a full pull.
+  watchmodeChangesCursor DateTime?
+
   // --- OIDC single sign-on (optional) ---
   // When issuer + clientId + clientSecret are set, an "Sign in with SSO" button
   // appears on the login page.
@@ -176,6 +183,10 @@ model MediaItem {
   streamingEpisodes  Int   @default(0)
 
   lastSyncedAt   DateTime  @default(now())
+  // Last time this item's streaming availability was pulled from the provider
+  // (Watchmode for TV). Used to skip the provider call when data is fresh and
+  // the changes-feed says the title hasn't changed. Null = never pulled.
+  providerSyncedAt DateTime?
 
   connection     ArrConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
   connectionId   Int
