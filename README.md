@@ -85,18 +85,32 @@ edge-safe session cookie on every route except `/login` and `/api/auth/*`;
 unauthenticated pages redirect to `/login`, unauthenticated API calls get `401`.
 
 - **Username / password** — a default admin is seeded on first login:
-  **username `admin`, password `0pen0pen&*`** (flagged *must change password*).
-  Passwords are hashed with Node `scrypt`; sessions are HMAC-signed cookies
-  (`src/lib/session.ts`) signed with `AUTH_SECRET`.
+  **username `admin`, password `0pen0pen&*`**. The account is flagged
+  *must change password* and this is **enforced**: the middleware blocks every
+  route except the change-password flow until a new password is set. Passwords
+  are hashed with Node `scrypt`; sessions are HMAC-signed cookies
+  (`src/lib/session.ts`) signed with `AUTH_SECRET`. Login is **rate-limited**
+  per IP and per IP+username with progressive lockout (`src/lib/ratelimit.ts`).
 - **OIDC SSO (optional)** — configure it under **Settings → Single sign-on
   (OIDC)** (issuer, client id/secret; endpoints auto-discovered from
   `/.well-known/openid-configuration`). When enabled, a **Sign in with SSO**
   button appears on the login page. Flow is Authorization Code + PKCE with
   `state` validation (`src/lib/oidc.ts`); users are provisioned on first login
-  and can be restricted with an allow-list.
+  and can be restricted with an allow-list. The **first** user provisioned
+  becomes admin; later SSO users are non-admin until promoted.
 
-Set **`AUTH_SECRET`** to a long random value in production
-(`openssl rand -hex 32`).
+Admin-only API routes (settings, connections, sync, sweep, title map) are
+guarded server-side (`src/lib/auth.ts`) in addition to the middleware.
+
+**`AUTH_SECRET` is required in production** — the app refuses to start without a
+value of at least 16 characters (`openssl rand -hex 32`).
+
+### SSRF protection
+Any URL you supply (Sonarr/Radarr/Seerr base URLs, OIDC endpoints) is fetched
+through `src/lib/safeFetch.ts`, which DNS-resolves the host and **always blocks**
+loopback, link-local and the `169.254.169.254` cloud-metadata address, with a
+request timeout and redirects disabled. Private LAN ranges are blocked unless
+you set `SSRF_ALLOW_PRIVATE=true` (needed when your *arr apps run on a LAN).
 
 ### How availability is decided
 `matchSources()` in `watchmode.ts` keeps a title's Watchmode sources only if the
@@ -141,12 +155,14 @@ Dev/build: `prisma`, `typescript`, `@types/*`, `eslint`, `eslint-config-next`
 # 1. Install
 npm install
 
-# 2. Configure the DB connection
+# 2. Configure env
 cp .env.example .env
 #   edit DATABASE_URL to point at your PostgreSQL server
+#   set AUTH_SECRET (openssl rand -hex 32) — required in production
+#   set SSRF_ALLOW_PRIVATE=true if your Sonarr/Radarr live on a private LAN
 
-# 3. Create the schema on your Postgres server
-npx prisma db push
+# 3. Apply database migrations
+npm run prisma:migrate      # runs `prisma migrate deploy`
 
 # 4a. Development
 npm run dev            # http://localhost:3000
@@ -159,11 +175,14 @@ npm run start
 ### Option B — Docker Compose (app + Postgres)
 
 ```bash
+# Provide secrets first (compose refuses to start without AUTH_SECRET):
+echo "AUTH_SECRET=$(openssl rand -hex 32)" >> .env
+echo "POSTGRES_PASSWORD=$(openssl rand -hex 16)" >> .env
 docker compose up --build
-# App: http://localhost:3000   Postgres: localhost:5432
+# App: http://localhost:3000
 ```
-The `app` container runs `prisma db push` on start, so the schema is created
-automatically.
+The container's entrypoint runs `prisma migrate deploy` on start, so the schema
+is created/updated automatically from the committed migrations.
 
 > Using your **own** external Postgres with Docker? Remove the `db` service and
 > set `DATABASE_URL` on the `app` service to your server.
@@ -193,6 +212,11 @@ From the **Dashboard**:
   dry-run it only records what *would* happen; check the **Runs** page for the
   full step-by-step log and counts.
 
+Sync and sweep run **in the background** behind a single concurrency lock (only
+one run at a time; stale runs are auto-reclaimed). The action bar returns
+immediately and polls the run for **live progress**, so long runs no longer
+block the request or the browser (`src/lib/jobs.ts`).
+
 ## Dashboard
 - **TV shows on streaming** — each card shows a progress bar of how many
   episodes are **unmonitored** (with `x/total on streaming`).
@@ -204,6 +228,20 @@ From the **Dashboard**:
 - **File deletion is destructive** and permanent. It only happens in LIVE mode
   with **Delete files** enabled, and only for titles found on your selected
   streaming services.
+- **Transient Watchmode failures never cause churn.** When a title's streaming
+  status can't be determined (lookup error or unmapped title), it is flagged
+  *unknown* and the sweep will **not** re-monitor it — avoiding a mass
+  re-monitor during a Watchmode outage.
 - API keys are stored in your PostgreSQL database and are never returned to the
-  browser (only a "configured" flag is exposed).
+  browser (only a "configured" flag is exposed). *(Note: secrets are stored
+  as-is; encrypting them at rest is a planned improvement — keep DB access
+  restricted.)*
+
+## Testing & CI
+- `npm test` runs the Vitest unit suite (session tokens, password hashing,
+  rate limiter, `matchSources`, the SSRF guard, flags).
+- `npm run typecheck` / `npm run lint` for static checks.
+- GitHub Actions (`.github/workflows/ci.yml`) gates every push/PR on
+  lint + typecheck + test + build. The Docker image is published
+  (`docker-publish.yml`) only from `main` and version tags.
 ```

@@ -4,6 +4,8 @@ import { prisma } from "@/lib/db";
 import { verifyPassword } from "@/lib/password";
 import { ensureDefaultAdmin } from "@/lib/users";
 import { createSession, SESSION_COOKIE, sessionCookieOptions } from "@/lib/session";
+import { checkRateLimit, registerFailure, resetRateLimit } from "@/lib/ratelimit";
+import { clientIp } from "@/lib/request";
 
 export const dynamic = "force-dynamic";
 
@@ -12,26 +14,56 @@ const schema = z.object({
   password: z.string().min(1),
 });
 
+function tooMany(retryAfter: number) {
+  return NextResponse.json(
+    { error: `Too many attempts. Try again in ${retryAfter}s.` },
+    { status: 429, headers: { "Retry-After": String(retryAfter) } }
+  );
+}
+
 export async function POST(req: NextRequest) {
   const parsed = schema.safeParse(await req.json().catch(() => ({})));
   if (!parsed.success) {
     return NextResponse.json({ error: "Username and password are required." }, { status: 400 });
   }
 
+  const { username, password } = parsed.data;
+
+  // Rate-limit per IP and per IP+username to blunt brute force.
+  const ip = clientIp(req);
+  const ipKey = `login:ip:${ip}`;
+  const userKey = `login:user:${ip}:${username.toLowerCase()}`;
+  for (const key of [ipKey, userKey]) {
+    const rl = checkRateLimit(key);
+    if (!rl.allowed) return tooMany(rl.retryAfterSeconds);
+  }
+
   // Lazily seed the default admin so a fresh install can log in.
   await ensureDefaultAdmin();
 
-  const { username, password } = parsed.data;
   const user = await prisma.user.findUnique({ where: { username } });
 
   // Uniform failure to avoid leaking which usernames exist.
   const ok = user ? await verifyPassword(password, user.passwordHash) : false;
   if (!user || !ok) {
+    let last = { allowed: true, retryAfterSeconds: 0 };
+    registerFailure(ipKey);
+    last = registerFailure(userKey);
+    if (!last.allowed) return tooMany(last.retryAfterSeconds);
     return NextResponse.json({ error: "Invalid username or password." }, { status: 401 });
   }
 
+  // Success — clear the counters.
+  resetRateLimit(ipKey);
+  resetRateLimit(userKey);
+
   const token = await createSession(
-    { id: user.id, username: user.username, isAdmin: user.isAdmin },
+    {
+      id: user.id,
+      username: user.username,
+      isAdmin: user.isAdmin,
+      mustChangePassword: user.mustChangePassword,
+    },
     "local"
   );
   const res = NextResponse.json({

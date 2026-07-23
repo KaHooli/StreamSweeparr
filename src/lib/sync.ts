@@ -27,6 +27,10 @@ export interface SyncResult {
   errors: string[];
 }
 
+// Optional progress sink so a sync can stream status into a run log.
+export type ProgressFn = (level: "info" | "action" | "warn", msg: string) => void;
+const noopProgress: ProgressFn = () => {};
+
 function streamingInfoJson(matched: WatchmodeTitleSource[]) {
   return matched.map((s) => ({
     sourceId: s.source_id,
@@ -37,7 +41,7 @@ function streamingInfoJson(matched: WatchmodeTitleSource[]) {
   }));
 }
 
-export async function runSync(): Promise<SyncResult> {
+export async function runSync(progress: ProgressFn = noopProgress): Promise<SyncResult> {
   const settings = await getSettings();
   const errors: string[] = [];
   const result: SyncResult = {
@@ -71,6 +75,7 @@ export async function runSync(): Promise<SyncResult> {
 
   for (const conn of connections) {
     try {
+      progress("info", `Syncing ${conn.type === "RADARR" ? "movies" : "series"} from "${conn.name}"…`);
       if (conn.type === "RADARR") {
         await syncRadarr(conn, wm, regions, serviceIds, countedTypes, result, errors);
       } else {
@@ -101,6 +106,9 @@ async function syncRadarr(
   for (const movie of movies) {
     let matched: WatchmodeTitleSource[] = [];
     let watchmodeId: number | null = null;
+    // Track whether we could actually determine streaming availability. A
+    // failed lookup must not be treated as "not on streaming".
+    let streamingUnknown = false;
     try {
       watchmodeId = await wm.findTitleId({
         tmdbId: movie.tmdbId,
@@ -113,8 +121,13 @@ async function syncRadarr(
       if (watchmodeId) {
         const sources = await wm.titleSources(watchmodeId, regions);
         matched = matchSources(sources, serviceIds, countedTypes);
+      } else {
+        // No Watchmode id at all -> we genuinely can't say. Mark unknown so the
+        // sweep leaves it alone rather than re-monitoring.
+        streamingUnknown = true;
       }
     } catch (e) {
+      streamingUnknown = true;
       errors.push(`[${conn.name}] ${movie.title}: ${(e as Error).message}`);
     }
 
@@ -137,6 +150,7 @@ async function syncRadarr(
         monitored: movie.monitored,
         hasFile: movie.hasFile,
         onStreaming,
+        streamingUnknown,
         streamingInfo: streamingInfoJson(matched),
       },
       update: {
@@ -149,6 +163,7 @@ async function syncRadarr(
         monitored: movie.monitored,
         hasFile: movie.hasFile,
         onStreaming,
+        streamingUnknown,
         streamingInfo: streamingInfoJson(matched),
         lastSyncedAt: new Date(),
       },
@@ -177,6 +192,9 @@ async function syncSonarr(
   for (const series of seriesList) {
     let watchmodeId: number | null = null;
     let wmEpisodes: WatchmodeEpisode[] = [];
+    // If we couldn't resolve the show or fetch its episodes, per-episode
+    // streaming status is unknown (do not re-monitor on this basis).
+    let streamingUnknown = false;
     try {
       watchmodeId = await wm.findTitleId({
         tmdbId: series.tmdbId,
@@ -188,8 +206,11 @@ async function syncSonarr(
       });
       if (watchmodeId) {
         wmEpisodes = await wm.titleEpisodes(watchmodeId, regions);
+      } else {
+        streamingUnknown = true;
       }
     } catch (e) {
+      streamingUnknown = true;
       errors.push(`[${conn.name}] ${series.title}: ${(e as Error).message}`);
     }
 
@@ -240,28 +261,32 @@ async function syncSonarr(
       },
     });
 
-    // Replace episode snapshot.
-    await prisma.episode.deleteMany({ where: { mediaId: mediaItem.id } });
-    for (const ep of realEpisodes) {
+    // Replace the episode snapshot atomically so a failure mid-loop can't
+    // leave a series with a partial set of episodes.
+    const episodeRows = realEpisodes.map((ep) => {
       const matched = wmMap.get(`${ep.seasonNumber}x${ep.episodeNumber}`) ?? [];
       const onStreaming = matched.length > 0;
       if (onStreaming) streamingEpisodes++;
       if (ep.monitored) monitoredEpisodes++;
-      await prisma.episode.create({
-        data: {
-          mediaId: mediaItem.id,
-          arrEpisodeId: ep.id,
-          seasonNumber: ep.seasonNumber,
-          episodeNumber: ep.episodeNumber,
-          title: ep.title ?? null,
-          monitored: ep.monitored,
-          hasFile: ep.hasFile,
-          episodeFileId: ep.episodeFileId ?? null,
-          onStreaming,
-          streamingInfo: streamingInfoJson(matched),
-        },
-      });
-    }
+      return {
+        mediaId: mediaItem.id,
+        arrEpisodeId: ep.id,
+        seasonNumber: ep.seasonNumber,
+        episodeNumber: ep.episodeNumber,
+        title: ep.title ?? null,
+        monitored: ep.monitored,
+        hasFile: ep.hasFile,
+        episodeFileId: ep.episodeFileId ?? null,
+        onStreaming,
+        streamingUnknown,
+        streamingInfo: streamingInfoJson(matched),
+      };
+    });
+
+    await prisma.$transaction([
+      prisma.episode.deleteMany({ where: { mediaId: mediaItem.id } }),
+      prisma.episode.createMany({ data: episodeRows }),
+    ]);
 
     const onStreaming = streamingEpisodes > 0;
     if (onStreaming) result.onStreamingSeries++;
@@ -274,6 +299,7 @@ async function syncSonarr(
         monitoredEpisodes,
         streamingEpisodes,
         onStreaming,
+        streamingUnknown,
       },
     });
     seen.push(series.id);

@@ -10,6 +10,7 @@
  */
 import { randomBytes, createHash } from "node:crypto";
 import { getSettings } from "./db";
+import { safeFetch } from "./safeFetch";
 
 export interface OidcConfig {
   issuer: string;
@@ -36,7 +37,7 @@ async function discover(issuer: string): Promise<Discovery> {
   if (cached && cached.expires > Date.now()) return cached.doc;
   const base = issuer.replace(/\/+$/, "");
   const url = `${base}/.well-known/openid-configuration`;
-  const res = await fetch(url, { cache: "no-store" });
+  const res = await safeFetch(url, { cache: "no-store" });
   if (!res.ok) throw new Error(`OIDC discovery failed (${res.status}) at ${url}`);
   const doc = (await res.json()) as Discovery;
   discoveryCache.set(issuer, { doc, expires: Date.now() + 60 * 60 * 1000 });
@@ -129,7 +130,7 @@ export async function exchangeCode(
     client_secret: cfg.clientSecret,
     code_verifier: verifier,
   });
-  const res = await fetch(cfg.tokenUrl, {
+  const res = await safeFetch(cfg.tokenUrl, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
     body,
@@ -168,7 +169,7 @@ function decodeJwtPayload(jwt: string): Record<string, unknown> | null {
  */
 export async function fetchClaims(cfg: OidcConfig, tokens: TokenResponse): Promise<OidcClaims> {
   if (cfg.userinfoUrl && tokens.access_token) {
-    const res = await fetch(cfg.userinfoUrl, {
+    const res = await safeFetch(cfg.userinfoUrl, {
       headers: { Authorization: `Bearer ${tokens.access_token}`, Accept: "application/json" },
       cache: "no-store",
     });

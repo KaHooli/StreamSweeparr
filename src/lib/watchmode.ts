@@ -107,11 +107,25 @@ export class WatchmodeClient {
       if (cached !== undefined) return cached;
     }
 
-    const res = await fetch(url.toString(), {
-      headers: { "X-API-Key": this.apiKey, Accept: "application/json" },
-      // Watchmode data is not real-time; avoid Next.js caching surprises.
-      cache: "no-store",
-    });
+    // Hard timeout so a hung Watchmode endpoint can't stall a whole sync.
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 20_000);
+    let res: Response;
+    try {
+      res = await fetch(url.toString(), {
+        headers: { "X-API-Key": this.apiKey, Accept: "application/json" },
+        // Watchmode data is not real-time; avoid Next.js caching surprises.
+        cache: "no-store",
+        signal: controller.signal,
+      });
+    } catch (e) {
+      if ((e as Error).name === "AbortError") {
+        throw new WatchmodeError("Watchmode request timed out.", 408);
+      }
+      throw e;
+    } finally {
+      clearTimeout(timer);
+    }
 
     if (res.status === 401 || res.status === 403) {
       throw new WatchmodeError("Watchmode rejected the API key (invalid or over quota).", res.status);

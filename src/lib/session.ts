@@ -17,19 +17,44 @@ export interface SessionPayload {
   username: string;
   isAdmin: boolean;
   method: "local" | "oidc";
+  mustChangePassword?: boolean; // gate the app until the password is changed
   exp: number; // unix seconds
 }
+
+let warnedInsecureSecret = false;
 
 function getSecret(): string {
   const s = process.env.AUTH_SECRET;
   if (s && s.length >= 16) return s;
+
+  // In production a strong secret is mandatory — a static fallback would make
+  // every session forgeable. Refuse to operate rather than silently degrade.
   if (process.env.NODE_ENV === "production") {
-    // eslint-disable-next-line no-console
-    console.warn(
-      "[auth] AUTH_SECRET is not set (or too short). Using an insecure fallback — set AUTH_SECRET!"
+    throw new Error(
+      "AUTH_SECRET is not set or is shorter than 16 characters. Set a strong AUTH_SECRET " +
+        "(e.g. `openssl rand -hex 32`) before starting StreamSweeparr in production."
     );
   }
+
+  // Development only: warn loudly but allow booting for convenience.
+  if (!warnedInsecureSecret) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      "[auth] AUTH_SECRET is not set (or too short). Using an insecure DEV fallback — " +
+        "set AUTH_SECRET before deploying."
+    );
+    warnedInsecureSecret = true;
+  }
   return "streamsweeparr-insecure-dev-secret-change-me";
+}
+
+/**
+ * Boot-time assertion: throws in production if AUTH_SECRET is missing/weak.
+ * Called from instrumentation so the process refuses to start rather than
+ * serving forgeable sessions.
+ */
+export function assertAuthSecret(): void {
+  getSecret();
 }
 
 /* ---------------------- base64url helpers (edge-safe) ---------------------- */
@@ -67,7 +92,7 @@ function timingSafeEqual(a: string, b: string): boolean {
 
 /** Create a signed session token for the given user. */
 export async function createSession(
-  user: { id: number; username: string; isAdmin: boolean },
+  user: { id: number; username: string; isAdmin: boolean; mustChangePassword?: boolean },
   method: "local" | "oidc"
 ): Promise<string> {
   const payload: SessionPayload = {
@@ -75,6 +100,7 @@ export async function createSession(
     username: user.username,
     isAdmin: user.isAdmin,
     method,
+    mustChangePassword: !!user.mustChangePassword,
     exp: Math.floor(Date.now() / 1000) + SESSION_TTL_SECONDS,
   };
   const body = b64urlEncode(enc.encode(JSON.stringify(payload)));

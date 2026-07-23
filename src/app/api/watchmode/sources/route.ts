@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSettings } from "@/lib/db";
 import { WatchmodeClient } from "@/lib/watchmode";
+import { requireAdmin, withGuard } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
@@ -8,7 +9,7 @@ export const dynamic = "force-dynamic";
  * Streaming services for the requested (or selected) countries, grouped by
  * country, alphabetical, each with its logo. Query: ?countries=US,GB
  */
-export async function GET(req: NextRequest) {
+export const GET = withGuard(requireAdmin, async (_session, req: NextRequest) => {
   const s = await getSettings();
   if (!s.watchmodeApiKey) {
     return NextResponse.json({ error: "Watchmode API key not configured." }, { status: 400 });
@@ -52,4 +53,4 @@ export async function GET(req: NextRequest) {
   } catch (e) {
     return NextResponse.json({ error: (e as Error).message }, { status: 502 });
   }
-}
+});

@@ -2,11 +2,12 @@ import { NextResponse } from "next/server";
 import { getSettings } from "@/lib/db";
 import { WatchmodeClient } from "@/lib/watchmode";
 import { flagEmoji } from "@/lib/flags";
+import { requireAdmin, withGuard } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
 // All countries supported by Watchmode, alphabetical, with flags.
-export async function GET() {
+export const GET = withGuard(requireAdmin, async () => {
   const s = await getSettings();
   if (!s.watchmodeApiKey) {
     return NextResponse.json({ error: "Watchmode API key not configured." }, { status: 400 });
@@ -21,4 +22,4 @@ export async function GET() {
   } catch (e) {
     return NextResponse.json({ error: (e as Error).message }, { status: 502 });
   }
-}
+});

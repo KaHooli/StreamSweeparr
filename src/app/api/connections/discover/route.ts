@@ -1,12 +1,13 @@
 import { NextResponse } from "next/server";
 import { prisma, getSettings } from "@/lib/db";
 import { SeerrClient } from "@/lib/arr";
+import { requireAdmin, withGuard } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
 // Discover Sonarr/Radarr instances from the configured Seerr server and
 // upsert them as connections (origin = "seerr").
-export async function POST() {
+export const POST = withGuard(requireAdmin, async () => {
   const s = await getSettings();
   if (!s.seerrUrl || !s.seerrApiKey) {
     return NextResponse.json({ error: "Seerr URL / API key not configured." }, { status: 400 });
@@ -39,4 +40,4 @@ export async function POST() {
   } catch (e) {
     return NextResponse.json({ error: (e as Error).message }, { status: 502 });
   }
-}
+});

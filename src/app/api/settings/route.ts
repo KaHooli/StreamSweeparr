@@ -1,28 +1,41 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma, getSettings } from "@/lib/db";
+import { requireAdmin, withGuard } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
+// Accepts an http(s) URL, or an empty string / null (to clear the value).
+const urlOrEmpty = z
+  .string()
+  .nullable()
+  .optional()
+  .refine(
+    (v) => !v || /^https?:\/\/.+/i.test(v),
+    "Must be an http(s) URL."
+  );
+
+const COUNTED_TYPES = ["sub", "free", "purchase", "rent", "tv_everywhere"] as const;
+
 const settingsSchema = z.object({
   watchmodeApiKey: z.string().nullable().optional(),
-  seerrUrl: z.string().nullable().optional(),
+  seerrUrl: urlOrEmpty,
   seerrApiKey: z.string().nullable().optional(),
-  countries: z.array(z.string()).optional(),
-  serviceIds: z.array(z.number().int()).optional(),
-  countedTypes: z.array(z.string()).optional(),
+  countries: z.array(z.string().regex(/^[A-Za-z]{2}$/, "Invalid country code.")).optional(),
+  serviceIds: z.array(z.number().int().positive()).optional(),
+  countedTypes: z.array(z.enum(COUNTED_TYPES)).optional(),
   deleteFiles: z.boolean().optional(),
   searchAtEnd: z.boolean().optional(),
   applyChanges: z.boolean().optional(),
   // OIDC
   oidcEnabled: z.boolean().optional(),
-  oidcIssuer: z.string().nullable().optional(),
+  oidcIssuer: urlOrEmpty,
   oidcClientId: z.string().nullable().optional(),
   oidcClientSecret: z.string().nullable().optional(),
   oidcScopes: z.string().optional(),
-  oidcAuthUrl: z.string().nullable().optional(),
-  oidcTokenUrl: z.string().nullable().optional(),
-  oidcUserinfoUrl: z.string().nullable().optional(),
+  oidcAuthUrl: urlOrEmpty,
+  oidcTokenUrl: urlOrEmpty,
+  oidcUserinfoUrl: urlOrEmpty,
   oidcAllowedUsers: z.array(z.string()).optional(),
 });
 
@@ -58,12 +71,12 @@ function serialize(s: Awaited<ReturnType<typeof getSettings>>) {
   };
 }
 
-export async function GET() {
+export const GET = withGuard(requireAdmin, async () => {
   const s = await getSettings();
   return NextResponse.json(serialize(s));
-}
+});
 
-export async function PATCH(req: NextRequest) {
+export const PATCH = withGuard(requireAdmin, async (_session, req: NextRequest) => {
   const body = await req.json();
   const parsed = settingsSchema.safeParse(body);
   if (!parsed.success) {
@@ -100,4 +113,4 @@ export async function PATCH(req: NextRequest) {
   await prisma.settings.update({ where: { id: 1 }, data });
   const s = await getSettings();
   return NextResponse.json(serialize(s));
-}
+});

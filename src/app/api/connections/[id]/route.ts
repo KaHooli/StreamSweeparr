@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/db";
+import { requireAdmin, withGuard } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
@@ -10,18 +11,20 @@ const patchSchema = z.object({
   enabled: z.boolean().optional(),
 });
 
-export async function PATCH(req: NextRequest, { params }: { params: { id: string } }) {
-  const id = Number(params.id);
+type Ctx = { params: { id: string } };
+
+export const PATCH = withGuard(requireAdmin, async (_session, req: NextRequest, ctx: Ctx) => {
+  const id = Number(ctx.params.id);
   if (Number.isNaN(id)) return NextResponse.json({ error: "Invalid id" }, { status: 400 });
   const parsed = patchSchema.safeParse(await req.json());
   if (!parsed.success) return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
   await prisma.arrConnection.update({ where: { id }, data: parsed.data });
   return NextResponse.json({ ok: true });
-}
+});
 
-export async function DELETE(_req: NextRequest, { params }: { params: { id: string } }) {
-  const id = Number(params.id);
+export const DELETE = withGuard(requireAdmin, async (_session, _req: NextRequest, ctx: Ctx) => {
+  const id = Number(ctx.params.id);
   if (Number.isNaN(id)) return NextResponse.json({ error: "Invalid id" }, { status: 400 });
   await prisma.arrConnection.delete({ where: { id } });
   return NextResponse.json({ ok: true });
-}
+});

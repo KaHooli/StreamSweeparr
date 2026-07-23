@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
+import { requireSession, withGuard } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
@@ -8,7 +9,7 @@ export const dynamic = "force-dynamic";
  *  - TV shows that have any episode on streaming, with unmonitored %.
  *  - Movies on streaming, with monitored/unmonitored flag.
  */
-export async function GET() {
+export const GET = withGuard(requireSession, async () => {
   const [tv, movies, lastRun, totals] = await Promise.all([
     prisma.mediaItem.findMany({
       where: { type: "TV", onStreaming: true },
@@ -88,7 +89,7 @@ export async function GET() {
     counts,
     lastRun,
   });
-}
+});
 
 function dedupeServices(info: unknown): { name: string; type: string }[] {
   if (!Array.isArray(info)) return [];

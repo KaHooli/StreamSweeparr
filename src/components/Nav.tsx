@@ -20,8 +20,8 @@ export function Nav() {
     fetcher
   );
 
-  // The login page renders standalone (no chrome).
-  if (pathname === "/login") return null;
+  // The login and forced password-change pages render standalone (no chrome).
+  if (pathname === "/login" || pathname === "/change-password") return null;
 
   const logout = async () => {
     try {

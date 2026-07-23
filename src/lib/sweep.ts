@@ -17,102 +17,72 @@
 import { prisma, getSettings } from "./db";
 import { SonarrClient, RadarrClient } from "./arr";
 import { runSync } from "./sync";
+import { startRun, RunContext, type LogLevel, type RunCounts } from "./jobs";
 
-type LogLine = { level: "info" | "action" | "warn"; msg: string };
+type Push = (level: LogLevel, msg: string) => void;
 
+/**
+ * Start a sweep in the background (behind the run lock). Returns the runId.
+ * Throws RunLockError if another run is active.
+ */
 export async function runSweep(): Promise<number> {
   const settings = await getSettings();
   const dryRun = !settings.applyChanges;
+  return startRun("SWEEP", dryRun, (ctx) => sweepBody(ctx, dryRun));
+}
 
-  const run = await prisma.runLog.create({
-    data: { dryRun, status: "RUNNING", log: [] },
-  });
+async function sweepBody(ctx: RunContext, dryRun: boolean): Promise<void> {
+  const settings = await getSettings();
+  const push: Push = (level, msg) => ctx.push(level, msg);
+  const counts = ctx.counts;
 
-  const log: LogLine[] = [];
-  const push = (level: LogLine["level"], msg: string) => log.push({ level, msg });
+  push("info", `Starting ${dryRun ? "DRY-RUN" : "LIVE"} sweep.`);
 
-  const counts = {
-    unmonitoredMovies: 0,
-    remonitoredMovies: 0,
-    unmonitoredEps: 0,
-    remonitoredEps: 0,
-    deletedFiles: 0,
-    searchedItems: 0,
-  };
+  // 1. Refresh snapshot first.
+  push("info", "Syncing latest state from Sonarr/Radarr + Watchmode…");
+  const sync = await runSync(push);
+  push(
+    "info",
+    `Synced ${sync.movies} movies (${sync.onStreamingMovies} on streaming), ${sync.series} series (${sync.onStreamingSeries} on streaming).`
+  );
+  for (const e of sync.errors) push("warn", e);
 
-  try {
-    push("info", `Starting ${dryRun ? "DRY-RUN" : "LIVE"} sweep.`);
+  const connections = settings.connections.filter((c) => c.enabled);
 
-    // 1. Refresh snapshot first.
-    push("info", "Syncing latest state from Sonarr/Radarr + Watchmode…");
-    const sync = await runSync();
-    push(
-      "info",
-      `Synced ${sync.movies} movies (${sync.onStreamingMovies} on streaming), ${sync.series} series (${sync.onStreamingSeries} on streaming).`
-    );
-    for (const e of sync.errors) push("warn", e);
-
-    const connections = settings.connections.filter((c) => c.enabled);
-
-    for (const conn of connections) {
-      if (conn.type === "RADARR") {
-        await sweepRadarr(conn, settings, dryRun, counts, push);
-      } else {
-        await sweepSonarr(conn, settings, dryRun, counts, push);
-      }
+  for (const conn of connections) {
+    if (conn.type === "RADARR") {
+      await sweepRadarr(conn, settings, dryRun, counts, push);
+    } else {
+      await sweepSonarr(conn, settings, dryRun, counts, push);
     }
-
-    // 3. Search all monitored items.
-    if (settings.searchAtEnd) {
-      push("info", "Triggering search for all monitored items…");
-      for (const conn of connections) {
-        if (conn.type === "RADARR") {
-          await searchRadarr(conn, dryRun, counts, push);
-        } else {
-          await searchSonarr(conn, dryRun, counts, push);
-        }
-      }
-    }
-
-    push("info", "Sweep complete.");
-
-    // Re-sync so the dashboard reflects the changes we just made (skip on dry-run).
-    if (!dryRun) {
-      await runSync().catch((e) => push("warn", `Post-run resync failed: ${(e as Error).message}`));
-    }
-
-    await prisma.runLog.update({
-      where: { id: run.id },
-      data: {
-        status: "SUCCESS",
-        finishedAt: new Date(),
-        log: log as unknown as object,
-        ...counts,
-      },
-    });
-  } catch (e) {
-    push("warn", `Run failed: ${(e as Error).message}`);
-    await prisma.runLog.update({
-      where: { id: run.id },
-      data: {
-        status: "FAILED",
-        finishedAt: new Date(),
-        error: (e as Error).message,
-        log: log as unknown as object,
-        ...counts,
-      },
-    });
   }
 
-  return run.id;
+  // 3. Search all monitored items.
+  if (settings.searchAtEnd) {
+    push("info", "Triggering search for all monitored items…");
+    for (const conn of connections) {
+      if (conn.type === "RADARR") {
+        await searchRadarr(conn, dryRun, counts, push);
+      } else {
+        await searchSonarr(conn, dryRun, counts, push);
+      }
+    }
+  }
+
+  push("info", "Sweep complete.");
+
+  // Re-sync so the dashboard reflects the changes we just made (skip on dry-run).
+  if (!dryRun) {
+    await runSync(push).catch((e) => push("warn", `Post-run resync failed: ${(e as Error).message}`));
+  }
 }
 
 async function sweepRadarr(
   conn: { id: number; name: string; baseUrl: string; apiKey: string },
   settings: { deleteFiles: boolean },
   dryRun: boolean,
-  counts: Record<string, number>,
-  push: (l: LogLine["level"], m: string) => void
+  counts: RunCounts,
+  push: Push
 ) {
   const client = new RadarrClient(conn.baseUrl, conn.apiKey);
   const movies = await prisma.mediaItem.findMany({
@@ -129,18 +99,28 @@ async function sweepRadarr(
         await prisma.mediaItem.update({ where: { id: m.id }, data: { monitored: false } });
       }
       if (settings.deleteFiles && m.hasFile) {
-        const movie = dryRun ? null : await client.getMovie(m.arrId);
-        const fileId = movie?.movieFile?.id;
-        push("action", `[${conn.name}] Delete file for "${m.title}".`);
-        counts.deletedFiles++;
-        if (!dryRun && fileId) {
-          await client.deleteMovieFile(fileId);
-          await prisma.mediaItem.update({ where: { id: m.id }, data: { hasFile: false } });
+        if (dryRun) {
+          // Preview: count what would be deleted.
+          push("action", `[${conn.name}] Would delete file for "${m.title}".`);
+          counts.deletedFiles++;
+        } else {
+          const movie = await client.getMovie(m.arrId);
+          const fileId = movie?.movieFile?.id;
+          if (fileId) {
+            push("action", `[${conn.name}] Delete file for "${m.title}".`);
+            await client.deleteMovieFile(fileId);
+            await prisma.mediaItem.update({ where: { id: m.id }, data: { hasFile: false } });
+            counts.deletedFiles++; // only count actual deletions
+          } else {
+            push("warn", `[${conn.name}] No file id found for "${m.title}"; skipped delete.`);
+          }
         }
       }
     }
-    // Case 2: unmonitored + NOT on streaming -> re-monitor.
-    else if (!m.monitored && !m.onStreaming) {
+    // Case 2: unmonitored + confidently NOT on streaming -> re-monitor.
+    // Skip when streaming status is unknown (failed/absent Watchmode lookup)
+    // so a transient outage never re-monitors the whole library.
+    else if (!m.monitored && !m.onStreaming && !m.streamingUnknown) {
       push("action", `[${conn.name}] Re-monitor movie "${m.title}" (left streaming).`);
       counts.remonitoredMovies++;
       if (!dryRun) {
@@ -155,8 +135,8 @@ async function sweepSonarr(
   conn: { id: number; name: string; baseUrl: string; apiKey: string },
   settings: { deleteFiles: boolean },
   dryRun: boolean,
-  counts: Record<string, number>,
-  push: (l: LogLine["level"], m: string) => void
+  counts: RunCounts,
+  push: Push
 ) {
   const client = new SonarrClient(conn.baseUrl, conn.apiKey);
   const series = await prisma.mediaItem.findMany({
@@ -179,7 +159,9 @@ async function sweepSonarr(
             label: `${s.title} S${ep.seasonNumber}E${ep.episodeNumber}`,
           });
         }
-      } else if (!ep.monitored && !ep.onStreaming) {
+      } else if (!ep.monitored && !ep.onStreaming && !ep.streamingUnknown) {
+        // Only re-monitor when we're confident the episode left streaming;
+        // skip episodes whose availability we couldn't determine.
         toRemonitor.push(ep.arrEpisodeId);
       }
     }
@@ -225,8 +207,8 @@ async function sweepSonarr(
 async function searchRadarr(
   conn: { id: number; name: string; baseUrl: string; apiKey: string },
   dryRun: boolean,
-  counts: Record<string, number>,
-  push: (l: LogLine["level"], m: string) => void
+  counts: RunCounts,
+  push: Push
 ) {
   const client = new RadarrClient(conn.baseUrl, conn.apiKey);
   const monitored = await prisma.mediaItem.findMany({
@@ -243,8 +225,8 @@ async function searchRadarr(
 async function searchSonarr(
   conn: { id: number; name: string; baseUrl: string; apiKey: string },
   dryRun: boolean,
-  counts: Record<string, number>,
-  push: (l: LogLine["level"], m: string) => void
+  counts: RunCounts,
+  push: Push
 ) {
   const client = new SonarrClient(conn.baseUrl, conn.apiKey);
   const series = await prisma.mediaItem.findMany({

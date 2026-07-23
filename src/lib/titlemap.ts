@@ -39,8 +39,21 @@ export interface TitleMapSyncResult {
  * Header validators for the current remote dataset. Uses HEAD so we do not pull
  * ~78MB just to compare etags.
  */
+async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } catch (e) {
+    if ((e as Error).name === "AbortError") throw new Error(`Request to ${url} timed out.`);
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function fetchValidators(): Promise<{ etag: string | null; lastModified: string | null }> {
-  const res = await fetch(CSV_URL, { method: "HEAD", cache: "no-store" });
+  const res = await fetchWithTimeout(CSV_URL, { method: "HEAD", cache: "no-store" }, 15_000);
   if (!res.ok) throw new Error(`Could not HEAD title_id_map.csv (${res.status}).`);
   return {
     etag: res.headers.get("etag"),
@@ -193,8 +206,8 @@ export async function refreshTitleMap(opts: { force?: boolean } = {}): Promise<T
     };
   }
 
-  // Step 3: download the CSV.
-  const res = await fetch(CSV_URL, { cache: "no-store" });
+  // Step 3: download the CSV (~78MB) — allow a generous timeout.
+  const res = await fetchWithTimeout(CSV_URL, { cache: "no-store" }, 120_000);
   if (!res.ok || !res.body) throw new Error(`Failed to download title_id_map.csv (${res.status}).`);
   const etag = res.headers.get("etag") ?? validators.etag;
   const lastModified = res.headers.get("last-modified") ?? validators.lastModified;
@@ -206,16 +219,25 @@ export async function refreshTitleMap(opts: { force?: boolean } = {}): Promise<T
   await client.connect();
   let rowCount = 0;
   try {
-    await client.query('TRUNCATE TABLE "TitleIdMap"');
-    // client.query(copyFrom(...)) returns the Writable COPY stream.
-    const copyStream = client.query(
-      copyFrom(
-        'COPY "TitleIdMap" ("watchmodeId","imdbId","tmdbId","tmdbType","title","year") FROM STDIN'
-      ) as unknown as Parameters<typeof client.query>[0]
-    ) as unknown as NodeJS.WritableStream;
-    // Node's fetch body is a web ReadableStream; adapt to a Node Readable.
-    const nodeBody = Readable.fromWeb(res.body as Parameters<typeof Readable.fromWeb>[0]);
-    await pipeline(nodeBody, makeCsvToCopyTransform(), copyStream);
+    // Wrap TRUNCATE + COPY in a transaction so a failure mid-import rolls back
+    // and leaves the previous map intact (rather than an empty table).
+    await client.query("BEGIN");
+    try {
+      await client.query('TRUNCATE TABLE "TitleIdMap"');
+      // client.query(copyFrom(...)) returns the Writable COPY stream.
+      const copyStream = client.query(
+        copyFrom(
+          'COPY "TitleIdMap" ("watchmodeId","imdbId","tmdbId","tmdbType","title","year") FROM STDIN'
+        ) as unknown as Parameters<typeof client.query>[0]
+      ) as unknown as NodeJS.WritableStream;
+      // Node's fetch body is a web ReadableStream; adapt to a Node Readable.
+      const nodeBody = Readable.fromWeb(res.body as Parameters<typeof Readable.fromWeb>[0]);
+      await pipeline(nodeBody, makeCsvToCopyTransform(), copyStream);
+      await client.query("COMMIT");
+    } catch (e) {
+      await client.query("ROLLBACK").catch(() => {});
+      throw e;
+    }
 
     const count = await client.query('SELECT COUNT(*)::int AS c FROM "TitleIdMap"');
     rowCount = count.rows[0]?.c ?? 0;

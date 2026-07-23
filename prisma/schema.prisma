@@ -75,7 +75,7 @@ model User {
   passwordHash  String?
   // OIDC subject / issuer this user maps to (null for local users).
   oidcSubject   String?  @unique
-  isAdmin       Boolean  @default(true)
+  isAdmin       Boolean  @default(false)
   // Set for the seeded default admin until the password is changed.
   mustChangePassword Boolean @default(false)
   createdAt     DateTime @default(now())
@@ -151,6 +151,10 @@ model MediaItem {
 
   // Aggregated streaming state.
   onStreaming    Boolean   @default(false)
+  // True when the Watchmode lookup failed (transient error / unmapped title).
+  // The sweep must NOT re-monitor items whose streaming status is unknown, to
+  // avoid churn from a temporary Watchmode outage.
+  streamingUnknown Boolean @default(false)
   // JSON blob of matched sources: [{sourceId,name,logo,type,region}]
   streamingInfo  Json?
 
@@ -182,6 +186,7 @@ model Episode {
   hasFile       Boolean  @default(false)
   episodeFileId Int?
   onStreaming   Boolean  @default(false)
+  streamingUnknown Boolean @default(false)
   streamingInfo Json?
 
   media         MediaItem @relation(fields: [mediaId], references: [id], onDelete: Cascade)
@@ -196,11 +201,21 @@ enum RunStatus {
   FAILED
 }
 
-// Audit log of each sweep run.
+enum RunKind {
+  SWEEP
+  SYNC
+}
+
+// Audit log of each sync/sweep run. Also acts as the concurrency lock: a run
+// with status RUNNING (and a recent heartbeat) blocks new runs.
 model RunLog {
   id                 Int       @id @default(autoincrement())
+  kind               RunKind   @default(SWEEP)
   startedAt          DateTime  @default(now())
   finishedAt         DateTime?
+  // Updated periodically while running so a crashed run can be detected as
+  // stale and no longer holds the lock.
+  heartbeatAt        DateTime  @default(now())
   status             RunStatus @default(RUNNING)
   dryRun             Boolean   @default(true)
 
@@ -214,4 +229,6 @@ model RunLog {
   // Human-readable step log.
   log                Json?
   error              String?
+
+  @@index([status, heartbeatAt])
 }

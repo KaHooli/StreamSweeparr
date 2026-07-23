@@ -22,16 +22,40 @@ export async function middleware(req: NextRequest) {
   const token = req.cookies.get(SESSION_COOKIE)?.value;
   const session = await verifySession(token);
 
-  if (session) return NextResponse.next();
-
-  if (pathname.startsWith("/api/")) {
-    return NextResponse.json({ error: "Not authenticated." }, { status: 401 });
+  if (!session) {
+    if (pathname.startsWith("/api/")) {
+      return NextResponse.json({ error: "Not authenticated." }, { status: 401 });
+    }
+    const url = req.nextUrl.clone();
+    url.pathname = "/login";
+    url.search = `?next=${encodeURIComponent(pathname + search)}`;
+    return NextResponse.redirect(url);
   }
 
-  const url = req.nextUrl.clone();
-  url.pathname = "/login";
-  url.search = `?next=${encodeURIComponent(pathname + search)}`;
-  return NextResponse.redirect(url);
+  // Enforce a mandatory password change (e.g. the seeded default admin).
+  // Until it is done, only the change-password flow, logout, and session
+  // lookup are reachable.
+  if (session.mustChangePassword) {
+    const allowedWhilePwChange =
+      pathname === "/change-password" ||
+      pathname === "/api/auth/change-password" ||
+      pathname === "/api/auth/logout" ||
+      pathname === "/api/auth/session";
+    if (!allowedWhilePwChange) {
+      if (pathname.startsWith("/api/")) {
+        return NextResponse.json(
+          { error: "Password change required before continuing." },
+          { status: 403 }
+        );
+      }
+      const url = req.nextUrl.clone();
+      url.pathname = "/change-password";
+      url.search = "";
+      return NextResponse.redirect(url);
+    }
+  }
+
+  return NextResponse.next();
 }
 
 export const config = {

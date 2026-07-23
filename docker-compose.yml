@@ -1,20 +1,27 @@
-# Convenience compose file. Brings up an external PostgreSQL server and the app.
+# Convenience compose file. Brings up a PostgreSQL server and the app.
 # For development you can run just the `db` service and `npm run dev` locally.
+#
+# Before `docker compose up`, create a .env next to this file with at least:
+#   POSTGRES_PASSWORD=<a strong password>
+#   AUTH_SECRET=<openssl rand -hex 32>
+# The values below fall back to insecure dev defaults ONLY if unset — do not
+# rely on them for anything internet-facing.
 
 services:
   db:
     image: postgres:16-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_USER: streamsweeparr
-      POSTGRES_PASSWORD: streamsweeparr
-      POSTGRES_DB: streamsweeparr
+      POSTGRES_USER: ${POSTGRES_USER:-streamsweeparr}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-streamsweeparr}
+      POSTGRES_DB: ${POSTGRES_DB:-streamsweeparr}
+    # Bind to localhost only so Postgres is not exposed on all interfaces.
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U streamsweeparr"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-streamsweeparr}"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -26,9 +33,11 @@ services:
       db:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgresql://streamsweeparr:streamsweeparr@db:5432/streamsweeparr?schema=public
-      # CHANGE THIS. Generate with: openssl rand -hex 32
-      AUTH_SECRET: ${AUTH_SECRET:-please-change-this-insecure-default-secret}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-streamsweeparr}:${POSTGRES_PASSWORD:-streamsweeparr}@db:5432/${POSTGRES_DB:-streamsweeparr}?schema=public
+      # REQUIRED in production. Generate with: openssl rand -hex 32
+      AUTH_SECRET: ${AUTH_SECRET:?Set AUTH_SECRET (openssl rand -hex 32) in your .env}
+      # Set to "true" if your Sonarr/Radarr live on a private LAN (10/172.16/192.168).
+      SSRF_ALLOW_PRIVATE: ${SSRF_ALLOW_PRIVATE:-false}
     ports:
       - "3000:3000"
 

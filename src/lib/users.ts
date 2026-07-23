@@ -45,11 +45,15 @@ export async function upsertOidcUser(opts: {
     });
   }
 
+  // First-ever user becomes admin; subsequent OIDC users are non-admin by
+  // default (an existing admin can elevate them). This prevents any SSO user
+  // from silently gaining full control.
+  const isFirstUser = (await prisma.user.count()) === 0;
   return prisma.user.create({
     data: {
       username: opts.username,
       oidcSubject: opts.subject,
-      isAdmin: true,
+      isAdmin: isFirstUser,
       passwordHash: null,
     },
   });

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma, getSettings } from "@/lib/db";
 import { SonarrClient, RadarrClient } from "@/lib/arr";
+import { requireAdmin, withGuard } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
@@ -13,7 +14,7 @@ const createSchema = z.object({
   enabled: z.boolean().optional(),
 });
 
-export async function GET() {
+export const GET = withGuard(requireAdmin, async () => {
   const connections = await prisma.arrConnection.findMany({ orderBy: { id: "asc" } });
   return NextResponse.json({
     connections: connections.map((c) => ({
@@ -25,9 +26,9 @@ export async function GET() {
       origin: c.origin,
     })),
   });
-}
+});
 
-export async function POST(req: NextRequest) {
+export const POST = withGuard(requireAdmin, async (_session, req: NextRequest) => {
   const parsed = createSchema.safeParse(await req.json());
   if (!parsed.success) {
     return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
@@ -50,4 +51,4 @@ export async function POST(req: NextRequest) {
   });
 
   return NextResponse.json({ id: conn.id });
-}
+});

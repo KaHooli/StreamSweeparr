@@ -9,6 +9,12 @@
 export async function register() {
   // Only run in the Node.js server runtime (not edge / build).
   if (process.env.NEXT_RUNTIME !== "nodejs") return;
+
+  // Fail fast at boot if the session secret is missing/weak in production,
+  // rather than at the first request. `assertAuthSecret` throws in production.
+  const { assertAuthSecret } = await import("./lib/session");
+  assertAuthSecret();
+
   // Allow opting out (e.g. multiple replicas — run the timer on one only).
   if (process.env.TITLE_MAP_SCHEDULER === "off") return;
 

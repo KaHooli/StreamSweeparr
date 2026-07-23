@@ -8,6 +8,9 @@
     "build": "prisma generate && next build",
     "start": "next start",
     "lint": "next lint",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "prisma:generate": "prisma generate",
     "prisma:push": "prisma db push",
     "prisma:migrate": "prisma migrate deploy",
@@ -31,6 +34,7 @@
     "eslint": "^8.57.0",
     "eslint-config-next": "14.2.5",
     "prisma": "^5.18.0",
-    "typescript": "^5.5.3"
+    "typescript": "^5.5.3",
+    "vitest": "^2.0.5"
   }
 }

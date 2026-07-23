@@ -1,11 +1,12 @@
 name: Publish Docker image
 
-# Build and publish the container image to GitHub Container Registry (GHCR)
-# on every push to a branch, every version tag, and on demand.
+# Build and publish the container image to GitHub Container Registry (GHCR).
+# Publishing is limited to the default branch and version tags (feature
+# branches are validated by the CI workflow but not published).
 on:
   push:
     branches:
-      - "**"
+      - main
     tags:
       - "v*.*.*"
   workflow_dispatch:

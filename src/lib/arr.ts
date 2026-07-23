@@ -6,6 +6,8 @@
  * configured Sonarr/Radarr instances when the user does not enter them by hand.
  */
 
+import { safeFetch } from "./safeFetch";
+
 export class ArrError extends Error {
   constructor(message: string, public status?: number) {
     super(message);
@@ -24,7 +26,8 @@ async function arrFetch<T>(
   init: RequestInit = {}
 ): Promise<T> {
   const url = `${normalizeBase(baseUrl)}${path}`;
-  const res = await fetch(url, {
+  // safeFetch validates the host (SSRF guard) and applies a timeout.
+  const res = await safeFetch(url, {
     ...init,
     headers: {
       "X-Api-Key": apiKey,
