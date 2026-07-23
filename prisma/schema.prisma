@@ -1,0 +1,217 @@
+// StreamSweeparr database schema (PostgreSQL)
+//
+// The database is used for two things:
+//   1. Persisting user configuration (API keys, selected countries/services,
+//      Sonarr/Radarr connections, options).
+//   2. Caching the last-known state of media & streaming availability so the
+//      dashboard renders instantly and runs can be audited.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Single-row application settings (id is always 1).
+model Settings {
+  id                Int      @id @default(1)
+  watchmodeApiKey   String?
+  // Seerr (optional) — used to auto-discover Sonarr/Radarr instances.
+  seerrUrl          String?
+  seerrApiKey       String?
+  // Selected Watchmode region codes, e.g. ["US","GB"].
+  countries         String[] @default([])
+  // Selected Watchmode source ids the user considers "their" streaming services.
+  serviceIds        Int[]    @default([])
+  // Which source types count as "available on streaming".
+  // Watchmode types: sub, free, purchase, rent, tv_everywhere.
+  countedTypes      String[] @default(["sub", "free"])
+  // Automatically delete files when unmonitoring (destructive).
+  deleteFiles       Boolean  @default(true)
+  // Trigger a search for all monitored items at the end of a run.
+  searchAtEnd       Boolean  @default(true)
+  // Perform destructive changes. When false the run is a dry-run (preview only).
+  applyChanges      Boolean  @default(false)
+
+  // --- Watchmode Title ID map dataset sync metadata ---
+  // HTTP validators from the last successful title_id_map.csv download, used to
+  // skip re-importing when the dataset has not changed.
+  titleMapEtag         String?
+  titleMapLastModified String?
+  titleMapSyncedAt     DateTime?
+  titleMapRowCount     Int      @default(0)
+
+  // --- OIDC single sign-on (optional) ---
+  // When issuer + clientId + clientSecret are set, an "Sign in with SSO" button
+  // appears on the login page.
+  oidcEnabled       Boolean  @default(false)
+  oidcIssuer        String?  // e.g. https://auth.example.com  (issuer or discovery base)
+  oidcClientId      String?
+  oidcClientSecret  String?
+  // Space-separated scopes; defaults to "openid profile email".
+  oidcScopes        String   @default("openid profile email")
+  // Optional explicit endpoint overrides (otherwise discovered from issuer).
+  oidcAuthUrl       String?
+  oidcTokenUrl      String?
+  oidcUserinfoUrl   String?
+  // If set, only users whose email/preferred_username is in this list may sign
+  // in via OIDC. Empty = allow any authenticated OIDC user.
+  oidcAllowedUsers  String[] @default([])
+
+  updatedAt         DateTime @updatedAt
+
+  connections ArrConnection[]
+}
+
+// Application user. Local users authenticate with username + password hash;
+// OIDC users are provisioned on first successful SSO login (passwordHash null).
+model User {
+  id            Int      @id @default(autoincrement())
+  username      String   @unique
+  // scrypt hash in the form "scrypt$<saltHex>$<hashHex>"; null for pure OIDC.
+  passwordHash  String?
+  // OIDC subject / issuer this user maps to (null for local users).
+  oidcSubject   String?  @unique
+  isAdmin       Boolean  @default(true)
+  // Set for the seeded default admin until the password is changed.
+  mustChangePassword Boolean @default(false)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+// Watchmode Title ID map (imported from
+// https://api.watchmode.com/datasets/title_id_map.csv).
+// Lets us convert TMDB/IMDB ids -> Watchmode id locally, without spending
+// Watchmode search-endpoint quota. Refreshed at most every 12 hours.
+//
+// CSV columns: Watchmode ID, IMDB ID, TMDB ID, TMDB Type, Title, Year
+model TitleIdMap {
+  watchmodeId Int     @id
+  imdbId      String?
+  tmdbId      Int?
+  tmdbType    String? // "movie" | "tv"
+  title       String?
+  year        Int?
+
+  @@index([tmdbId, tmdbType])
+  @@index([imdbId])
+}
+
+enum ArrType {
+  SONARR
+  RADARR
+}
+
+// A Sonarr or Radarr instance. Can be added manually or synced from Seerr.
+model ArrConnection {
+  id         Int      @id @default(autoincrement())
+  type       ArrType
+  name       String
+  baseUrl    String
+  apiKey     String
+  enabled    Boolean  @default(true)
+  // "seerr" if discovered from Seerr, "manual" if entered by hand.
+  origin     String   @default("manual")
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  settings   Settings @relation(fields: [settingsId], references: [id])
+  settingsId Int      @default(1)
+
+  media      MediaItem[]
+
+  @@unique([type, baseUrl])
+}
+
+enum MediaType {
+  MOVIE
+  TV
+}
+
+// Cached snapshot of a movie or series across the *arr instances, enriched
+// with Watchmode streaming availability. Refreshed on each sync.
+model MediaItem {
+  id             Int       @id @default(autoincrement())
+  type           MediaType
+  // Primary key from the *arr instance.
+  arrId          Int
+  title          String
+  year           Int?
+  posterUrl      String?
+  tmdbId         Int?
+  imdbId         String?
+  tvdbId         Int?
+  watchmodeId    Int?
+
+  monitored      Boolean   @default(false)
+  hasFile        Boolean   @default(false)
+
+  // Aggregated streaming state.
+  onStreaming    Boolean   @default(false)
+  // JSON blob of matched sources: [{sourceId,name,logo,type,region}]
+  streamingInfo  Json?
+
+  // Episode roll-ups for TV (movies leave these at 0).
+  totalEpisodes      Int   @default(0)
+  monitoredEpisodes  Int   @default(0)
+  streamingEpisodes  Int   @default(0)
+
+  lastSyncedAt   DateTime  @default(now())
+
+  connection     ArrConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  connectionId   Int
+
+  episodes       Episode[]
+
+  @@unique([connectionId, type, arrId])
+  @@index([type])
+  @@index([onStreaming])
+}
+
+// Cached episode snapshot for TV media.
+model Episode {
+  id            Int      @id @default(autoincrement())
+  arrEpisodeId  Int
+  seasonNumber  Int
+  episodeNumber Int
+  title         String?
+  monitored     Boolean  @default(false)
+  hasFile       Boolean  @default(false)
+  episodeFileId Int?
+  onStreaming   Boolean  @default(false)
+  streamingInfo Json?
+
+  media         MediaItem @relation(fields: [mediaId], references: [id], onDelete: Cascade)
+  mediaId       Int
+
+  @@unique([mediaId, arrEpisodeId])
+}
+
+enum RunStatus {
+  RUNNING
+  SUCCESS
+  FAILED
+}
+
+// Audit log of each sweep run.
+model RunLog {
+  id                 Int       @id @default(autoincrement())
+  startedAt          DateTime  @default(now())
+  finishedAt         DateTime?
+  status             RunStatus @default(RUNNING)
+  dryRun             Boolean   @default(true)
+
+  unmonitoredMovies  Int       @default(0)
+  remonitoredMovies  Int       @default(0)
+  unmonitoredEps     Int       @default(0)
+  remonitoredEps     Int       @default(0)
+  deletedFiles       Int       @default(0)
+  searchedItems      Int       @default(0)
+
+  // Human-readable step log.
+  log                Json?
+  error              String?
+}

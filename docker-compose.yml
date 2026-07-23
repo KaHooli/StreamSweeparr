@@ -1,0 +1,36 @@
+# Convenience compose file. Brings up an external PostgreSQL server and the app.
+# For development you can run just the `db` service and `npm run dev` locally.
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: streamsweeparr
+      POSTGRES_PASSWORD: streamsweeparr
+      POSTGRES_DB: streamsweeparr
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U streamsweeparr"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  app:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://streamsweeparr:streamsweeparr@db:5432/streamsweeparr?schema=public
+      # CHANGE THIS. Generate with: openssl rand -hex 32
+      AUTH_SECRET: ${AUTH_SECRET:-please-change-this-insecure-default-secret}
+    ports:
+      - "3000:3000"
+
+volumes:
+  pgdata:

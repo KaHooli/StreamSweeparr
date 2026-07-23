@@ -1,0 +1,209 @@
+# StreamSweeparr
+
+A Seerr-style companion for Sonarr & Radarr. It uses **Watchmode** to find which
+of your media is available on the streaming services you subscribe to, then:
+
+1. **Unmonitors + deletes** monitored movies / TV episodes that are already on a
+   selected streaming service (file deletion is optional).
+2. **Re-monitors** unmonitored movies / episodes that have **left** all selected
+   streaming services.
+3. **Searches** every monitored movie / episode at the end of the run.
+
+Runs are **dry-run by default** — nothing is changed until you enable LIVE mode.
+
+---
+
+## Architecture
+
+```
+                          ┌──────────────────────────────┐
+   Browser (Dracula UI) ──►  Next.js 14 App Router        │
+   dashboard / settings    │  ├─ React Server + Client    │
+   / runs                  │  └─ API routes (/api/*)       │
+                           └──────┬───────────────┬────────┘
+                                  │               │
+                    ┌─────────────▼───┐   ┌───────▼───────────┐
+                    │ Business logic  │   │ External APIs      │
+                    │  lib/sync.ts    │   │  Watchmode         │
+                    │  lib/sweep.ts   │◄──┤  Sonarr v3         │
+                    │  lib/watchmode  │   │  Radarr v3         │
+                    │  lib/arr        │   │  Seerr (discovery) │
+                    └────────┬────────┘   └────────────────────┘
+                             │ Prisma
+                    ┌────────▼────────┐
+                    │  PostgreSQL      │  settings, connections,
+                    │  (external)      │  media snapshot, run logs
+                    └──────────────────┘
+```
+
+### Layers
+
+| Concern | File(s) |
+|---|---|
+| DB client + settings bootstrap | `src/lib/db.ts` |
+| Auth: sessions / passwords / users / OIDC | `src/lib/{session,password,users,oidc}.ts` |
+| Route protection (edge middleware) | `src/middleware.ts` |
+| Auth API (login, logout, session, change-password, OIDC) | `src/app/api/auth/**` |
+| Login page | `src/app/login/page.tsx` |
+| Watchmode client (regions, sources, title lookup, availability) | `src/lib/watchmode.ts` |
+| Sonarr / Radarr / Seerr clients | `src/lib/arr.ts` |
+| **Title ID map** — TMDB/IMDB → Watchmode id, imported from Watchmode's daily CSV | `src/lib/titlemap.ts` |
+| 12h scheduler for the Title ID map | `src/instrumentation.ts` |
+| **Sync engine** — snapshot library + streaming availability into Postgres | `src/lib/sync.ts` |
+| **Sweep engine** — unmonitor/delete, re-monitor, search | `src/lib/sweep.ts` |
+| Country flags | `src/lib/flags.ts` |
+| REST API | `src/app/api/**` |
+| UI (Dracula theme, dark/light/system) | `src/app/**`, `src/components/**`, `src/app/globals.css` |
+| DB schema | `prisma/schema.prisma` |
+
+### Title ID map (TMDB/IMDB → Watchmode id)
+The Watchmode API is keyed on **Watchmode ids**, so every title from
+Sonarr/Radarr must be converted from its TMDB/IMDB id first. Instead of spending
+Watchmode **search** quota on every title, StreamSweeparr imports Watchmode's
+daily [`title_id_map.csv`](https://api.watchmode.com/datasets/title_id_map.csv)
+into the `TitleIdMap` table and resolves ids locally.
+
+Refresh flow (`src/lib/titlemap.ts`), run at the start of every sync and on a
+12-hour timer (`src/instrumentation.ts`):
+
+1. **First run** → skip the ETag check.
+2. Otherwise `HEAD` the CSV; if its **ETag** matches the last import, stop.
+3. Download the CSV, recording **Last-Modified** + **ETag** for next time.
+4. `TRUNCATE "TitleIdMap"` then stream-import the CSV via the Postgres `COPY`
+   protocol (`pg` + `pg-copy-streams`) — works against any external Postgres.
+5. Repeat at most every 12 hours.
+
+`findTitleId()` tries this local map first and only falls back to the Watchmode
+`/search` endpoint when a title is missing from the CSV. You can view status and
+force a refresh under **Settings → Title ID map**, or via `POST /api/titlemap`
+(`{ "force": true }` to bypass the window/ETag). Set `TITLE_MAP_SCHEDULER=off`
+to disable the timer (e.g. on secondary replicas).
+
+### Authentication
+The whole app is behind a login. A `middleware.ts` gate validates a signed,
+edge-safe session cookie on every route except `/login` and `/api/auth/*`;
+unauthenticated pages redirect to `/login`, unauthenticated API calls get `401`.
+
+- **Username / password** — a default admin is seeded on first login:
+  **username `admin`, password `0pen0pen&*`** (flagged *must change password*).
+  Passwords are hashed with Node `scrypt`; sessions are HMAC-signed cookies
+  (`src/lib/session.ts`) signed with `AUTH_SECRET`.
+- **OIDC SSO (optional)** — configure it under **Settings → Single sign-on
+  (OIDC)** (issuer, client id/secret; endpoints auto-discovered from
+  `/.well-known/openid-configuration`). When enabled, a **Sign in with SSO**
+  button appears on the login page. Flow is Authorization Code + PKCE with
+  `state` validation (`src/lib/oidc.ts`); users are provisioned on first login
+  and can be restricted with an allow-list.
+
+Set **`AUTH_SECRET`** to a long random value in production
+(`openssl rand -hex 32`).
+
+### How availability is decided
+`matchSources()` in `watchmode.ts` keeps a title's Watchmode sources only if the
+`source_id` is one of your **selected services** *and* the source `type`
+(`sub`, `free`, `purchase`, `rent`, `tv_everywhere`) is one of your
+**counted types**. A movie is "on streaming" if it has ≥1 match; a series is
+"on streaming" if ≥1 episode matches. This drives both the dashboard and the
+sweep decisions.
+
+### External API endpoints used
+- **Watchmode:** `/v1/regions/`, `/v1/sources/`, `/v1/search/` (fallback only),
+  `/v1/title/{id}/sources/`, `/v1/title/{id}/episodes/`, `/v1/status/`
+  (auth via `X-API-Key`), plus the public `datasets/title_id_map.csv`.
+- **Sonarr v3:** `GET /series`, `GET /episode`, `PUT /episode/monitor`,
+  `DELETE /episodefile/{id}`, `POST /command` (`EpisodeSearch`).
+- **Radarr v3:** `GET /movie`, `PUT /movie/{id}`, `DELETE /moviefile/{id}`,
+  `POST /command` (`MoviesSearch`).
+- **Seerr (optional):** `GET /api/v1/settings/sonarr`, `.../radarr` to
+  auto-discover instances.
+
+---
+
+## Requirements
+- Node.js 18+ (tested on 20/26)
+- An **external PostgreSQL** server (v13+)
+- A **Watchmode** API key — https://api.watchmode.com
+- One or more **Sonarr v3/v4** and/or **Radarr v3/v4** instances
+  (optionally a **Seerr** server to auto-discover them)
+
+## Dependencies
+Runtime: `next`, `react`, `react-dom`, `@prisma/client`, `pg`,
+`pg-copy-streams`, `swr`, `zod`
+Dev/build: `prisma`, `typescript`, `@types/*`, `eslint`, `eslint-config-next`
+
+---
+
+## How to run
+
+### Option A — Local (Node + external Postgres)
+
+```bash
+# 1. Install
+npm install
+
+# 2. Configure the DB connection
+cp .env.example .env
+#   edit DATABASE_URL to point at your PostgreSQL server
+
+# 3. Create the schema on your Postgres server
+npx prisma db push
+
+# 4a. Development
+npm run dev            # http://localhost:3000
+
+# 4b. Production
+npm run build
+npm run start
+```
+
+### Option B — Docker Compose (app + Postgres)
+
+```bash
+docker compose up --build
+# App: http://localhost:3000   Postgres: localhost:5432
+```
+The `app` container runs `prisma db push` on start, so the schema is created
+automatically.
+
+> Using your **own** external Postgres with Docker? Remove the `db` service and
+> set `DATABASE_URL` on the `app` service to your server.
+
+---
+
+## First-time setup (in the UI)
+1. Open the app and **log in** with the default admin — username **`admin`**,
+   password **`0pen0pen&*`** — then change the password under
+   **Settings → Account & security**. (Optionally configure OIDC there too.)
+1. Open **Settings**.
+2. **Watchmode API** → paste your key → *Test & save*.
+3. **Countries** → pick the countries you stream in (listed alphabetically with
+   flags) → *Save countries*.
+4. **Streaming services** → for each selected country the services appear
+   (alphabetical, with logos). Tick the ones you subscribe to, choose which
+   source types count (Subscription / Free / etc.) → *Save services*.
+5. **Connections** → either configure **Seerr** and click *Discover instances*,
+   or add Sonarr/Radarr manually (URL + API key; the app verifies before saving).
+6. **Run options** → leave **Apply changes** *off* for a safe dry-run first.
+   Toggle **Delete files** and **Search at end** to taste.
+
+## Running a sweep
+From the **Dashboard**:
+- **Sync now** — refresh the library + streaming availability snapshot.
+- **Run sweep** — sync, then unmonitor/delete, re-monitor, and search. In
+  dry-run it only records what *would* happen; check the **Runs** page for the
+  full step-by-step log and counts.
+
+## Dashboard
+- **TV shows on streaming** — each card shows a progress bar of how many
+  episodes are **unmonitored** (with `x/total on streaming`).
+- **Movies on streaming** — each card shows a **Monitored / Unmonitored** badge.
+
+## Safety notes
+- **Dry-run is the default.** No changes are made until **Apply changes (LIVE
+  mode)** is enabled in Settings.
+- **File deletion is destructive** and permanent. It only happens in LIVE mode
+  with **Delete files** enabled, and only for titles found on your selected
+  streaming services.
+- API keys are stored in your PostgreSQL database and are never returned to the
+  browser (only a "configured" flag is exposed).
+```

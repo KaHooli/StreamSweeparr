@@ -1,0 +1,113 @@
+"use client";
+
+import { Suspense, useEffect, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import useSWR from "swr";
+import { fetcher, postJson } from "@/lib/fetcher";
+
+export const dynamic = "force-dynamic";
+
+function LoginInner() {
+  const router = useRouter();
+  const params = useSearchParams();
+  const next = params.get("next") || "/";
+  const urlError = params.get("error");
+
+  const { data: session } = useSWR<{ user: unknown; oidcEnabled: boolean }>("/api/auth/session", fetcher);
+  const oidcEnabled = session?.oidcEnabled;
+
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(urlError);
+
+  // If already authenticated, bounce to the target.
+  useEffect(() => {
+    if (session?.user) router.replace(next);
+  }, [session, next, router]);
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      await postJson("/api/auth/login", { username, password });
+      router.replace(next);
+      router.refresh();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="login-wrap">
+      <div className="login-card card">
+        <div className="brand" style={{ justifyContent: "center", marginBottom: 6 }}>
+          <span className="mark">≋</span>
+          <span>
+            <span className="sweep">Stream</span>
+            <span className="arr">Sweeparr</span>
+          </span>
+        </div>
+        <p className="muted" style={{ textAlign: "center", marginTop: 0 }}>
+          Sign in to continue
+        </p>
+
+        {error && <div className="banner err">{error}</div>}
+
+        <form onSubmit={submit}>
+          <div className="field">
+            <label>Username</label>
+            <input
+              className="input"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              autoComplete="username"
+              autoFocus
+              required
+            />
+          </div>
+          <div className="field">
+            <label>Password</label>
+            <input
+              className="input"
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              autoComplete="current-password"
+              required
+            />
+          </div>
+          <button className="btn primary" type="submit" disabled={busy} style={{ width: "100%", justifyContent: "center" }}>
+            {busy ? <span className="spin" /> : null} Sign in
+          </button>
+        </form>
+
+        {oidcEnabled && (
+          <>
+            <div className="or">
+              <span>or</span>
+            </div>
+            <a
+              className="btn"
+              href="/api/auth/oidc/authorize"
+              style={{ width: "100%", justifyContent: "center" }}
+            >
+              Sign in with SSO
+            </a>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense fallback={<div className="login-wrap" />}>
+      <LoginInner />
+    </Suspense>
+  );
+}
