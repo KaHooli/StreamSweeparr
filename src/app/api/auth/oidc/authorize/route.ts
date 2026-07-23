@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getOidcConfig, generatePkce, buildAuthUrl } from "@/lib/oidc";
+import { cookieSecure } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
 
@@ -25,7 +26,7 @@ export async function GET(req: NextRequest) {
     const opts = {
       httpOnly: true,
       sameSite: "lax" as const,
-      secure: process.env.NODE_ENV === "production",
+      secure: cookieSecure(),
       path: "/",
       maxAge: 600, // 10 minutes to complete the flow
     };

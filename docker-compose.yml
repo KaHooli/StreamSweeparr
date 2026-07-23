@@ -38,6 +38,10 @@ services:
       AUTH_SECRET: ${AUTH_SECRET:?Set AUTH_SECRET (openssl rand -hex 32) in your .env}
       # Set to "true" if your Sonarr/Radarr live on a private LAN (10/172.16/192.168).
       SSRF_ALLOW_PRIVATE: ${SSRF_ALLOW_PRIVATE:-false}
+      # This compose file exposes the app over plain HTTP, so login cookies must
+      # NOT be marked Secure (browsers drop Secure cookies on http://). If you
+      # put the app behind HTTPS (recommended), set this to "false".
+      AUTH_COOKIE_INSECURE: ${AUTH_COOKIE_INSECURE:-true}
     ports:
       - "3000:3000"
 

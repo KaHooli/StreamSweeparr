@@ -105,6 +105,13 @@ guarded server-side (`src/lib/auth.ts`) in addition to the middleware.
 **`AUTH_SECRET` is required in production** — the app refuses to start without a
 value of at least 16 characters (`openssl rand -hex 32`).
 
+> **Running over plain HTTP?** In production the login cookie is marked `Secure`,
+> which browsers only keep over HTTPS. If you access the app at `http://host:3000`
+> (e.g. the default Docker Compose setup) the cookie is dropped and login appears
+> to fail — you sign in but bounce back to the login screen. Set
+> **`AUTH_COOKIE_INSECURE=true`** for HTTP deployments (the bundled
+> `docker-compose.yml` already does this). Prefer putting the app behind HTTPS.
+
 ### SSRF protection
 Any URL you supply (Sonarr/Radarr/Seerr base URLs, OIDC endpoints) is fetched
 through `src/lib/safeFetch.ts`, which DNS-resolves the host and **always blocks**

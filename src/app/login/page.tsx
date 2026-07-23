@@ -31,8 +31,13 @@ function LoginInner() {
     setBusy(true);
     setError(null);
     try {
-      await postJson("/api/auth/login", { username, password });
-      router.replace(next);
+      const res = await postJson<{ mustChangePassword?: boolean }>("/api/auth/login", {
+        username,
+        password,
+      });
+      // Send straight to the forced password-change screen if required,
+      // otherwise to the originally requested page.
+      router.replace(res.mustChangePassword ? "/change-password" : next);
       router.refresh();
     } catch (err) {
       setError((err as Error).message);

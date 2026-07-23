@@ -129,11 +129,29 @@ export async function verifySession(token: string | undefined | null): Promise<S
   }
 }
 
+/**
+ * Whether to set the `Secure` flag on auth cookies.
+ *
+ * Secure cookies are only stored by browsers over HTTPS. In production we
+ * default to secure, but many self-hosted deployments run over plain HTTP
+ * (e.g. http://host:3000 behind no TLS). A `Secure` cookie there is silently
+ * dropped by the browser, which makes login appear to "not work" — you enter
+ * credentials but never reach the dashboard.
+ *
+ * Set AUTH_COOKIE_INSECURE=true to serve auth cookies without the Secure flag
+ * when running over HTTP. Only do this on trusted/local networks; prefer
+ * putting the app behind HTTPS in production.
+ */
+export function cookieSecure(): boolean {
+  if (process.env.AUTH_COOKIE_INSECURE === "true") return false;
+  return process.env.NODE_ENV === "production";
+}
+
 export function sessionCookieOptions() {
   return {
     httpOnly: true,
     sameSite: "lax" as const,
-    secure: process.env.NODE_ENV === "production",
+    secure: cookieSecure(),
     path: "/",
     maxAge: SESSION_TTL_SECONDS,
   };
