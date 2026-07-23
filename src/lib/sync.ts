@@ -17,6 +17,7 @@ import {
 import { WatchmodeClient, matchSources, type WatchmodeTitleSource } from "./watchmode";
 import type { WatchmodeEpisode } from "./watchmode";
 import { lookupWatchmodeId, refreshTitleMap } from "./titlemap";
+import { TmdbClient, matchTmdbProviders } from "./tmdb";
 
 export interface SyncResult {
   connections: number;
@@ -53,32 +54,55 @@ export async function runSync(progress: ProgressFn = noopProgress): Promise<Sync
     errors,
   };
 
-  if (!settings.watchmodeApiKey) throw new Error("Watchmode API key is not configured.");
-  if (!settings.countries.length) throw new Error("No countries selected in settings.");
-  if (!settings.serviceIds.length) throw new Error("No streaming services selected in settings.");
+  const connections = settings.connections.filter((c) => c.enabled);
+  result.connections = connections.length;
 
-  // Ensure the local Title ID map is fresh (self-throttles to a 12h window).
-  // A failure here is non-fatal: findTitleId falls back to the search API.
-  try {
-    await refreshTitleMap();
-  } catch (e) {
-    errors.push(`Title ID map refresh failed (using search fallback): ${(e as Error).message}`);
+  const hasRadarr = connections.some((c) => c.type === "RADARR");
+  const hasSonarr = connections.some((c) => c.type === "SONARR");
+
+  // TV episodes use Watchmode; movies use TMDB. Validate only what's needed
+  // for the connection types actually configured.
+  if (hasSonarr) {
+    if (!settings.watchmodeApiKey) throw new Error("Watchmode API key is not configured (needed for TV).");
+    if (!settings.countries.length) throw new Error("No Watchmode countries selected (needed for TV).");
+    if (!settings.serviceIds.length) throw new Error("No Watchmode streaming services selected (needed for TV).");
+  }
+  if (hasRadarr) {
+    if (!settings.tmdbApiKey) throw new Error("TMDB API key is not configured (needed for movies).");
+    if (!settings.tmdbRegions.length) throw new Error("No TMDB regions selected (needed for movies).");
+    if (!settings.tmdbProviderIds.length) throw new Error("No TMDB movie providers selected (needed for movies).");
   }
 
-  const wm = new WatchmodeClient(settings.watchmodeApiKey);
+  // TV (Watchmode) setup — only when a Sonarr connection exists.
+  let wm: WatchmodeClient | null = null;
+  if (hasSonarr && settings.watchmodeApiKey) {
+    // Ensure the local Title ID map is fresh (self-throttles to a 12h window).
+    // A failure here is non-fatal: findTitleId falls back to the search API.
+    try {
+      await refreshTitleMap();
+    } catch (e) {
+      errors.push(`Title ID map refresh failed (using search fallback): ${(e as Error).message}`);
+    }
+    wm = new WatchmodeClient(settings.watchmodeApiKey);
+  }
   const regions = settings.countries;
   const serviceIds = settings.serviceIds;
   const countedTypes = settings.countedTypes;
 
-  const connections = settings.connections.filter((c) => c.enabled);
-  result.connections = connections.length;
+  // Movie (TMDB) setup — only when a Radarr connection exists.
+  const tmdb = hasRadarr && settings.tmdbApiKey ? new TmdbClient(settings.tmdbApiKey) : null;
+  const tmdbRegions = settings.tmdbRegions;
+  const tmdbProviderIds = settings.tmdbProviderIds;
+  const tmdbCountedTypes = settings.tmdbCountedTypes;
 
   for (const conn of connections) {
     try {
       progress("info", `Syncing ${conn.type === "RADARR" ? "movies" : "series"} from "${conn.name}"…`);
       if (conn.type === "RADARR") {
-        await syncRadarr(conn, wm, regions, serviceIds, countedTypes, result, errors);
+        if (!tmdb) throw new Error("TMDB is not configured.");
+        await syncRadarr(conn, tmdb, tmdbRegions, tmdbProviderIds, tmdbCountedTypes, result, errors);
       } else {
+        if (!wm) throw new Error("Watchmode is not configured.");
         await syncSonarr(conn, wm, regions, serviceIds, countedTypes, result, errors);
       }
     } catch (e) {
@@ -91,9 +115,9 @@ export async function runSync(progress: ProgressFn = noopProgress): Promise<Sync
 
 async function syncRadarr(
   conn: { id: number; name: string; baseUrl: string; apiKey: string },
-  wm: WatchmodeClient,
+  tmdb: TmdbClient,
   regions: string[],
-  serviceIds: number[],
+  providerIds: number[],
   countedTypes: string[],
   result: SyncResult,
   errors: string[]
@@ -104,25 +128,16 @@ async function syncRadarr(
   const seen: number[] = [];
 
   for (const movie of movies) {
-    let matched: WatchmodeTitleSource[] = [];
-    let watchmodeId: number | null = null;
+    let matched: { providerId: number; name: string; type: string; region: string }[] = [];
     // Track whether we could actually determine streaming availability. A
     // failed lookup must not be treated as "not on streaming".
     let streamingUnknown = false;
     try {
-      watchmodeId = await wm.findTitleId({
-        tmdbId: movie.tmdbId,
-        imdbId: movie.imdbId,
-        type: "movie",
-        name: movie.title,
-        year: movie.year,
-        resolveLocal: lookupWatchmodeId,
-      });
-      if (watchmodeId) {
-        const sources = await wm.titleSources(watchmodeId, regions);
-        matched = matchSources(sources, serviceIds, countedTypes);
+      if (movie.tmdbId) {
+        const availability = await tmdb.movieWatchProviders(movie.tmdbId);
+        matched = matchTmdbProviders(availability, regions, providerIds, countedTypes);
       } else {
-        // No Watchmode id at all -> we genuinely can't say. Mark unknown so the
+        // No TMDB id from Radarr -> we can't look it up. Mark unknown so the
         // sweep leaves it alone rather than re-monitoring.
         streamingUnknown = true;
       }
@@ -135,6 +150,14 @@ async function syncRadarr(
     if (onStreaming) result.onStreamingMovies++;
     result.movies++;
 
+    const info = matched.map((m) => ({
+      sourceId: m.providerId,
+      name: m.name,
+      type: m.type,
+      region: m.region,
+      webUrl: null,
+    }));
+
     await prisma.mediaItem.upsert({
       where: { connectionId_type_arrId: { connectionId: conn.id, type: "MOVIE", arrId: movie.id } },
       create: {
@@ -146,12 +169,11 @@ async function syncRadarr(
         posterUrl: posterFromImages(movie.images),
         tmdbId: movie.tmdbId ?? null,
         imdbId: movie.imdbId ?? null,
-        watchmodeId,
         monitored: movie.monitored,
         hasFile: movie.hasFile,
         onStreaming,
         streamingUnknown,
-        streamingInfo: streamingInfoJson(matched),
+        streamingInfo: info,
       },
       update: {
         title: movie.title,
@@ -159,12 +181,11 @@ async function syncRadarr(
         posterUrl: posterFromImages(movie.images),
         tmdbId: movie.tmdbId ?? null,
         imdbId: movie.imdbId ?? null,
-        watchmodeId,
         monitored: movie.monitored,
         hasFile: movie.hasFile,
         onStreaming,
         streamingUnknown,
-        streamingInfo: streamingInfoJson(matched),
+        streamingInfo: info,
         lastSyncedAt: new Date(),
       },
     });

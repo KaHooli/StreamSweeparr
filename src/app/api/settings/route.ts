@@ -16,6 +16,7 @@ const urlOrEmpty = z
   );
 
 const COUNTED_TYPES = ["sub", "free", "purchase", "rent", "tv_everywhere"] as const;
+const TMDB_COUNTED_TYPES = ["flatrate", "free", "ads", "rent", "buy"] as const;
 
 const settingsSchema = z.object({
   watchmodeApiKey: z.string().nullable().optional(),
@@ -24,6 +25,11 @@ const settingsSchema = z.object({
   countries: z.array(z.string().regex(/^[A-Za-z]{2}$/, "Invalid country code.")).optional(),
   serviceIds: z.array(z.number().int().positive()).optional(),
   countedTypes: z.array(z.enum(COUNTED_TYPES)).optional(),
+  // TMDB (movies)
+  tmdbApiKey: z.string().nullable().optional(),
+  tmdbRegions: z.array(z.string().regex(/^[A-Za-z]{2}$/, "Invalid region code.")).optional(),
+  tmdbProviderIds: z.array(z.number().int().positive()).optional(),
+  tmdbCountedTypes: z.array(z.enum(TMDB_COUNTED_TYPES)).optional(),
   deleteFiles: z.boolean().optional(),
   searchAtEnd: z.boolean().optional(),
   applyChanges: z.boolean().optional(),
@@ -48,6 +54,10 @@ function serialize(s: Awaited<ReturnType<typeof getSettings>>) {
     countries: s.countries,
     serviceIds: s.serviceIds,
     countedTypes: s.countedTypes,
+    tmdbApiKeySet: !!s.tmdbApiKey,
+    tmdbRegions: s.tmdbRegions,
+    tmdbProviderIds: s.tmdbProviderIds,
+    tmdbCountedTypes: s.tmdbCountedTypes,
     deleteFiles: s.deleteFiles,
     searchAtEnd: s.searchAtEnd,
     applyChanges: s.applyChanges,
@@ -95,6 +105,12 @@ export const PATCH = withGuard(requireAdmin, async (_session, req: NextRequest) 
   if (p.countries !== undefined) data.countries = p.countries;
   if (p.serviceIds !== undefined) data.serviceIds = p.serviceIds;
   if (p.countedTypes !== undefined) data.countedTypes = p.countedTypes;
+  // TMDB (movies)
+  if (p.tmdbApiKey !== undefined && p.tmdbApiKey !== null && p.tmdbApiKey !== "")
+    data.tmdbApiKey = p.tmdbApiKey;
+  if (p.tmdbRegions !== undefined) data.tmdbRegions = p.tmdbRegions;
+  if (p.tmdbProviderIds !== undefined) data.tmdbProviderIds = p.tmdbProviderIds;
+  if (p.tmdbCountedTypes !== undefined) data.tmdbCountedTypes = p.tmdbCountedTypes;
   if (p.deleteFiles !== undefined) data.deleteFiles = p.deleteFiles;
   if (p.searchAtEnd !== undefined) data.searchAtEnd = p.searchAtEnd;
   if (p.applyChanges !== undefined) data.applyChanges = p.applyChanges;

@@ -11,6 +11,10 @@ interface SettingsDto {
   countries: string[];
   serviceIds: number[];
   countedTypes: string[];
+  tmdbApiKeySet: boolean;
+  tmdbRegions: string[];
+  tmdbProviderIds: number[];
+  tmdbCountedTypes: string[];
   deleteFiles: boolean;
   searchAtEnd: boolean;
   applyChanges: boolean;
@@ -37,27 +41,93 @@ const TYPE_LABELS: Record<string, string> = {
   tv_everywhere: "TV Everywhere",
 };
 
+// TMDB watch-provider categories.
+const TMDB_TYPE_LABELS: Record<string, string> = {
+  flatrate: "Subscription",
+  free: "Free",
+  ads: "Free with ads",
+  rent: "Rent",
+  buy: "Buy",
+};
+
+type TabKey = "watchmode" | "tmdb" | "connections" | "run" | "account";
+
+const TABS: { key: TabKey; label: string }[] = [
+  { key: "watchmode", label: "Watchmode (TV)" },
+  { key: "tmdb", label: "TheMovieDB (Movies)" },
+  { key: "connections", label: "Connections" },
+  { key: "run", label: "Run options" },
+  { key: "account", label: "Account & security" },
+];
+
 export default function SettingsPage() {
   const { data: settings, mutate } = useSWR<SettingsDto>("/api/settings", fetcher);
+  const [tab, setTab] = useState<TabKey>("watchmode");
 
   return (
     <main>
       <div className="section-title">
         <h2>Settings</h2>
       </div>
+
+      <div className="tabs" role="tablist">
+        {TABS.map((t) => (
+          <button
+            key={t.key}
+            role="tab"
+            aria-selected={tab === t.key}
+            className={`tab ${tab === t.key ? "active" : ""}`}
+            onClick={() => setTab(t.key)}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
       {!settings ? (
         <div className="card">Loading…</div>
       ) : (
         <>
-          <WatchmodeCard settings={settings} onChange={() => mutate()} />
-          <TitleMapCard enabled={settings.watchmodeApiKeySet} />
-          <CountriesCard settings={settings} onChange={() => mutate()} />
-          <ServicesCard settings={settings} onChange={() => mutate()} />
-          <SeerrCard settings={settings} onChange={() => mutate()} />
-          <ConnectionsCard settings={settings} onChange={() => mutate()} />
-          <OptionsCard settings={settings} onChange={() => mutate()} />
-          <AccountCard />
-          <OidcCard settings={settings} onChange={() => mutate()} />
+          {tab === "watchmode" && (
+            <>
+              <p className="muted" style={{ marginTop: 0 }}>
+                Watchmode provides per-episode streaming availability and is used for
+                <strong> TV shows</strong>.
+              </p>
+              <WatchmodeCard settings={settings} onChange={() => mutate()} />
+              <TitleMapCard enabled={settings.watchmodeApiKeySet} />
+              <CountriesCard settings={settings} onChange={() => mutate()} />
+              <ServicesCard settings={settings} onChange={() => mutate()} />
+            </>
+          )}
+
+          {tab === "tmdb" && (
+            <>
+              <p className="muted" style={{ marginTop: 0 }}>
+                TheMovieDB (JustWatch-powered) provides streaming availability and is used for
+                <strong> movies</strong>.
+              </p>
+              <TmdbCard settings={settings} onChange={() => mutate()} />
+              <TmdbRegionsCard settings={settings} onChange={() => mutate()} />
+              <TmdbProvidersCard settings={settings} onChange={() => mutate()} />
+            </>
+          )}
+
+          {tab === "connections" && (
+            <>
+              <SeerrCard settings={settings} onChange={() => mutate()} />
+              <ConnectionsCard settings={settings} onChange={() => mutate()} />
+            </>
+          )}
+
+          {tab === "run" && <OptionsCard settings={settings} onChange={() => mutate()} />}
+
+          {tab === "account" && (
+            <>
+              <AccountCard />
+              <OidcCard settings={settings} onChange={() => mutate()} />
+            </>
+          )}
         </>
       )}
     </main>
@@ -215,7 +285,7 @@ function CountriesCard({ settings, onChange }: { settings: SettingsDto; onChange
   return (
     <div className="card" style={{ marginBottom: 20 }}>
       <div className="section-title" style={{ marginTop: 0 }}>
-        <h2 style={{ fontSize: 18 }}>Countries</h2>
+        <h2 style={{ fontSize: 18 }}>Countries (TV)</h2>
         <span className="count">{selected.length} selected</span>
       </div>
       {!settings.watchmodeApiKeySet && <div className="muted">Add a Watchmode API key first.</div>}
@@ -274,7 +344,7 @@ function ServicesCard({ settings, onChange }: { settings: SettingsDto; onChange:
   return (
     <div className="card" style={{ marginBottom: 20 }}>
       <div className="section-title" style={{ marginTop: 0 }}>
-        <h2 style={{ fontSize: 18 }}>Streaming services</h2>
+        <h2 style={{ fontSize: 18 }}>Streaming services (TV)</h2>
         <span className="count">{selected.length} selected</span>
       </div>
       {!settings.countries.length && <div className="muted">Select at least one country first.</div>}
@@ -330,6 +400,210 @@ function ServicesCard({ settings, onChange }: { settings: SettingsDto; onChange:
       {data && (
         <button className="btn primary" style={{ marginTop: 14 }} onClick={save} disabled={saving}>
           {saving ? <span className="spin" /> : null} Save services
+        </button>
+      )}
+    </div>
+  );
+}
+
+/* ----------------------------- TMDB key ------------------------------ */
+function TmdbCard({ settings, onChange }: { settings: SettingsDto; onChange: () => void }) {
+  const [key, setKey] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+
+  const save = async () => {
+    setBusy(true);
+    setMsg(null);
+    try {
+      await postJson<{ ok: boolean; error?: string }>(
+        "/api/tmdb/test",
+        key ? { apiKey: key } : {}
+      );
+      if (key) await sendJson("PATCH", "/api/settings", { tmdbApiKey: key });
+      setMsg({ kind: "ok", text: "TMDB key is valid and saved." });
+      setKey("");
+      onChange();
+    } catch (e) {
+      setMsg({ kind: "err", text: (e as Error).message });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="card" style={{ marginBottom: 20 }}>
+      <div className="section-title" style={{ marginTop: 0 }}>
+        <h2 style={{ fontSize: 18 }}>TheMovieDB API</h2>
+        <span className="count">{settings.tmdbApiKeySet ? "configured" : "not set"}</span>
+      </div>
+      <div className="field">
+        <label>API Key (v3)</label>
+        <input
+          className="input"
+          type="password"
+          placeholder={settings.tmdbApiKeySet ? "•••••••• (saved) — enter to replace" : "Your TMDB API key"}
+          value={key}
+          onChange={(e) => setKey(e.target.value)}
+        />
+        <div className="hint">
+          Create one for free at themoviedb.org → Settings → API. Used for movie streaming
+          availability (JustWatch data).
+        </div>
+      </div>
+      <button className="btn primary" onClick={save} disabled={busy}>
+        {busy ? <span className="spin" /> : null} Test &amp; save
+      </button>
+      {msg && <div className={`banner ${msg.kind === "ok" ? "ok" : "err"}`} style={{ marginTop: 12 }}>{msg.text}</div>}
+    </div>
+  );
+}
+
+/* --------------------------- TMDB regions ---------------------------- */
+function TmdbRegionsCard({ settings, onChange }: { settings: SettingsDto; onChange: () => void }) {
+  const { data, error } = useSWR<{ regions: Region[] }>(
+    settings.tmdbApiKeySet ? "/api/tmdb/regions" : null,
+    fetcher
+  );
+  const [selected, setSelected] = useState<string[]>(settings.tmdbRegions);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => setSelected(settings.tmdbRegions), [settings.tmdbRegions]);
+
+  const toggle = (code: string) =>
+    setSelected((prev) => (prev.includes(code) ? prev.filter((c) => c !== code) : [...prev, code]));
+
+  const save = async () => {
+    setSaving(true);
+    await sendJson("PATCH", "/api/settings", { tmdbRegions: selected });
+    setSaving(false);
+    onChange();
+  };
+
+  return (
+    <div className="card" style={{ marginBottom: 20 }}>
+      <div className="section-title" style={{ marginTop: 0 }}>
+        <h2 style={{ fontSize: 18 }}>Watch provider regions (Movies)</h2>
+        <span className="count">{selected.length} selected</span>
+      </div>
+      {!settings.tmdbApiKeySet && <div className="muted">Add a TMDB API key first.</div>}
+      {error && <div className="banner err">{(error as Error).message}</div>}
+      {data && (
+        <>
+          <div className="pills">
+            {data.regions.map((r) => (
+              <div
+                key={r.code}
+                className={`pill ${selected.includes(r.code) ? "selected" : ""}`}
+                onClick={() => toggle(r.code)}
+                role="checkbox"
+                aria-checked={selected.includes(r.code)}
+              >
+                <span className="flag">{r.flag}</span>
+                <span>{r.name}</span>
+              </div>
+            ))}
+          </div>
+          <button className="btn primary" style={{ marginTop: 14 }} onClick={save} disabled={saving}>
+            {saving ? <span className="spin" /> : null} Save regions
+          </button>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* -------------------------- TMDB providers --------------------------- */
+interface TmdbProviderGroup {
+  region: string;
+  services: { id: number; name: string; logo: string | null }[];
+}
+function TmdbProvidersCard({ settings, onChange }: { settings: SettingsDto; onChange: () => void }) {
+  const key =
+    settings.tmdbApiKeySet && settings.tmdbRegions.length
+      ? `/api/tmdb/providers?regions=${settings.tmdbRegions.join(",")}`
+      : null;
+  const { data, error } = useSWR<{ groups: TmdbProviderGroup[] }>(key, fetcher);
+  const [selected, setSelected] = useState<number[]>(settings.tmdbProviderIds);
+  const [types, setTypes] = useState<string[]>(settings.tmdbCountedTypes);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => setSelected(settings.tmdbProviderIds), [settings.tmdbProviderIds]);
+  useEffect(() => setTypes(settings.tmdbCountedTypes), [settings.tmdbCountedTypes]);
+
+  const toggle = (id: number) =>
+    setSelected((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  const toggleType = (t: string) =>
+    setTypes((prev) => (prev.includes(t) ? prev.filter((x) => x !== t) : [...prev, t]));
+
+  const save = async () => {
+    setSaving(true);
+    await sendJson("PATCH", "/api/settings", {
+      tmdbProviderIds: selected,
+      tmdbCountedTypes: types,
+    });
+    setSaving(false);
+    onChange();
+  };
+
+  return (
+    <div className="card" style={{ marginBottom: 20 }}>
+      <div className="section-title" style={{ marginTop: 0 }}>
+        <h2 style={{ fontSize: 18 }}>Movie providers</h2>
+        <span className="count">{selected.length} selected</span>
+      </div>
+      {!settings.tmdbRegions.length && <div className="muted">Select at least one region first.</div>}
+      {error && <div className="banner err">{(error as Error).message}</div>}
+
+      <div className="field">
+        <label>Count a movie as &quot;on streaming&quot; when available via:</label>
+        <div className="chips">
+          {Object.entries(TMDB_TYPE_LABELS).map(([t, label]) => (
+            <span
+              key={t}
+              className="chip"
+              style={{
+                cursor: "pointer",
+                borderColor: types.includes(t) ? "var(--accent)" : undefined,
+                color: types.includes(t) ? "var(--accent)" : undefined,
+              }}
+              onClick={() => toggleType(t)}
+            >
+              {types.includes(t) ? "✓ " : ""}
+              {label}
+            </span>
+          ))}
+        </div>
+      </div>
+
+      {data &&
+        data.groups.map((g) => (
+          <div key={g.region}>
+            <div className="group-head">Available in {g.region}</div>
+            <div className="pills">
+              {g.services.map((s) => (
+                <div
+                  key={s.id}
+                  className={`pill ${selected.includes(s.id) ? "selected" : ""}`}
+                  onClick={() => toggle(s.id)}
+                  role="checkbox"
+                  aria-checked={selected.includes(s.id)}
+                >
+                  {s.logo ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img className="logo" src={s.logo} alt={s.name} />
+                  ) : (
+                    <span className="flag">▦</span>
+                  )}
+                  <span>{s.name}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+      {data && (
+        <button className="btn primary" style={{ marginTop: 14 }} onClick={save} disabled={saving}>
+          {saving ? <span className="spin" /> : null} Save providers
         </button>
       )}
     </div>

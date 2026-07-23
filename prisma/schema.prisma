@@ -29,6 +29,18 @@ model Settings {
   // Which source types count as "available on streaming".
   // Watchmode types: sub, free, purchase, rent, tv_everywhere.
   countedTypes      String[] @default(["sub", "free"])
+
+  // --- TheMovieDB (TMDB) — used for MOVIE streaming availability ---
+  // TV episodes still use Watchmode (per-episode data); movies use TMDB's
+  // JustWatch-powered watch/providers data.
+  tmdbApiKey        String?
+  // Selected TMDB watch-provider region codes (ISO 3166-1), e.g. ["US","GB"].
+  tmdbRegions       String[] @default([])
+  // Selected TMDB movie provider ids the user subscribes to.
+  tmdbProviderIds   Int[]    @default([])
+  // Which TMDB provider categories count as "available on streaming".
+  // TMDB categories: flatrate, free, ads, rent, buy.
+  tmdbCountedTypes  String[] @default(["flatrate", "free"])
   // Automatically delete files when unmonitoring (destructive).
   deleteFiles       Boolean  @default(true)
   // Trigger a search for all monitored items at the end of a run.

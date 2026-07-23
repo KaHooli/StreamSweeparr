@@ -1,7 +1,8 @@
 # StreamSweeparr
 
-A Seerr-style companion for Sonarr & Radarr. It uses **Watchmode** to find which
-of your media is available on the streaming services you subscribe to, then:
+A Seerr-style companion for Sonarr & Radarr. It finds which of your media is
+available on the streaming services you subscribe to — using **Watchmode** for
+**TV** (per-episode data) and **TheMovieDB / JustWatch** for **movies** — then:
 
 1. **Unmonitors + deletes** monitored movies / TV episodes that are already on a
    selected streaming service (file deletion is optional).
@@ -120,17 +121,27 @@ request timeout and redirects disabled. Private LAN ranges are blocked unless
 you set `SSRF_ALLOW_PRIVATE=true` (needed when your *arr apps run on a LAN).
 
 ### How availability is decided
-`matchSources()` in `watchmode.ts` keeps a title's Watchmode sources only if the
-`source_id` is one of your **selected services** *and* the source `type`
-(`sub`, `free`, `purchase`, `rent`, `tv_everywhere`) is one of your
-**counted types**. A movie is "on streaming" if it has ≥1 match; a series is
-"on streaming" if ≥1 episode matches. This drives both the dashboard and the
-sweep decisions.
+Two providers, split by media type:
+
+- **TV (Watchmode):** `matchSources()` in `watchmode.ts` keeps a title's
+  Watchmode sources only if the `source_id` is one of your **selected services**
+  *and* the source `type` (`sub`, `free`, `purchase`, `rent`, `tv_everywhere`)
+  is a **counted type**. A series is "on streaming" if ≥1 episode matches.
+- **Movies (TMDB):** `matchTmdbProviders()` in `tmdb.ts` keeps a movie's
+  per-region providers only if the `provider_id` is one of your **selected
+  providers** *and* the category (`flatrate`, `free`, `ads`, `rent`, `buy`) is a
+  **counted type**. A movie is "on streaming" if it has ≥1 match.
+
+Both drive the dashboard and the sweep decisions. Watchmode and TMDB are
+configured on **separate tabs** under Settings.
 
 ### External API endpoints used
-- **Watchmode:** `/v1/regions/`, `/v1/sources/`, `/v1/search/` (fallback only),
-  `/v1/title/{id}/sources/`, `/v1/title/{id}/episodes/`, `/v1/status/`
+- **Watchmode (TV):** `/v1/regions/`, `/v1/sources/`, `/v1/search/` (fallback
+  only), `/v1/title/{id}/sources/`, `/v1/title/{id}/episodes/`, `/v1/status/`
   (auth via `X-API-Key`), plus the public `datasets/title_id_map.csv`.
+- **TheMovieDB (movies):** `/3/watch/providers/regions`,
+  `/3/watch/providers/movie`, `/3/movie/{id}/watch/providers`
+  (auth via the `api_key` query param).
 - **Sonarr v3:** `GET /series`, `GET /episode`, `PUT /episode/monitor`,
   `DELETE /episodefile/{id}`, `POST /command` (`EpisodeSearch`).
 - **Radarr v3:** `GET /movie`, `PUT /movie/{id}`, `DELETE /moviefile/{id}`,
@@ -143,9 +154,13 @@ sweep decisions.
 ## Requirements
 - Node.js 18+ (tested on 20/26)
 - An **external PostgreSQL** server (v13+)
-- A **Watchmode** API key — https://api.watchmode.com
+- A **Watchmode** API key (for TV) — https://api.watchmode.com
+- A **TheMovieDB (TMDB)** API key (for movies) — https://www.themoviedb.org
 - One or more **Sonarr v3/v4** and/or **Radarr v3/v4** instances
   (optionally a **Seerr** server to auto-discover them)
+
+> You only need the API key for the media types you use: Watchmode if you have a
+> Sonarr connection, TMDB if you have a Radarr connection.
 
 ## Dependencies
 Runtime: `next`, `react`, `react-dom`, `@prisma/client`, `pg`,
@@ -200,16 +215,18 @@ is created/updated automatically from the committed migrations.
 1. Open the app and **log in** with the default admin — username **`admin`**,
    password **`0pen0pen&*`** — then change the password under
    **Settings → Account & security**. (Optionally configure OIDC there too.)
-1. Open **Settings**.
-2. **Watchmode API** → paste your key → *Test & save*.
-3. **Countries** → pick the countries you stream in (listed alphabetically with
-   flags) → *Save countries*.
-4. **Streaming services** → for each selected country the services appear
-   (alphabetical, with logos). Tick the ones you subscribe to, choose which
-   source types count (Subscription / Free / etc.) → *Save services*.
-5. **Connections** → either configure **Seerr** and click *Discover instances*,
-   or add Sonarr/Radarr manually (URL + API key; the app verifies before saving).
-6. **Run options** → leave **Apply changes** *off* for a safe dry-run first.
+1. Open **Settings** — it's organized into tabs.
+2. **Watchmode (TV)** tab → paste your Watchmode key → *Test & save*. Then pick
+   your **countries** (alphabetical, with flags) and **streaming services**
+   (alphabetical, with logos), choosing which source types count.
+3. **TheMovieDB (Movies)** tab → paste your TMDB key → *Test & save*. Then pick
+   your **watch provider regions** (alphabetical, with flags) and, per region,
+   the **movie providers** (alphabetical, with logos) you subscribe to, plus
+   which categories count (Subscription / Free / Rent / Buy…).
+4. **Connections** tab → either configure **Seerr** and click *Discover
+   instances*, or add Sonarr/Radarr manually (URL + API key; the app verifies
+   before saving).
+5. **Run options** tab → leave **Apply changes** *off* for a safe dry-run first.
    Toggle **Delete files** and **Search at end** to taste.
 
 ## Running a sweep
