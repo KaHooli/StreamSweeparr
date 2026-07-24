@@ -1,27 +1,23 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getOidcConfig, generatePkce, buildAuthUrl } from "@/lib/oidc";
 import { cookieSecure } from "@/lib/session";
+import { oidcRedirectUri, publicOrigin } from "@/lib/request";
 
 export const dynamic = "force-dynamic";
 
 const STATE_COOKIE = "ss_oidc_state";
 const VERIFIER_COOKIE = "ss_oidc_verifier";
 
-function redirectUri(req: NextRequest): string {
-  const origin = req.nextUrl.origin;
-  return `${origin}/api/auth/oidc/callback`;
-}
-
 // Begin the OIDC Authorization Code + PKCE flow.
 export async function GET(req: NextRequest) {
   const cfg = await getOidcConfig();
   if (!cfg) {
-    return NextResponse.redirect(new URL("/login?error=oidc_disabled", req.nextUrl.origin));
+    return NextResponse.redirect(new URL("/login?error=oidc_disabled", publicOrigin(req)));
   }
 
   try {
     const { state, verifier, challenge } = generatePkce();
-    const url = buildAuthUrl(cfg, redirectUri(req), state, challenge);
+    const url = buildAuthUrl(cfg, oidcRedirectUri(req), state, challenge);
     const res = NextResponse.redirect(url);
     const opts = {
       httpOnly: true,
@@ -35,7 +31,7 @@ export async function GET(req: NextRequest) {
     return res;
   } catch (e) {
     return NextResponse.redirect(
-      new URL(`/login?error=${encodeURIComponent((e as Error).message)}`, req.nextUrl.origin)
+      new URL(`/login?error=${encodeURIComponent((e as Error).message)}`, publicOrigin(req))
     );
   }
 }

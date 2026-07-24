@@ -128,6 +128,12 @@ unauthenticated pages redirect to `/login`, unauthenticated API calls get `401`.
   `state` validation (`src/lib/oidc.ts`); users are provisioned on first login
   and can be restricted with an allow-list. The **first** user provisioned
   becomes admin; later SSO users are non-admin until promoted.
+  - **Redirect URI:** register the exact value shown on the OIDC settings card
+    with your provider. Behind a reverse proxy, set **`PUBLIC_URL`** (e.g.
+    `https://sweep.example.com`) so the `redirect_uri` matches your public URL
+    rather than the internal container address. A mismatch here is the usual
+    cause of *"invalid or mismatching redirect_uri"* errors. The app otherwise
+    derives the origin from `X-Forwarded-Proto`/`X-Forwarded-Host`, then `Host`.
 
 Admin-only API routes (settings, connections, sync, sweep, title map) are
 guarded server-side (`src/lib/auth.ts`) in addition to the middleware.

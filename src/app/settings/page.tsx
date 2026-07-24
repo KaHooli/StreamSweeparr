@@ -984,8 +984,16 @@ function OidcCard({ settings, onChange }: { settings: SettingsDto; onChange: () 
     }
   };
 
+  // Authoritative redirect URI as the server will actually send it (accounts
+  // for PUBLIC_URL / OIDC_REDIRECT_URI / reverse-proxy headers). Fall back to
+  // the browser origin while loading.
+  const { data: redirectData } = useSWR<{ redirectUri: string }>(
+    "/api/auth/oidc/redirect-uri",
+    fetcher
+  );
   const redirectUri =
-    typeof window !== "undefined" ? `${window.location.origin}/api/auth/oidc/callback` : "";
+    redirectData?.redirectUri ||
+    (typeof window !== "undefined" ? `${window.location.origin}/api/auth/oidc/callback` : "");
 
   return (
     <div className="card" style={{ marginBottom: 20 }}>
@@ -997,6 +1005,11 @@ function OidcCard({ settings, onChange }: { settings: SettingsDto; onChange: () 
         Optional. When enabled and configured, a <strong>Sign in with SSO</strong> button appears on
         the login page. Endpoints are auto-discovered from the issuer&apos;s{" "}
         <code>/.well-known/openid-configuration</code>.
+      </p>
+      <p className="muted" style={{ marginTop: 0 }}>
+        Register the <strong>exact</strong> Redirect URI below with your provider. If StreamSweeparr
+        runs behind a reverse proxy, set the <code>PUBLIC_URL</code> environment variable to your
+        public URL so this matches.
       </p>
 
       <div className="toggle-line" style={{ borderTop: "1px solid var(--border)" }}>

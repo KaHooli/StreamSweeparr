@@ -8,6 +8,7 @@ import {
 } from "@/lib/oidc";
 import { upsertOidcUser } from "@/lib/users";
 import { createSession, SESSION_COOKIE, sessionCookieOptions } from "@/lib/session";
+import { oidcRedirectUri, publicOrigin } from "@/lib/request";
 
 export const dynamic = "force-dynamic";
 
@@ -16,7 +17,7 @@ const VERIFIER_COOKIE = "ss_oidc_verifier";
 
 function fail(req: NextRequest, message: string) {
   const res = NextResponse.redirect(
-    new URL(`/login?error=${encodeURIComponent(message)}`, req.nextUrl.origin)
+    new URL(`/login?error=${encodeURIComponent(message)}`, publicOrigin(req))
   );
   res.cookies.set(STATE_COOKIE, "", { path: "/", maxAge: 0 });
   res.cookies.set(VERIFIER_COOKIE, "", { path: "/", maxAge: 0 });
@@ -42,7 +43,8 @@ export async function GET(req: NextRequest) {
   if (!cfg) return fail(req, "OIDC is not configured.");
 
   try {
-    const redirectUri = `${req.nextUrl.origin}/api/auth/oidc/callback`;
+    // Must match the redirect_uri sent in the authorize step exactly.
+    const redirectUri = oidcRedirectUri(req);
     const tokens = await exchangeCode(cfg, code, redirectUri, verifier);
     const claims = await fetchClaims(cfg, tokens);
 
@@ -59,7 +61,7 @@ export async function GET(req: NextRequest) {
       { id: user.id, username: user.username, isAdmin: user.isAdmin },
       "oidc"
     );
-    const res = NextResponse.redirect(new URL("/", req.nextUrl.origin));
+    const res = NextResponse.redirect(new URL("/", publicOrigin(req)));
     res.cookies.set(SESSION_COOKIE, token, sessionCookieOptions());
     // Clear transient OIDC cookies.
     res.cookies.set(STATE_COOKIE, "", { path: "/", maxAge: 0 });
