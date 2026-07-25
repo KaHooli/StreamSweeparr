@@ -78,7 +78,8 @@ export class TmdbClient {
   private async get<T>(
     path: string,
     params: Record<string, string | number | undefined> = {},
-    ttlMs = 0
+    ttlMs = 0,
+    timeoutMs = 20_000
   ): Promise<T> {
     const url = new URL(`${BASE}${path}`);
     url.searchParams.set("api_key", this.apiKey);
@@ -98,7 +99,7 @@ export class TmdbClient {
     }
 
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 20_000);
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
     let res: Response;
     try {
       res = await fetch(url.toString(), {
@@ -125,9 +126,13 @@ export class TmdbClient {
     return data;
   }
 
+  // Reference-data / validation lookups are only used by the interactive
+  // Settings UI, so they fail fast rather than leaving the page waiting.
+  private static readonly UI_TIMEOUT_MS = 10_000;
+
   /** Validate the key (cheap authenticated call). */
   async validate(): Promise<boolean> {
-    await this.get("/authentication");
+    await this.get("/authentication", {}, 0, TmdbClient.UI_TIMEOUT_MS);
     return true;
   }
 
@@ -136,7 +141,8 @@ export class TmdbClient {
     const data = await this.get<{ results: TmdbRegion[] }>(
       "/watch/providers/regions",
       {},
-      24 * 60 * 60 * 1000
+      24 * 60 * 60 * 1000,
+      TmdbClient.UI_TIMEOUT_MS
     );
     return data.results ?? [];
   }
@@ -146,7 +152,8 @@ export class TmdbClient {
     const data = await this.get<{ results: TmdbProvider[] }>(
       "/watch/providers/movie",
       { watch_region: watchRegion },
-      6 * 60 * 60 * 1000
+      6 * 60 * 60 * 1000,
+      TmdbClient.UI_TIMEOUT_MS
     );
     return data.results ?? [];
   }

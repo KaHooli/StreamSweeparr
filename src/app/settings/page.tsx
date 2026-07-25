@@ -62,8 +62,14 @@ const TABS: { key: TabKey; label: string }[] = [
 ];
 
 export default function SettingsPage() {
-  const { data: settings, mutate } = useSWR<SettingsDto>("/api/settings", fetcher);
+  const {
+    data: settings,
+    error,
+    isLoading,
+    mutate,
+  } = useSWR<SettingsDto>("/api/settings", fetcher);
   const [tab, setTab] = useState<TabKey>("watchmode");
+  const status = (error as { status?: number } | undefined)?.status;
 
   return (
     <main>
@@ -85,7 +91,28 @@ export default function SettingsPage() {
         ))}
       </div>
 
-      {!settings ? (
+      {error ? (
+        // Never leave the page stuck on "Loading…" — surface what went wrong.
+        <div className="card">
+          <div className="banner err">
+            {status === 401
+              ? "Your session expired. Please sign in again."
+              : status === 403
+              ? "This account is not an administrator, so settings can't be shown."
+              : `Couldn't load settings: ${(error as Error).message}`}
+          </div>
+          <div className="row" style={{ flexWrap: "wrap" }}>
+            <button className="btn primary" style={{ flex: "0 0 auto" }} onClick={() => mutate()}>
+              Retry
+            </button>
+            {status === 401 && (
+              <a className="btn" style={{ flex: "0 0 auto" }} href="/login">
+                Go to sign in
+              </a>
+            )}
+          </div>
+        </div>
+      ) : isLoading || !settings ? (
         <div className="card">Loading…</div>
       ) : (
         <>

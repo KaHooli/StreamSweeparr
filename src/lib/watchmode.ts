@@ -95,7 +95,8 @@ export class WatchmodeClient {
   private async get<T>(
     path: string,
     params: Record<string, string | number | undefined> = {},
-    ttlMs = 0
+    ttlMs = 0,
+    timeoutMs = 20_000
   ): Promise<T> {
     const url = new URL(`${BASE}${path}`);
     for (const [k, v] of Object.entries(params)) {
@@ -109,7 +110,7 @@ export class WatchmodeClient {
 
     // Hard timeout so a hung Watchmode endpoint can't stall a whole sync.
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 20_000);
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
     let res: Response;
     try {
       res = await fetch(url.toString(), {
@@ -143,9 +144,19 @@ export class WatchmodeClient {
     return data;
   }
 
+  // Reference-data lookups are only used by the interactive Settings UI, so
+  // they fail fast (10s) rather than leaving the page waiting — important when
+  // outbound DNS/network is blocked (a common container/NAS misconfiguration).
+  private static readonly UI_TIMEOUT_MS = 10_000;
+
   /** All supported countries/regions. Cached 24h. */
   async regions(): Promise<WatchmodeRegion[]> {
-    return this.get<WatchmodeRegion[]>("/regions/", {}, 24 * 60 * 60 * 1000);
+    return this.get<WatchmodeRegion[]>(
+      "/regions/",
+      {},
+      24 * 60 * 60 * 1000,
+      WatchmodeClient.UI_TIMEOUT_MS
+    );
   }
 
   /**
@@ -157,7 +168,8 @@ export class WatchmodeClient {
     return this.get<WatchmodeSource[]>(
       "/sources/",
       { regions: regions && regions.length ? regions.join(",") : undefined },
-      6 * 60 * 60 * 1000
+      6 * 60 * 60 * 1000,
+      WatchmodeClient.UI_TIMEOUT_MS
     );
   }
 

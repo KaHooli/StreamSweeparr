@@ -2,7 +2,13 @@ export const fetcher = async (url: string) => {
   const res = await fetch(url);
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(data?.error ? String(data.error) : `Request failed (${res.status})`);
+    // Throw a rich error so callers can react to the status (e.g. 403 = not an
+    // admin) instead of only seeing a message string.
+    throw new ApiError(
+      data?.error ? String(data.error) : `Request failed (${res.status})`,
+      res.status,
+      data
+    );
   }
   return data;
 };
