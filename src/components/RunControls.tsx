@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import useSWR from "swr";
 import { fetcher, postJson } from "@/lib/fetcher";
 
 interface RunProgress {
@@ -22,6 +23,13 @@ interface RunProgress {
 // the run's progress and shows a live log until it finishes.
 export function RunControls({ applyChanges }: { applyChanges: boolean }) {
   const router = useRouter();
+  // Sync/sweep are admin-only; hide the controls for plain users rather than
+  // letting them click into a 403.
+  const { data: session } = useSWR<{ user: { role: "ADMIN" | "USER" } | null }>(
+    "/api/auth/session",
+    fetcher
+  );
+  const isAdmin = session?.user?.role === "ADMIN";
   const [busy, setBusy] = useState<null | "sync" | "sweep">(null);
   const [runId, setRunId] = useState<number | null>(null);
   const [progress, setProgress] = useState<RunProgress | null>(null);
@@ -82,20 +90,28 @@ export function RunControls({ applyChanges }: { applyChanges: boolean }) {
 
   return (
     <div>
-      <div className="row" style={{ marginBottom: 12 }}>
-        <button className="btn" onClick={() => start("sync")} disabled={!!busy} style={{ flex: "0 0 auto" }}>
-          {busy === "sync" ? <span className="spin" /> : "↻"} Sync now
-        </button>
-        <button
-          className="btn primary"
-          onClick={() => start("sweep")}
-          disabled={!!busy}
-          style={{ flex: "0 0 auto" }}
-          title={applyChanges ? "Applies changes to Sonarr/Radarr" : "Preview only (dry-run)"}
-        >
-          {busy === "sweep" ? <span className="spin" /> : "≋"} Run sweep{applyChanges ? "" : " (dry-run)"}
-        </button>
-      </div>
+      {isAdmin ? (
+        <div className="row" style={{ marginBottom: 12 }}>
+          <button className="btn" onClick={() => start("sync")} disabled={!!busy} style={{ flex: "0 0 auto" }}>
+            {busy === "sync" ? <span className="spin" /> : "↻"} Sync now
+          </button>
+          <button
+            className="btn primary"
+            onClick={() => start("sweep")}
+            disabled={!!busy}
+            style={{ flex: "0 0 auto" }}
+            title={applyChanges ? "Applies changes to Sonarr/Radarr" : "Preview only (dry-run)"}
+          >
+            {busy === "sweep" ? <span className="spin" /> : "≋"} Run sweep{applyChanges ? "" : " (dry-run)"}
+          </button>
+        </div>
+      ) : (
+        session && (
+          <div className="muted" style={{ marginBottom: 12 }}>
+            Only administrators can run a sync or sweep.
+          </div>
+        )
+      )}
 
       {msg && <div className={`banner ${msg.kind === "ok" ? "ok" : "err"}`}>{msg.text}</div>}
 

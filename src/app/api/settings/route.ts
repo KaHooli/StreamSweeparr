@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma, getSettings } from "@/lib/db";
 import { requireAdmin, withGuard } from "@/lib/auth";
+import { effectiveLocalLoginEnabled, localLoginToggleLocked } from "@/lib/loginOptions";
 
 export const dynamic = "force-dynamic";
 
@@ -33,6 +34,7 @@ const settingsSchema = z.object({
   deleteFiles: z.boolean().optional(),
   searchAtEnd: z.boolean().optional(),
   applyChanges: z.boolean().optional(),
+  localLoginEnabled: z.boolean().optional(),
   // OIDC
   oidcEnabled: z.boolean().optional(),
   oidcIssuer: urlOrEmpty,
@@ -62,6 +64,11 @@ function serialize(s: Awaited<ReturnType<typeof getSettings>>) {
     deleteFiles: s.deleteFiles,
     searchAtEnd: s.searchAtEnd,
     applyChanges: s.applyChanges,
+    // Login options: the stored preference, the value actually in force, and
+    // whether the UI control must be locked (OIDC unusable or env override).
+    localLoginEnabled: s.localLoginEnabled,
+    localLoginEffective: effectiveLocalLoginEnabled(s),
+    localLoginLock: localLoginToggleLocked(s),
     oidcEnabled: s.oidcEnabled,
     oidcIssuer: s.oidcIssuer ?? "",
     oidcClientId: s.oidcClientId ?? "",
@@ -115,6 +122,7 @@ export const PATCH = withGuard(requireAdmin, async (_session, req: NextRequest) 
   if (p.deleteFiles !== undefined) data.deleteFiles = p.deleteFiles;
   if (p.searchAtEnd !== undefined) data.searchAtEnd = p.searchAtEnd;
   if (p.applyChanges !== undefined) data.applyChanges = p.applyChanges;
+  if (p.localLoginEnabled !== undefined) data.localLoginEnabled = p.localLoginEnabled;
   // OIDC (only overwrite the secret when a non-empty value is provided).
   if (p.oidcEnabled !== undefined) data.oidcEnabled = p.oidcEnabled;
   if (p.oidcIssuer !== undefined) data.oidcIssuer = p.oidcIssuer || null;

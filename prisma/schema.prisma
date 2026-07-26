@@ -70,6 +70,11 @@ model Settings {
   watchmodePlan          String?   // "paid" | "free" | "unknown" | null (unchecked)
   watchmodePlanCheckedAt DateTime?
 
+  // Whether the username/password form is offered on the login page. This can
+  // only be turned off while OIDC is enabled and configured (otherwise there
+  // would be no way to sign in) — see effectiveLocalLoginEnabled().
+  localLoginEnabled Boolean  @default(true)
+
   // --- OIDC single sign-on (optional) ---
   // When issuer + clientId + clientSecret are set, an "Sign in with SSO" button
   // appears on the login page.
@@ -94,6 +99,11 @@ model Settings {
 
 // Application user. Local users authenticate with username + password hash;
 // OIDC users are provisioned on first successful SSO login (passwordHash null).
+enum Role {
+  ADMIN
+  USER
+}
+
 model User {
   id            Int      @id @default(autoincrement())
   username      String   @unique
@@ -101,7 +111,9 @@ model User {
   passwordHash  String?
   // OIDC subject / issuer this user maps to (null for local users).
   oidcSubject   String?  @unique
-  isAdmin       Boolean  @default(false)
+  // The local username/password account is always ADMIN. Users provisioned via
+  // OIDC start as USER and can be promoted by an admin.
+  role          Role     @default(USER)
   // Set for the seeded default admin until the password is changed.
   mustChangePassword Boolean @default(false)
   createdAt     DateTime @default(now())

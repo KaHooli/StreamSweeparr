@@ -114,20 +114,32 @@ The whole app is behind a login. A `middleware.ts` gate validates a signed,
 edge-safe session cookie on every route except `/login` and `/api/auth/*`;
 unauthenticated pages redirect to `/login`, unauthenticated API calls get `401`.
 
-- **Username / password** — a default admin is seeded on first login:
-  **username `admin`, password `0pen0pen&*`**. The account is flagged
-  *must change password* and this is **enforced**: the middleware blocks every
-  route except the change-password flow until a new password is set. Passwords
-  are hashed with Node `scrypt`; sessions are HMAC-signed cookies
-  (`src/lib/session.ts`) signed with `AUTH_SECRET`. Login is **rate-limited**
-  per IP and per IP+username with progressive lockout (`src/lib/ratelimit.ts`).
+**Roles.** Every account is either **admin** (full access: settings,
+connections, sync/sweep, user management) or **user** (read-only dashboard and
+run history). Admin-only API routes are guarded server-side
+(`src/lib/auth.ts`) in addition to the middleware.
+
+- **Username / password (always an admin)** — there is exactly one local
+  account and it always has the **admin** role. It's seeded on first login as
+  **`admin` / `0pen0pen&*`** and flagged *must change password*, which is
+  **enforced**: the middleware blocks every route except the change-password
+  flow until a new password is set.
+  - **Rename it** any time under **Settings → Users & security → Your account**.
+  - **Set it from the environment** with `ADMIN_USERNAME` / `ADMIN_PASSWORD`.
+    While set, these stay authoritative (so the credentials in your compose file
+    always work, and you have a password-recovery path); supplying
+    `ADMIN_PASSWORD` also skips the forced password change, since you chose it.
+  - Passwords are hashed with Node `scrypt`; sessions are HMAC-signed cookies
+    (`src/lib/session.ts`) signed with `AUTH_SECRET`. Login is **rate-limited**
+    per IP and per IP+username with progressive lockout (`src/lib/ratelimit.ts`).
 - **OIDC SSO (optional)** — configure it under **Settings → Single sign-on
   (OIDC)** (issuer, client id/secret; endpoints auto-discovered from
   `/.well-known/openid-configuration`). When enabled, a **Sign in with SSO**
   button appears on the login page. Flow is Authorization Code + PKCE with
   `state` validation (`src/lib/oidc.ts`); users are provisioned on first login
-  and can be restricted with an allow-list. The **first** user provisioned
-  becomes admin; later SSO users are non-admin until promoted.
+  and can be restricted with an allow-list. **New SSO users get the `user`
+  role** — an admin promotes them under **Settings → Users & security → Users**,
+  which lists every account with its provider and role.
   - **Redirect URI:** register the exact value shown on the OIDC settings card
     with your provider. Behind a reverse proxy, set **`PUBLIC_URL`** (e.g.
     `https://sweep.example.com`) so the `redirect_uri` matches your public URL
@@ -135,8 +147,23 @@ unauthenticated pages redirect to `/login`, unauthenticated API calls get `401`.
     cause of *"invalid or mismatching redirect_uri"* errors. The app otherwise
     derives the origin from `X-Forwarded-Proto`/`X-Forwarded-Host`, then `Host`.
 
-Admin-only API routes (settings, connections, sync, sweep, title map) are
-guarded server-side (`src/lib/auth.ts`) in addition to the middleware.
+**Hiding the password form (SSO-only).** Under **Settings → Users & security →
+Login options** you can turn off username/password login so only SSO is offered
+(also settable with `LOCAL_LOGIN_DISABLED=true`). This is only permitted while
+OIDC is enabled *and* fully configured — otherwise the toggle is greyed out and
+the form stays on, so you can't lock yourself out. It's enforced server-side,
+not just hidden in the UI. If SSO ever breaks while this is off, set
+`LOCAL_LOGIN_DISABLED=false` to force the password form back on.
+
+Safety rails: the instance can never be left without an admin, the local
+password account can't be demoted or deleted, and you can't delete your own
+account.
+  - **Redirect URI:** register the exact value shown on the OIDC settings card
+    with your provider. Behind a reverse proxy, set **`PUBLIC_URL`** (e.g.
+    `https://sweep.example.com`) so the `redirect_uri` matches your public URL
+    rather than the internal container address. A mismatch here is the usual
+    cause of *"invalid or mismatching redirect_uri"* errors. The app otherwise
+    derives the origin from `X-Forwarded-Proto`/`X-Forwarded-Host`, then `Host`.
 
 **`AUTH_SECRET` is required in production** — the app refuses to start without a
 value of at least 16 characters (`openssl rand -hex 32`).
@@ -249,8 +276,10 @@ is created/updated automatically from the committed migrations.
 
 ## First-time setup (in the UI)
 1. Open the app and **log in** with the default admin — username **`admin`**,
-   password **`0pen0pen&*`** — then change the password under
-   **Settings → Account & security**. (Optionally configure OIDC there too.)
+   password **`0pen0pen&*`** (or whatever you set via `ADMIN_USERNAME` /
+   `ADMIN_PASSWORD`). You'll be required to set a new password, and can rename
+   the account, under **Settings → Users & security**. (OIDC, login options and
+   user roles live on that tab too.)
 1. Open **Settings** — it's organized into tabs.
 2. **Watchmode (TV)** tab → paste your Watchmode key → *Test & save*. Then pick
    your **countries** (alphabetical, with flags) and **streaming services**

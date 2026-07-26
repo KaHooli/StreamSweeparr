@@ -19,6 +19,9 @@ interface SettingsDto {
   deleteFiles: boolean;
   searchAtEnd: boolean;
   applyChanges: boolean;
+  localLoginEnabled: boolean;
+  localLoginEffective: boolean;
+  localLoginLock: { locked: boolean; reason: string | null };
   oidcEnabled: boolean;
   oidcIssuer: string;
   oidcClientId: string;
@@ -58,7 +61,7 @@ const TABS: { key: TabKey; label: string }[] = [
   { key: "tmdb", label: "TheMovieDB (Movies)" },
   { key: "connections", label: "Connections" },
   { key: "run", label: "Run options" },
-  { key: "account", label: "Account & security" },
+  { key: "account", label: "Users & security" },
 ];
 
 export default function SettingsPage() {
@@ -153,6 +156,8 @@ export default function SettingsPage() {
           {tab === "account" && (
             <>
               <AccountCard />
+              <LoginOptionsCard settings={settings} onChange={() => mutate()} />
+              <UsersCard />
               <OidcCard settings={settings} onChange={() => mutate()} />
             </>
           )}
@@ -891,23 +896,46 @@ function Toggle({
 }
 
 /* ------------------------------ Account ------------------------------ */
+interface SessionDto {
+  user: { id: number; username: string; role: "ADMIN" | "USER"; method: string } | null;
+}
 function AccountCard() {
-  const { data: session } = useSWR<{ user: { username: string; method: string } | null }>(
+  const { data: session, mutate: refreshSession } = useSWR<SessionDto>(
     "/api/auth/session",
     fetcher
   );
+  const [username, setUsername] = useState("");
   const [current, setCurrent] = useState("");
   const [next, setNext] = useState("");
   const [confirm, setConfirm] = useState("");
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState<null | "name" | "pw">(null);
   const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
 
-  const save = async () => {
+  // Seed the username field once the session is known.
+  useEffect(() => {
+    if (session?.user) setUsername(session.user.username);
+  }, [session?.user]);
+
+  const saveUsername = async () => {
+    setBusy("name");
+    setMsg(null);
+    try {
+      await sendJson("PATCH", "/api/auth/account", { username });
+      setMsg({ kind: "ok", text: "Username updated." });
+      refreshSession();
+    } catch (e) {
+      setMsg({ kind: "err", text: (e as Error).message });
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const savePassword = async () => {
     if (next !== confirm) {
       setMsg({ kind: "err", text: "New passwords do not match." });
       return;
     }
-    setBusy(true);
+    setBusy("pw");
     setMsg(null);
     try {
       await postJson("/api/auth/change-password", { currentPassword: current, newPassword: next });
@@ -918,6 +946,95 @@ function AccountCard() {
     } catch (e) {
       setMsg({ kind: "err", text: (e as Error).message });
     } finally {
+      setBusy(null);
+    }
+  };
+
+  const isOidcSession = session?.user?.method === "oidc";
+
+  return (
+    <div className="card" style={{ marginBottom: 20 }}>
+      <div className="section-title" style={{ marginTop: 0 }}>
+        <h2 style={{ fontSize: 18 }}>Your account</h2>
+        <span className="count">
+          {session?.user ? `${session.user.username} · ${session.user.role.toLowerCase()}` : ""}
+        </span>
+      </div>
+
+      <div className="group-head">Username</div>
+      <div className="row">
+        <div className="field">
+          <label>Username</label>
+          <input
+            className="input"
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+            autoComplete="username"
+          />
+          <div className="hint">
+            Letters, numbers and . _ @ - (min 3 characters). You can rename the default{" "}
+            <code>admin</code> account here.
+          </div>
+        </div>
+      </div>
+      <button
+        className="btn"
+        onClick={saveUsername}
+        disabled={!!busy || !username || username === session?.user?.username}
+      >
+        {busy === "name" ? <span className="spin" /> : null} Save username
+      </button>
+
+      <div className="group-head">Password</div>
+      {isOidcSession ? (
+        <p className="muted" style={{ marginTop: 0 }}>
+          You signed in with single sign-on, so there is no password to change here.
+        </p>
+      ) : (
+        <>
+          <div className="row">
+            <div className="field">
+              <label>Current password</label>
+              <input className="input" type="password" value={current} onChange={(e) => setCurrent(e.target.value)} autoComplete="current-password" />
+            </div>
+          </div>
+          <div className="row">
+            <div className="field">
+              <label>New password</label>
+              <input className="input" type="password" value={next} onChange={(e) => setNext(e.target.value)} autoComplete="new-password" />
+              <div className="hint">At least 8 characters.</div>
+            </div>
+            <div className="field">
+              <label>Confirm new password</label>
+              <input className="input" type="password" value={confirm} onChange={(e) => setConfirm(e.target.value)} autoComplete="new-password" />
+            </div>
+          </div>
+          <button className="btn primary" onClick={savePassword} disabled={!!busy || !next}>
+            {busy === "pw" ? <span className="spin" /> : null} Update password
+          </button>
+        </>
+      )}
+
+      {msg && <div className={`banner ${msg.kind === "ok" ? "ok" : "err"}`} style={{ marginTop: 12 }}>{msg.text}</div>}
+    </div>
+  );
+}
+
+/* --------------------------- Login options --------------------------- */
+function LoginOptionsCard({ settings, onChange }: { settings: SettingsDto; onChange: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+  const locked = settings.localLoginLock.locked;
+
+  const set = async (v: boolean) => {
+    setBusy(true);
+    setMsg(null);
+    try {
+      await sendJson("PATCH", "/api/settings", { localLoginEnabled: v });
+      onChange();
+    } catch (e) {
+      setMsg({ kind: "err", text: (e as Error).message });
+    } finally {
       setBusy(false);
     }
   };
@@ -925,33 +1042,142 @@ function AccountCard() {
   return (
     <div className="card" style={{ marginBottom: 20 }}>
       <div className="section-title" style={{ marginTop: 0 }}>
-        <h2 style={{ fontSize: 18 }}>Account &amp; security</h2>
-        <span className="count">{session?.user ? session.user.username : ""}</span>
+        <h2 style={{ fontSize: 18 }}>Login options</h2>
+        <span className="count">
+          {settings.localLoginEffective ? "password login on" : "SSO only"}
+        </span>
+      </div>
+
+      <div className="toggle-line">
+        <div className="txt">
+          <strong>Allow username &amp; password login</strong>
+          <span>
+            When off, the login page only offers single sign-on. Requires OIDC to be enabled and
+            configured.
+          </span>
+        </div>
+        <label className="switch" title={settings.localLoginLock.reason ?? undefined}>
+          <input
+            type="checkbox"
+            checked={settings.localLoginEffective}
+            disabled={locked || busy}
+            onChange={(e) => set(e.target.checked)}
+          />
+          <span className="slider" style={locked ? { opacity: 0.5, cursor: "not-allowed" } : undefined} />
+        </label>
+      </div>
+
+      {settings.localLoginLock.reason && (
+        <div className="hint" style={{ marginTop: 10 }}>{settings.localLoginLock.reason}</div>
+      )}
+      {!locked && (
+        <div className="hint" style={{ marginTop: 10 }}>
+          Careful: if single sign-on stops working while this is off you could be locked out. Set
+          <code> LOCAL_LOGIN_DISABLED=false</code> in the environment to force the password form back
+          on.
+        </div>
+      )}
+      {msg && <div className={`banner err`} style={{ marginTop: 12 }}>{msg.text}</div>}
+    </div>
+  );
+}
+
+/* ------------------------------- Users ------------------------------- */
+interface UserRow {
+  id: number;
+  username: string;
+  role: "ADMIN" | "USER";
+  provider: "oidc" | "local";
+  isLocalAccount: boolean;
+  createdAt: string;
+  isSelf: boolean;
+}
+function UsersCard() {
+  const { data, error, mutate } = useSWR<{ users: UserRow[] }>("/api/users", fetcher);
+  const [busyId, setBusyId] = useState<number | null>(null);
+  const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+
+  const setRole = async (u: UserRow, role: "ADMIN" | "USER") => {
+    setBusyId(u.id);
+    setMsg(null);
+    try {
+      await sendJson("PATCH", `/api/users/${u.id}`, { role });
+      setMsg({ kind: "ok", text: `${u.username} is now ${role.toLowerCase()}.` });
+      mutate();
+    } catch (e) {
+      setMsg({ kind: "err", text: (e as Error).message });
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const remove = async (u: UserRow) => {
+    setBusyId(u.id);
+    setMsg(null);
+    try {
+      await sendJson("DELETE", `/api/users/${u.id}`);
+      setMsg({ kind: "ok", text: `Removed ${u.username}.` });
+      mutate();
+    } catch (e) {
+      setMsg({ kind: "err", text: (e as Error).message });
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const users = data?.users ?? [];
+
+  return (
+    <div className="card" style={{ marginBottom: 20 }}>
+      <div className="section-title" style={{ marginTop: 0 }}>
+        <h2 style={{ fontSize: 18 }}>Users</h2>
+        <span className="count">{users.length} account(s)</span>
       </div>
       <p className="muted" style={{ marginTop: 0 }}>
-        Change the login password. The default admin account is{" "}
-        <code>admin</code> — change its password on first login.
+        Accounts created by single sign-on start as <strong>user</strong>. Promote them to
+        <strong> admin</strong> to let them change settings and run sweeps.
       </p>
-      <div className="row">
-        <div className="field">
-          <label>Current password</label>
-          <input className="input" type="password" value={current} onChange={(e) => setCurrent(e.target.value)} autoComplete="current-password" />
-        </div>
+
+      {error && <div className="banner err">{(error as Error).message}</div>}
+      {!data && !error && <div className="muted">Loading…</div>}
+
+      <div className="conn-list">
+        {users.map((u) => (
+          <div className="conn" key={u.id}>
+            <span className={`type ${u.provider === "oidc" ? "SONARR" : "RADARR"}`}>
+              {u.provider === "oidc" ? "SSO" : "LOCAL"}
+            </span>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <strong>
+                {u.username}
+                {u.isSelf && <span className="chip" style={{ marginLeft: 8 }}>you</span>}
+              </strong>
+              <div className="muted">
+                {u.isLocalAccount
+                  ? "Username & password account (always admin)"
+                  : `Added ${new Date(u.createdAt).toLocaleDateString()}`}
+              </div>
+            </div>
+            <select
+              className="select"
+              style={{ width: "auto", flex: "0 0 auto" }}
+              value={u.role}
+              disabled={busyId === u.id || u.isLocalAccount}
+              onChange={(e) => setRole(u, e.target.value as "ADMIN" | "USER")}
+              title={u.isLocalAccount ? "The password account must stay an administrator." : "Change role"}
+            >
+              <option value="ADMIN">admin</option>
+              <option value="USER">user</option>
+            </select>
+            {!u.isLocalAccount && !u.isSelf && (
+              <button className="btn danger sm" onClick={() => remove(u)} disabled={busyId === u.id}>
+                Remove
+              </button>
+            )}
+          </div>
+        ))}
       </div>
-      <div className="row">
-        <div className="field">
-          <label>New password</label>
-          <input className="input" type="password" value={next} onChange={(e) => setNext(e.target.value)} autoComplete="new-password" />
-          <div className="hint">At least 8 characters.</div>
-        </div>
-        <div className="field">
-          <label>Confirm new password</label>
-          <input className="input" type="password" value={confirm} onChange={(e) => setConfirm(e.target.value)} autoComplete="new-password" />
-        </div>
-      </div>
-      <button className="btn primary" onClick={save} disabled={busy || !next}>
-        {busy ? <span className="spin" /> : null} Update password
-      </button>
+
       {msg && <div className={`banner ${msg.kind === "ok" ? "ok" : "err"}`} style={{ marginTop: 12 }}>{msg.text}</div>}
     </div>
   );

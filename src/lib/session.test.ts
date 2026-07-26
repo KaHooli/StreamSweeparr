@@ -6,7 +6,7 @@ beforeAll(() => {
 });
 
 describe("session tokens", () => {
-  const user = { id: 7, username: "admin", isAdmin: true };
+  const user = { id: 7, username: "admin", role: "ADMIN" as const };
 
   it("round-trips a valid session", async () => {
     const token = await createSession(user, "local");
@@ -14,7 +14,7 @@ describe("session tokens", () => {
     expect(payload).not.toBeNull();
     expect(payload!.sub).toBe(7);
     expect(payload!.username).toBe("admin");
-    expect(payload!.isAdmin).toBe(true);
+    expect(payload!.role).toBe("ADMIN");
     expect(payload!.method).toBe("local");
   });
 

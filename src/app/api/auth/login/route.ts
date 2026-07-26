@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { prisma } from "@/lib/db";
+import { prisma, getSettings } from "@/lib/db";
 import { verifyPassword } from "@/lib/password";
 import { ensureDefaultAdmin } from "@/lib/users";
+import { effectiveLocalLoginEnabled } from "@/lib/loginOptions";
 import { createSession, SESSION_COOKIE, sessionCookieOptions } from "@/lib/session";
 import { checkRateLimit, registerFailure, resetRateLimit } from "@/lib/ratelimit";
 import { clientIp } from "@/lib/request";
@@ -28,6 +29,16 @@ export async function POST(req: NextRequest) {
   }
 
   const { username, password } = parsed.data;
+
+  // Refuse password logins when the administrator has turned them off (only
+  // possible while OIDC is usable). Enforced here, not just hidden in the UI.
+  const settings = await getSettings();
+  if (!effectiveLocalLoginEnabled(settings)) {
+    return NextResponse.json(
+      { error: "Username & password login is disabled. Use single sign-on." },
+      { status: 403 }
+    );
+  }
 
   // Rate-limit per IP and per IP+username to blunt brute force.
   const ip = clientIp(req);
@@ -61,14 +72,14 @@ export async function POST(req: NextRequest) {
     {
       id: user.id,
       username: user.username,
-      isAdmin: user.isAdmin,
+      role: user.role,
       mustChangePassword: user.mustChangePassword,
     },
     "local"
   );
   const res = NextResponse.json({
     ok: true,
-    user: { id: user.id, username: user.username, isAdmin: user.isAdmin },
+    user: { id: user.id, username: user.username, role: user.role },
     mustChangePassword: user.mustChangePassword,
   });
   res.cookies.set(SESSION_COOKIE, token, sessionCookieOptions());

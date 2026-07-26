@@ -13,8 +13,15 @@ function LoginInner() {
   const next = params.get("next") || "/";
   const urlError = params.get("error");
 
-  const { data: session } = useSWR<{ user: unknown; oidcEnabled: boolean }>("/api/auth/session", fetcher);
+  const { data: session } = useSWR<{
+    user: unknown;
+    oidcEnabled: boolean;
+    localLoginEnabled: boolean;
+  }>("/api/auth/session", fetcher);
   const oidcEnabled = session?.oidcEnabled;
+  // Default to showing the form until we know otherwise, so a slow/failed
+  // lookup can never leave the page with no way to sign in.
+  const localLoginEnabled = session ? session.localLoginEnabled : true;
 
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -62,41 +69,45 @@ function LoginInner() {
 
         {error && <div className="banner err">{error}</div>}
 
-        <form onSubmit={submit}>
-          <div className="field">
-            <label>Username</label>
-            <input
-              className="input"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              autoComplete="username"
-              autoFocus
-              required
-            />
-          </div>
-          <div className="field">
-            <label>Password</label>
-            <input
-              className="input"
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              autoComplete="current-password"
-              required
-            />
-          </div>
-          <button className="btn primary" type="submit" disabled={busy} style={{ width: "100%", justifyContent: "center" }}>
-            {busy ? <span className="spin" /> : null} Sign in
-          </button>
-        </form>
+        {localLoginEnabled && (
+          <form onSubmit={submit}>
+            <div className="field">
+              <label>Username</label>
+              <input
+                className="input"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                autoComplete="username"
+                autoFocus
+                required
+              />
+            </div>
+            <div className="field">
+              <label>Password</label>
+              <input
+                className="input"
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                autoComplete="current-password"
+                required
+              />
+            </div>
+            <button className="btn primary" type="submit" disabled={busy} style={{ width: "100%", justifyContent: "center" }}>
+              {busy ? <span className="spin" /> : null} Sign in
+            </button>
+          </form>
+        )}
 
         {oidcEnabled && (
           <>
-            <div className="or">
-              <span>or</span>
-            </div>
+            {localLoginEnabled && (
+              <div className="or">
+                <span>or</span>
+              </div>
+            )}
             <a
-              className="btn"
+              className={`btn ${localLoginEnabled ? "" : "primary"}`}
               href="/api/auth/oidc/authorize"
               style={{ width: "100%", justifyContent: "center" }}
             >

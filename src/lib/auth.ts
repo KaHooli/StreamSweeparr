@@ -26,7 +26,7 @@ export async function requireSession(): Promise<SessionPayload> {
 /** Return the current session or throw AuthError(403) if not an admin. */
 export async function requireAdmin(): Promise<SessionPayload> {
   const payload = await requireSession();
-  if (!payload.isAdmin) throw new AuthError("Administrator access required.", 403);
+  if (payload.role !== "ADMIN") throw new AuthError("Administrator access required.", 403);
   return payload;
 }
 

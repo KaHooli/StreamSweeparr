@@ -12,10 +12,12 @@
 export const SESSION_COOKIE = "ss_session";
 const SESSION_TTL_SECONDS = 60 * 60 * 24 * 7; // 7 days
 
+export type SessionRole = "ADMIN" | "USER";
+
 export interface SessionPayload {
   sub: number; // user id
   username: string;
-  isAdmin: boolean;
+  role: SessionRole;
   method: "local" | "oidc";
   mustChangePassword?: boolean; // gate the app until the password is changed
   exp: number; // unix seconds
@@ -92,13 +94,13 @@ function timingSafeEqual(a: string, b: string): boolean {
 
 /** Create a signed session token for the given user. */
 export async function createSession(
-  user: { id: number; username: string; isAdmin: boolean; mustChangePassword?: boolean },
+  user: { id: number; username: string; role: SessionRole; mustChangePassword?: boolean },
   method: "local" | "oidc"
 ): Promise<string> {
   const payload: SessionPayload = {
     sub: user.id,
     username: user.username,
-    isAdmin: user.isAdmin,
+    role: user.role,
     method,
     mustChangePassword: !!user.mustChangePassword,
     exp: Math.floor(Date.now() / 1000) + SESSION_TTL_SECONDS,

@@ -78,9 +78,7 @@ export async function getOidcConfig(): Promise<OidcConfig | null> {
   };
 }
 
-export function isOidcEnabled(s: { oidcEnabled: boolean; oidcIssuer: string | null; oidcClientId: string | null; oidcClientSecret: string | null }) {
-  return !!(s.oidcEnabled && s.oidcIssuer && s.oidcClientId && s.oidcClientSecret);
-}
+export { isOidcConfigured as isOidcEnabled } from "./loginOptions";
 
 /* ------------------------------- PKCE ------------------------------- */
 function b64url(buf: Buffer): string {

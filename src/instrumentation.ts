@@ -15,6 +15,12 @@ export async function register() {
   const { assertAuthSecret } = await import("./lib/session");
   assertAuthSecret();
 
+  // NOTE: the local admin account is reconciled with ADMIN_USERNAME /
+  // ADMIN_PASSWORD by the login route (it calls ensureLocalAdmin() before
+  // looking the user up), so env credentials work on the first login attempt.
+  // We deliberately do NOT import lib/users here: this hook is also compiled
+  // for the edge runtime, which cannot resolve node:crypto.
+
   // Allow opting out (e.g. multiple replicas — run the timer on one only).
   if (process.env.TITLE_MAP_SCHEDULER === "off") return;
 

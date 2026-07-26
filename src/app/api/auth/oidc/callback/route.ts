@@ -58,7 +58,7 @@ export async function GET(req: NextRequest) {
     });
 
     const token = await createSession(
-      { id: user.id, username: user.username, isAdmin: user.isAdmin },
+      { id: user.id, username: user.username, role: user.role },
       "oidc"
     );
     const res = NextResponse.redirect(new URL("/", publicOrigin(req)));

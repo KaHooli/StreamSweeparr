@@ -45,7 +45,7 @@ export async function POST(req: NextRequest) {
   // Refresh the session cookie so mustChangePassword is cleared in the token
   // (the middleware reads this to lift the change-password gate).
   const token = await createSession(
-    { id: user.id, username: user.username, isAdmin: user.isAdmin, mustChangePassword: false },
+    { id: user.id, username: user.username, role: user.role, mustChangePassword: false },
     payload.method
   );
   const res = NextResponse.json({ ok: true });
