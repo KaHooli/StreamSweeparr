@@ -10,6 +10,15 @@ export interface OidcSettingsShape {
   oidcClientSecret: string | null;
 }
 
+/** Label used for the SSO button when the admin hasn't set a custom one. */
+export const DEFAULT_SSO_BUTTON_LABEL = "Sign in with SSO";
+
+/** Trim/normalise a configured SSO button label, falling back to the default. */
+export function ssoButtonLabel(label: string | null | undefined): string {
+  const trimmed = label?.trim();
+  return trimmed ? trimmed : DEFAULT_SSO_BUTTON_LABEL;
+}
+
 /** OIDC is usable only when enabled AND fully configured. */
 export function isOidcConfigured(s: OidcSettingsShape): boolean {
   return !!(s.oidcEnabled && s.oidcIssuer && s.oidcClientId && s.oidcClientSecret);

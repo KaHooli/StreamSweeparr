@@ -2,7 +2,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma, getSettings } from "@/lib/db";
 import { requireAdmin, withGuard } from "@/lib/auth";
-import { effectiveLocalLoginEnabled, localLoginToggleLocked } from "@/lib/loginOptions";
+import {
+  effectiveLocalLoginEnabled,
+  localLoginToggleLocked,
+  DEFAULT_SSO_BUTTON_LABEL,
+} from "@/lib/loginOptions";
 
 export const dynamic = "force-dynamic";
 
@@ -37,6 +41,7 @@ const settingsSchema = z.object({
   localLoginEnabled: z.boolean().optional(),
   // OIDC
   oidcEnabled: z.boolean().optional(),
+  oidcButtonLabel: z.string().max(64, "Label must be at most 64 characters.").nullable().optional(),
   oidcIssuer: urlOrEmpty,
   oidcClientId: z.string().nullable().optional(),
   oidcClientSecret: z.string().nullable().optional(),
@@ -70,6 +75,8 @@ function serialize(s: Awaited<ReturnType<typeof getSettings>>) {
     localLoginEffective: effectiveLocalLoginEnabled(s),
     localLoginLock: localLoginToggleLocked(s),
     oidcEnabled: s.oidcEnabled,
+    oidcButtonLabel: s.oidcButtonLabel ?? "",
+    oidcButtonLabelDefault: DEFAULT_SSO_BUTTON_LABEL,
     oidcIssuer: s.oidcIssuer ?? "",
     oidcClientId: s.oidcClientId ?? "",
     oidcClientSecretSet: !!s.oidcClientSecret,
@@ -125,6 +132,9 @@ export const PATCH = withGuard(requireAdmin, async (_session, req: NextRequest) 
   if (p.localLoginEnabled !== undefined) data.localLoginEnabled = p.localLoginEnabled;
   // OIDC (only overwrite the secret when a non-empty value is provided).
   if (p.oidcEnabled !== undefined) data.oidcEnabled = p.oidcEnabled;
+  // Empty string clears the override so the default label is used again.
+  if (p.oidcButtonLabel !== undefined)
+    data.oidcButtonLabel = p.oidcButtonLabel?.trim() ? p.oidcButtonLabel.trim() : null;
   if (p.oidcIssuer !== undefined) data.oidcIssuer = p.oidcIssuer || null;
   if (p.oidcClientId !== undefined) data.oidcClientId = p.oidcClientId || null;
   if (p.oidcClientSecret !== undefined && p.oidcClientSecret !== null && p.oidcClientSecret !== "")

@@ -79,6 +79,9 @@ model Settings {
   // When issuer + clientId + clientSecret are set, an "Sign in with SSO" button
   // appears on the login page.
   oidcEnabled       Boolean  @default(false)
+  // Label for the SSO button on the login page, e.g. "Sign in with Authentik".
+  // Null/empty falls back to DEFAULT_SSO_BUTTON_LABEL.
+  oidcButtonLabel   String?
   oidcIssuer        String?  // e.g. https://auth.example.com  (issuer or discovery base)
   oidcClientId      String?
   oidcClientSecret  String?

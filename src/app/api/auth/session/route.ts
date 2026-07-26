@@ -2,7 +2,11 @@ import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { SESSION_COOKIE, verifySession } from "@/lib/session";
 import { getSettings } from "@/lib/db";
-import { isOidcConfigured, effectiveLocalLoginEnabled } from "@/lib/loginOptions";
+import {
+  isOidcConfigured,
+  effectiveLocalLoginEnabled,
+  ssoButtonLabel,
+} from "@/lib/loginOptions";
 
 export const dynamic = "force-dynamic";
 
@@ -23,6 +27,7 @@ export async function GET() {
         }
       : null,
     oidcEnabled: isOidcConfigured(s),
+    oidcButtonLabel: ssoButtonLabel(s.oidcButtonLabel),
     localLoginEnabled: effectiveLocalLoginEnabled(s),
   });
 }

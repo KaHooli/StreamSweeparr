@@ -26,6 +26,8 @@ interface SettingsDto {
   oidcIssuer: string;
   oidcClientId: string;
   oidcClientSecretSet: boolean;
+  oidcButtonLabel: string;
+  oidcButtonLabelDefault: string;
   oidcScopes: string;
   oidcAuthUrl: string;
   oidcTokenUrl: string;
@@ -1189,6 +1191,7 @@ function OidcCard({ settings, onChange }: { settings: SettingsDto; onChange: () 
   const [issuer, setIssuer] = useState(settings.oidcIssuer);
   const [clientId, setClientId] = useState(settings.oidcClientId);
   const [clientSecret, setClientSecret] = useState("");
+  const [buttonLabel, setButtonLabel] = useState(settings.oidcButtonLabel);
   const [scopes, setScopes] = useState(settings.oidcScopes);
   const [authUrl, setAuthUrl] = useState(settings.oidcAuthUrl);
   const [tokenUrl, setTokenUrl] = useState(settings.oidcTokenUrl);
@@ -1202,6 +1205,7 @@ function OidcCard({ settings, onChange }: { settings: SettingsDto; onChange: () 
     setEnabled(settings.oidcEnabled);
     setIssuer(settings.oidcIssuer);
     setClientId(settings.oidcClientId);
+    setButtonLabel(settings.oidcButtonLabel);
     setScopes(settings.oidcScopes);
     setAuthUrl(settings.oidcAuthUrl);
     setTokenUrl(settings.oidcTokenUrl);
@@ -1218,6 +1222,7 @@ function OidcCard({ settings, onChange }: { settings: SettingsDto; onChange: () 
         oidcIssuer: issuer,
         oidcClientId: clientId,
         ...(clientSecret ? { oidcClientSecret: clientSecret } : {}),
+        oidcButtonLabel: buttonLabel,
         oidcScopes: scopes,
         oidcAuthUrl: authUrl,
         oidcTokenUrl: tokenUrl,
@@ -1299,6 +1304,20 @@ function OidcCard({ settings, onChange }: { settings: SettingsDto; onChange: () 
             value={clientSecret}
             onChange={(e) => setClientSecret(e.target.value)}
           />
+        </div>
+      </div>
+      <div className="field">
+        <label>Sign-in button label</label>
+        <input
+          className="input"
+          value={buttonLabel}
+          maxLength={64}
+          placeholder={settings.oidcButtonLabelDefault}
+          onChange={(e) => setButtonLabel(e.target.value)}
+        />
+        <div className="hint">
+          Text shown on the login page button, e.g. &quot;Sign in with Authentik&quot;. Leave empty
+          for the default (&quot;{settings.oidcButtonLabelDefault}&quot;).
         </div>
       </div>
       <div className="field">

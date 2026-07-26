@@ -16,9 +16,11 @@ function LoginInner() {
   const { data: session } = useSWR<{
     user: unknown;
     oidcEnabled: boolean;
+    oidcButtonLabel: string;
     localLoginEnabled: boolean;
   }>("/api/auth/session", fetcher);
   const oidcEnabled = session?.oidcEnabled;
+  const ssoLabel = session?.oidcButtonLabel || "Sign in with SSO";
   // Default to showing the form until we know otherwise, so a slow/failed
   // lookup can never leave the page with no way to sign in.
   const localLoginEnabled = session ? session.localLoginEnabled : true;
@@ -111,7 +113,7 @@ function LoginInner() {
               href="/api/auth/oidc/authorize"
               style={{ width: "100%", justifyContent: "center" }}
             >
-              Sign in with SSO
+              {ssoLabel}
             </a>
           </>
         )}

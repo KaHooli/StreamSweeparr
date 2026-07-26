@@ -3,6 +3,8 @@ import {
   isOidcConfigured,
   effectiveLocalLoginEnabled,
   localLoginToggleLocked,
+  ssoButtonLabel,
+  DEFAULT_SSO_BUTTON_LABEL,
 } from "./loginOptions";
 
 const oidcOff = {
@@ -61,6 +63,23 @@ describe("effectiveLocalLoginEnabled", () => {
     expect(
       effectiveLocalLoginEnabled({ ...oidcOn, localLoginEnabled: false }, { LOCAL_LOGIN_DISABLED: "" })
     ).toBe(false);
+  });
+});
+
+describe("ssoButtonLabel", () => {
+  it("uses a custom label when provided", () => {
+    expect(ssoButtonLabel("Sign in with Authentik")).toBe("Sign in with Authentik");
+  });
+
+  it("trims whitespace", () => {
+    expect(ssoButtonLabel("  Login with Keycloak  ")).toBe("Login with Keycloak");
+  });
+
+  it("falls back to the default when empty/whitespace/null", () => {
+    expect(ssoButtonLabel(null)).toBe(DEFAULT_SSO_BUTTON_LABEL);
+    expect(ssoButtonLabel(undefined)).toBe(DEFAULT_SSO_BUTTON_LABEL);
+    expect(ssoButtonLabel("")).toBe(DEFAULT_SSO_BUTTON_LABEL);
+    expect(ssoButtonLabel("   ")).toBe(DEFAULT_SSO_BUTTON_LABEL);
   });
 });
 
