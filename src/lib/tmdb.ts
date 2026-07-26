@@ -54,6 +54,16 @@ export class TmdbError extends Error {
   }
 }
 
+/**
+ * True when an error means "TMDB has no such id" (HTTP 404 / status_code 34),
+ * as opposed to a transient failure. TMDB deletes or merges entries — most
+ * often cancelled or never-produced films — leaving Radarr with a dead id.
+ * Transient problems surface as 5xx/429/timeouts, so 404 is safe to act on.
+ */
+export function isTmdbNotFound(e: unknown): boolean {
+  return e instanceof TmdbError && e.status === 404;
+}
+
 // In-process TTL cache (reference data changes rarely; per-title cached briefly).
 type CacheEntry = { value: unknown; expires: number };
 const cache = new Map<string, CacheEntry>();

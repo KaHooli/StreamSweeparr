@@ -77,7 +77,7 @@ async function sweepBody(ctx: RunContext, dryRun: boolean): Promise<void> {
 
 async function sweepRadarr(
   conn: { id: number; name: string; baseUrl: string; apiKey: string },
-  settings: { deleteFiles: boolean },
+  settings: { deleteFiles: boolean; removeMissingTmdbMovies: boolean },
   dryRun: boolean,
   counts: RunCounts,
   push: Push
@@ -88,6 +88,26 @@ async function sweepRadarr(
   });
 
   for (const m of movies) {
+    // Case 0: TMDB no longer knows this id, so we can never manage the title.
+    // Remove it from Radarr (media files are kept) when enabled.
+    if (m.tmdbMissing) {
+      if (!settings.removeMissingTmdbMovies) {
+        push("warn", `[${conn.name}] "${m.title}" is missing from TMDB; leaving it in Radarr.`);
+        continue;
+      }
+      push(
+        "action",
+        `[${conn.name}] ${dryRun ? "Would remove" : "Remove"} movie "${m.title}" from Radarr ` +
+          `(TMDB id ${m.tmdbId ?? "?"} no longer exists).`
+      );
+      counts.removedMovies++;
+      if (!dryRun) {
+        await client.deleteMovie(m.arrId);
+        await prisma.mediaItem.delete({ where: { id: m.id } });
+      }
+      continue;
+    }
+
     // Case 1: monitored + on streaming -> unmonitor (+ delete file).
     if (m.monitored && m.onStreaming) {
       push("action", `[${conn.name}] Unmonitor movie "${m.title}" (on streaming).`);

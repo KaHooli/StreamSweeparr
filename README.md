@@ -312,6 +312,20 @@ block the request or the browser (`src/lib/jobs.ts`).
   episodes are **unmonitored** (with `x/total on streaming`).
 - **Movies on streaming** — each card shows a **Monitored / Unmonitored** badge.
 
+## Movies deleted from TMDB
+TMDB sometimes deletes or merges entries — typically cancelled or
+never-produced films — leaving Radarr holding an id that no longer resolves.
+Those lookups fail with `404 / status_code 34`.
+
+StreamSweeparr treats that as definitive (transient problems surface as
+5xx/429/timeouts, never 404): the movie is flagged during sync, and the **sweep**
+removes it from Radarr. **Media files are kept** and no import exclusion is
+added, so the title can simply be re-added if it was removed in error.
+
+Like every destructive action this only happens in **LIVE mode** — a dry-run
+just reports `Would remove …`. Turn it off with **Settings → Run options →
+Remove movies deleted from TMDB**. Removals are counted on the **Runs** page.
+
 ## Excluding titles: the `ss-skip` tag
 Add the tag **`ss-skip`** (case-insensitive) to any series in Sonarr or movie in
 Radarr and StreamSweeparr will leave it completely alone:

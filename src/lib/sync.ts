@@ -21,7 +21,12 @@ import {
 import { WatchmodeClient, matchSources, type WatchmodeTitleSource } from "./watchmode";
 import { lookupWatchmodeId, refreshTitleMap } from "./titlemap";
 import { sanitizeExternalUrl } from "./urls";
-import { TmdbClient, matchTmdbProviders, type MatchedTmdbProvider } from "./tmdb";
+import {
+  TmdbClient,
+  matchTmdbProviders,
+  isTmdbNotFound,
+  type MatchedTmdbProvider,
+} from "./tmdb";
 
 export interface SyncResult {
   connections: number;
@@ -35,6 +40,8 @@ export interface SyncResult {
   tvSkipped: number;
   /** Titles left alone because they carry the ss-skip tag. */
   taggedSkipped: number;
+  /** Movies whose TMDB id no longer resolves (candidates for removal). */
+  tmdbMissingMovies: number;
   errors: string[];
 }
 
@@ -121,6 +128,7 @@ export async function runSync(progress: ProgressFn = noopProgress): Promise<Sync
     tvProviderCalls: 0,
     tvSkipped: 0,
     taggedSkipped: 0,
+    tmdbMissingMovies: 0,
     errors,
   };
 
@@ -236,7 +244,7 @@ export async function runSync(progress: ProgressFn = noopProgress): Promise<Sync
       progress("info", `Syncing ${conn.type === "RADARR" ? "movies" : "series"} from "${conn.name}"…`);
       if (conn.type === "RADARR") {
         if (!tmdb) throw new Error("TMDB is not configured.");
-        await syncRadarr(conn, tmdb, tmdbRegions, tmdbProviderIds, tmdbCountedTypes, result, errors);
+        await syncRadarr(conn, tmdb, tmdbRegions, tmdbProviderIds, tmdbCountedTypes, result, errors, progress);
       } else {
         if (!wm) throw new Error("Watchmode is not configured.");
         await syncSonarr(conn, wm, regions, serviceIds, countedTypes, result, errors, changedIds, wmLogos);
@@ -273,7 +281,8 @@ async function syncRadarr(
   providerIds: number[],
   countedTypes: string[],
   result: SyncResult,
-  errors: string[]
+  errors: string[],
+  progress: ProgressFn
 ) {
   const client = new RadarrClient(conn.baseUrl, conn.apiKey);
   const movies = await client.getMovies();
@@ -338,6 +347,9 @@ async function syncRadarr(
     // Track whether we could actually determine streaming availability. A
     // failed lookup must not be treated as "not on streaming".
     let streamingUnknown = false;
+    // TMDB says this id no longer exists (deleted/merged entry). Recorded here;
+    // the sweep decides whether to remove it from Radarr. Sync stays read-only.
+    let tmdbMissing = false;
     try {
       if (movie.tmdbId) {
         const availability = await tmdb.movieWatchProviders(movie.tmdbId);
@@ -349,7 +361,16 @@ async function syncRadarr(
       }
     } catch (e) {
       streamingUnknown = true;
-      errors.push(`[${conn.name}] ${movie.title}: ${(e as Error).message}`);
+      if (isTmdbNotFound(e)) {
+        tmdbMissing = true;
+        result.tmdbMissingMovies++;
+        progress(
+          "warn",
+          `[${conn.name}] "${movie.title}" no longer exists on TMDB (id ${movie.tmdbId}).`
+        );
+      } else {
+        errors.push(`[${conn.name}] ${movie.title}: ${(e as Error).message}`);
+      }
     }
 
     const onStreaming = matched.length > 0;
@@ -379,6 +400,7 @@ async function syncRadarr(
         monitored: movie.monitored,
         hasFile: movie.hasFile,
         skipped: false,
+        tmdbMissing,
         onStreaming,
         streamingUnknown,
         streamingInfo: info,
@@ -392,6 +414,7 @@ async function syncRadarr(
         monitored: movie.monitored,
         hasFile: movie.hasFile,
         skipped: false,
+        tmdbMissing,
         onStreaming,
         streamingUnknown,
         streamingInfo: info,

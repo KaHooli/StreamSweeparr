@@ -26,6 +26,7 @@ export interface RunCounts {
   unmonitoredEps: number;
   remonitoredEps: number;
   deletedFiles: number;
+  removedMovies: number;
   searchedItems: number;
 }
 
@@ -57,6 +58,7 @@ export class RunContext {
     unmonitoredEps: 0,
     remonitoredEps: 0,
     deletedFiles: 0,
+    removedMovies: 0,
     searchedItems: 0,
   };
   private lastFlush = 0;

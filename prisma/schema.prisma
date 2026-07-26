@@ -45,6 +45,8 @@ model Settings {
   deleteFiles       Boolean  @default(true)
   // Trigger a search for all monitored items at the end of a run.
   searchAtEnd       Boolean  @default(true)
+  // Remove movies from Radarr when TMDB reports their id no longer exists.
+  removeMissingTmdbMovies Boolean @default(true)
   // Perform destructive changes. When false the run is a dry-run (preview only).
   applyChanges      Boolean  @default(false)
 
@@ -192,6 +194,9 @@ model MediaItem {
 
   // Aggregated streaming state.
   onStreaming    Boolean   @default(false)
+  // True when TMDB returned 404 for this movie's tmdbId — the TMDB entry was
+  // deleted/merged, so Radarr is holding a dead id. The sweep can remove these.
+  tmdbMissing    Boolean   @default(false)
   // True when the title carries the "ss-skip" tag in Sonarr/Radarr. Skipped
   // titles are never looked up, never re-monitored/unmonitored, never have
   // files deleted and are excluded from the end-of-run search.
@@ -273,6 +278,7 @@ model RunLog {
   unmonitoredEps     Int       @default(0)
   remonitoredEps     Int       @default(0)
   deletedFiles       Int       @default(0)
+  removedMovies      Int       @default(0)
   searchedItems      Int       @default(0)
 
   // Human-readable step log.

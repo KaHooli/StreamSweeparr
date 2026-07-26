@@ -208,6 +208,24 @@ export class RadarrClient {
     });
   }
 
+  /**
+   * Remove a movie from Radarr. Defaults are deliberately conservative: media
+   * files are kept and no import exclusion is added, so the title can simply be
+   * re-added if it was removed in error.
+   */
+  deleteMovie(
+    id: number,
+    opts: { deleteFiles?: boolean; addImportExclusion?: boolean } = {}
+  ) {
+    const params = new URLSearchParams({
+      deleteFiles: String(!!opts.deleteFiles),
+      addImportExclusion: String(!!opts.addImportExclusion),
+    });
+    return arrFetch<void>(this.baseUrl, this.apiKey, `/api/v3/movie/${id}?${params}`, {
+      method: "DELETE",
+    });
+  }
+
   deleteMovieFile(movieFileId: number) {
     return arrFetch<void>(this.baseUrl, this.apiKey, `/api/v3/moviefile/${movieFileId}`, {
       method: "DELETE",

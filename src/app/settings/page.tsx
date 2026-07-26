@@ -18,6 +18,7 @@ interface SettingsDto {
   tmdbCountedTypes: string[];
   deleteFiles: boolean;
   searchAtEnd: boolean;
+  removeMissingTmdbMovies: boolean;
   applyChanges: boolean;
   localLoginEnabled: boolean;
   localLoginEffective: boolean;
@@ -859,6 +860,13 @@ function OptionsCard({ settings, onChange }: { settings: SettingsDto; onChange: 
         desc="Delete the episode/movie file after unmonitoring a title that's on streaming."
         checked={settings.deleteFiles}
         onChange={(v) => set({ deleteFiles: v })}
+      />
+      <Toggle
+        title="Remove movies deleted from TMDB"
+        desc="If TMDB reports a movie's id no longer exists, remove it from Radarr. Media files are kept."
+        checked={settings.removeMissingTmdbMovies}
+        danger
+        onChange={(v) => set({ removeMissingTmdbMovies: v })}
       />
       <Toggle
         title="Search monitored items at end of run"

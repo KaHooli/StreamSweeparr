@@ -37,6 +37,7 @@ const settingsSchema = z.object({
   tmdbCountedTypes: z.array(z.enum(TMDB_COUNTED_TYPES)).optional(),
   deleteFiles: z.boolean().optional(),
   searchAtEnd: z.boolean().optional(),
+  removeMissingTmdbMovies: z.boolean().optional(),
   applyChanges: z.boolean().optional(),
   localLoginEnabled: z.boolean().optional(),
   // OIDC
@@ -68,6 +69,7 @@ function serialize(s: Awaited<ReturnType<typeof getSettings>>) {
     tmdbCountedTypes: s.tmdbCountedTypes,
     deleteFiles: s.deleteFiles,
     searchAtEnd: s.searchAtEnd,
+    removeMissingTmdbMovies: s.removeMissingTmdbMovies,
     applyChanges: s.applyChanges,
     // Login options: the stored preference, the value actually in force, and
     // whether the UI control must be locked (OIDC unusable or env override).
@@ -128,6 +130,8 @@ export const PATCH = withGuard(requireAdmin, async (_session, req: NextRequest) 
   if (p.tmdbCountedTypes !== undefined) data.tmdbCountedTypes = p.tmdbCountedTypes;
   if (p.deleteFiles !== undefined) data.deleteFiles = p.deleteFiles;
   if (p.searchAtEnd !== undefined) data.searchAtEnd = p.searchAtEnd;
+  if (p.removeMissingTmdbMovies !== undefined)
+    data.removeMissingTmdbMovies = p.removeMissingTmdbMovies;
   if (p.applyChanges !== undefined) data.applyChanges = p.applyChanges;
   if (p.localLoginEnabled !== undefined) data.localLoginEnabled = p.localLoginEnabled;
   // OIDC (only overwrite the secret when a non-empty value is provided).

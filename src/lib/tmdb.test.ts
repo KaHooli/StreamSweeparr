@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { matchTmdbProviders, type TmdbRegionAvailability } from "./tmdb";
+import {
+  matchTmdbProviders,
+  isTmdbNotFound,
+  TmdbError,
+  type TmdbRegionAvailability,
+} from "./tmdb";
 
 const prov = (provider_id: number, provider_name = `p${provider_id}`) => ({
   provider_id,
@@ -66,5 +71,24 @@ describe("matchTmdbProviders", () => {
       US: { flatrate: [prov(8), prov(8)] },
     };
     expect(matchTmdbProviders(avail, regions, providerIds, types)).toHaveLength(1);
+  });
+});
+
+describe("isTmdbNotFound", () => {
+  it("is true only for a 404 from TMDB", () => {
+    expect(isTmdbNotFound(new TmdbError("TMDB request failed (404): ...", 404))).toBe(true);
+  });
+
+  it("is false for transient failures we must not act on", () => {
+    expect(isTmdbNotFound(new TmdbError("TMDB rate limit exceeded.", 429))).toBe(false);
+    expect(isTmdbNotFound(new TmdbError("TMDB request timed out.", 408))).toBe(false);
+    expect(isTmdbNotFound(new TmdbError("server error", 500))).toBe(false);
+    expect(isTmdbNotFound(new TmdbError("no status"))).toBe(false);
+  });
+
+  it("is false for unrelated errors", () => {
+    expect(isTmdbNotFound(new Error("404"))).toBe(false);
+    expect(isTmdbNotFound(null)).toBe(false);
+    expect(isTmdbNotFound("404")).toBe(false);
   });
 });
