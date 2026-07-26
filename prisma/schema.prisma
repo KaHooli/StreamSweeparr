@@ -192,6 +192,10 @@ model MediaItem {
 
   // Aggregated streaming state.
   onStreaming    Boolean   @default(false)
+  // True when the title carries the "ss-skip" tag in Sonarr/Radarr. Skipped
+  // titles are never looked up, never re-monitored/unmonitored, never have
+  // files deleted and are excluded from the end-of-run search.
+  skipped        Boolean   @default(false)
   // True when the Watchmode lookup failed (transient error / unmapped title).
   // The sweep must NOT re-monitor items whose streaming status is unknown, to
   // avoid churn from a temporary Watchmode outage.

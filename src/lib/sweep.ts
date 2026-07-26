@@ -84,7 +84,7 @@ async function sweepRadarr(
 ) {
   const client = new RadarrClient(conn.baseUrl, conn.apiKey);
   const movies = await prisma.mediaItem.findMany({
-    where: { connectionId: conn.id, type: "MOVIE" },
+    where: { connectionId: conn.id, type: "MOVIE", skipped: false },
   });
 
   for (const m of movies) {
@@ -138,7 +138,7 @@ async function sweepSonarr(
 ) {
   const client = new SonarrClient(conn.baseUrl, conn.apiKey);
   const series = await prisma.mediaItem.findMany({
-    where: { connectionId: conn.id, type: "TV" },
+    where: { connectionId: conn.id, type: "TV", skipped: false },
     include: { episodes: true },
   });
 
@@ -210,7 +210,7 @@ async function searchRadarr(
 ) {
   const client = new RadarrClient(conn.baseUrl, conn.apiKey);
   const monitored = await prisma.mediaItem.findMany({
-    where: { connectionId: conn.id, type: "MOVIE", monitored: true },
+    where: { connectionId: conn.id, type: "MOVIE", monitored: true, skipped: false },
     select: { arrId: true },
   });
   const ids = monitored.map((m) => m.arrId);
@@ -228,7 +228,7 @@ async function searchSonarr(
 ) {
   const client = new SonarrClient(conn.baseUrl, conn.apiKey);
   const series = await prisma.mediaItem.findMany({
-    where: { connectionId: conn.id, type: "TV" },
+    where: { connectionId: conn.id, type: "TV", skipped: false },
     include: { episodes: { where: { monitored: true }, select: { arrEpisodeId: true } } },
   });
   const episodeIds = series.flatMap((s) => s.episodes.map((e) => e.arrEpisodeId));

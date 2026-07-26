@@ -13,6 +13,9 @@ import {
   SonarrClient,
   RadarrClient,
   posterFromImages,
+  resolveSkipTagIds,
+  hasSkipTag,
+  SKIP_TAG_LABEL,
   type SonarrEpisode,
 } from "./arr";
 import { WatchmodeClient, matchSources, type WatchmodeTitleSource } from "./watchmode";
@@ -29,6 +32,8 @@ export interface SyncResult {
   // and how many were skipped as unchanged/fresh (credit-saving visibility).
   tvProviderCalls: number;
   tvSkipped: number;
+  /** Titles left alone because they carry the ss-skip tag. */
+  taggedSkipped: number;
   errors: string[];
 }
 
@@ -112,6 +117,7 @@ export async function runSync(progress: ProgressFn = noopProgress): Promise<Sync
     onStreamingSeries: 0,
     tvProviderCalls: 0,
     tvSkipped: 0,
+    taggedSkipped: 0,
     errors,
   };
 
@@ -250,7 +256,8 @@ export async function runSync(progress: ProgressFn = noopProgress): Promise<Sync
   progress(
     "info",
     `Watchmode calls this sync: ${result.tvProviderCalls} episode fetch(es) across ${result.series} series ` +
-      `(${result.tvSkipped} skipped as unchanged/fresh).`
+      `(${result.tvSkipped} skipped as unchanged/fresh). ` +
+      `${result.taggedSkipped} title(s) ignored via the "${SKIP_TAG_LABEL}" tag.`
   );
 
   return result;
@@ -267,10 +274,63 @@ async function syncRadarr(
 ) {
   const client = new RadarrClient(conn.baseUrl, conn.apiKey);
   const movies = await client.getMovies();
+  // Which tag ids mean "leave this title alone"? Tag lookup is a local *arr
+  // call, so it costs nothing against the streaming APIs.
+  let skipIds = new Set<number>();
+  try {
+    skipIds = resolveSkipTagIds(await client.getTags());
+  } catch (e) {
+    errors.push(`[${conn.name}] Could not read tags: ${(e as Error).message}`);
+  }
   // Track which arrIds we saw so we can prune stale rows afterwards.
   const seen: number[] = [];
 
   for (const movie of movies) {
+    const skipped = hasSkipTag(movie.tags, skipIds);
+
+    if (skipped) {
+      // Don't spend an API call and don't record availability: the sweep must
+      // never act on this title. We still refresh the basic metadata so it
+      // shows up correctly elsewhere.
+      result.taggedSkipped++;
+      result.movies++;
+      await prisma.mediaItem.upsert({
+        where: { connectionId_type_arrId: { connectionId: conn.id, type: "MOVIE", arrId: movie.id } },
+        create: {
+          connectionId: conn.id,
+          type: "MOVIE",
+          arrId: movie.id,
+          title: movie.title,
+          year: movie.year ?? null,
+          posterUrl: posterFromImages(movie.images),
+          tmdbId: movie.tmdbId ?? null,
+          imdbId: movie.imdbId ?? null,
+          monitored: movie.monitored,
+          hasFile: movie.hasFile,
+          skipped: true,
+          onStreaming: false,
+          streamingUnknown: true,
+          streamingInfo: [],
+        },
+        update: {
+          title: movie.title,
+          year: movie.year ?? null,
+          posterUrl: posterFromImages(movie.images),
+          tmdbId: movie.tmdbId ?? null,
+          imdbId: movie.imdbId ?? null,
+          monitored: movie.monitored,
+          hasFile: movie.hasFile,
+          skipped: true,
+          onStreaming: false,
+          streamingUnknown: true,
+          streamingInfo: [],
+          lastSyncedAt: new Date(),
+        },
+      });
+      seen.push(movie.id);
+      continue;
+    }
+
     let matched: MatchedTmdbProvider[] = [];
     // Track whether we could actually determine streaming availability. A
     // failed lookup must not be treated as "not on streaming".
@@ -315,6 +375,7 @@ async function syncRadarr(
         imdbId: movie.imdbId ?? null,
         monitored: movie.monitored,
         hasFile: movie.hasFile,
+        skipped: false,
         onStreaming,
         streamingUnknown,
         streamingInfo: info,
@@ -327,6 +388,7 @@ async function syncRadarr(
         imdbId: movie.imdbId ?? null,
         monitored: movie.monitored,
         hasFile: movie.hasFile,
+        skipped: false,
         onStreaming,
         streamingUnknown,
         streamingInfo: info,
@@ -357,10 +419,63 @@ async function syncSonarr(
 ) {
   const client = new SonarrClient(conn.baseUrl, conn.apiKey);
   const seriesList = await client.getSeries();
+  let skipIds = new Set<number>();
+  try {
+    skipIds = resolveSkipTagIds(await client.getTags());
+  } catch (e) {
+    errors.push(`[${conn.name}] Could not read tags: ${(e as Error).message}`);
+  }
   const seen: number[] = [];
   const now = Date.now();
 
   for (const series of seriesList) {
+    if (hasSkipTag(series.tags, skipIds)) {
+      // Leave the show entirely alone: no Watchmode call, no availability
+      // recorded, and its episode rows are dropped so the sweep can't act on
+      // stale data.
+      result.taggedSkipped++;
+      result.series++;
+      const existingSkipped = await prisma.mediaItem.upsert({
+        where: { connectionId_type_arrId: { connectionId: conn.id, type: "TV", arrId: series.id } },
+        create: {
+          connectionId: conn.id,
+          type: "TV",
+          arrId: series.id,
+          title: series.title,
+          year: series.year ?? null,
+          posterUrl: posterFromImages(series.images),
+          tmdbId: series.tmdbId ?? null,
+          imdbId: series.imdbId ?? null,
+          tvdbId: series.tvdbId ?? null,
+          monitored: series.monitored,
+          skipped: true,
+          onStreaming: false,
+          streamingUnknown: true,
+          streamingInfo: [],
+        },
+        update: {
+          title: series.title,
+          year: series.year ?? null,
+          posterUrl: posterFromImages(series.images),
+          tmdbId: series.tmdbId ?? null,
+          imdbId: series.imdbId ?? null,
+          tvdbId: series.tvdbId ?? null,
+          monitored: series.monitored,
+          skipped: true,
+          onStreaming: false,
+          streamingUnknown: true,
+          streamingInfo: [],
+          totalEpisodes: 0,
+          monitoredEpisodes: 0,
+          streamingEpisodes: 0,
+          lastSyncedAt: new Date(),
+        },
+      });
+      await prisma.episode.deleteMany({ where: { mediaId: existingSkipped.id } });
+      seen.push(series.id);
+      continue;
+    }
+
     // Existing cached snapshot (for freshness + reusing streaming data).
     const existing = await prisma.mediaItem.findUnique({
       where: { connectionId_type_arrId: { connectionId: conn.id, type: "TV", arrId: series.id } },
@@ -458,6 +573,7 @@ async function syncSonarr(
         tvdbId: series.tvdbId ?? null,
         watchmodeId,
         monitored: series.monitored,
+        skipped: false,
         providerSyncedAt: pulledFresh ? new Date() : null,
       },
       update: {
@@ -469,6 +585,7 @@ async function syncSonarr(
         tvdbId: series.tvdbId ?? null,
         watchmodeId,
         monitored: series.monitored,
+        skipped: false,
         lastSyncedAt: new Date(),
         // Advance the provider timestamp only when we pulled fresh; leave it
         // untouched when skipping so the TTL keeps counting from the real pull.

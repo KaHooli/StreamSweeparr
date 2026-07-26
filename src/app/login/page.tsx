@@ -59,7 +59,10 @@ function LoginInner() {
     <div className="login-wrap">
       <div className="login-card card">
         <div className="brand" style={{ justifyContent: "center", marginBottom: 6 }}>
-          <span className="mark">≋</span>
+          <span className="mark">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src="/icons/favicon-48x48.png" alt="" width={30} height={30} />
+        </span>
           <span>
             <span className="sweep">Stream</span>
             <span className="arr">Sweeparr</span>

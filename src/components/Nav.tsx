@@ -35,7 +35,10 @@ export function Nav() {
   return (
     <header className="topbar">
       <Link href="/" className="brand" aria-label="StreamSweeparr home">
-        <span className="mark">≋</span>
+        <span className="mark">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src="/icons/favicon-48x48.png" alt="" width={30} height={30} />
+        </span>
         <span className="full">
           <span className="sweep">Stream</span>
           <span className="arr">Sweeparr</span>

@@ -11,6 +11,7 @@ available on the streaming services you subscribe to — using **Watchmode** for
 3. **Searches** every monitored movie / episode at the end of the run.
 
 Runs are **dry-run by default** — nothing is changed until you enable LIVE mode.
+Tag anything `ss-skip` in Sonarr/Radarr to exclude it entirely ([details](#excluding-titles-the-ss-skip-tag)).
 
 ---
 
@@ -310,6 +311,20 @@ block the request or the browser (`src/lib/jobs.ts`).
 - **TV shows on streaming** — each card shows a progress bar of how many
   episodes are **unmonitored** (with `x/total on streaming`).
 - **Movies on streaming** — each card shows a **Monitored / Unmonitored** badge.
+
+## Excluding titles: the `ss-skip` tag
+Add the tag **`ss-skip`** (case-insensitive) to any series in Sonarr or movie in
+Radarr and StreamSweeparr will leave it completely alone:
+
+- its streaming availability is **never looked up** (so it costs no API quota),
+- its monitored/unmonitored state is **never changed**,
+- its files are **never deleted**, and
+- it is **excluded from the end-of-run search**.
+
+Tagged titles are marked `skipped` in the database and don't appear in the
+"on streaming" lists, since the tool deliberately has no availability data for
+them. Remove the tag and the next sync picks the title back up. The run log
+reports how many titles were ignored this way.
 
 ## Safety notes
 - **Dry-run is the default.** No changes are made until **Apply changes (LIVE

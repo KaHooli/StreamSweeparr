@@ -49,11 +49,52 @@ async function arrFetch<T>(
   return (text ? JSON.parse(text) : undefined) as T;
 }
 
+/* -------------------------------- Tags --------------------------------- */
+
+export interface ArrTag {
+  id: number;
+  label: string;
+}
+
+/**
+ * Titles carrying this tag in Sonarr/Radarr are left completely alone:
+ * StreamSweeparr does not look up their streaming availability, never changes
+ * their monitored state, never deletes their files and never searches them.
+ * Matched case-insensitively.
+ */
+export const SKIP_TAG_LABEL = "ss-skip";
+
+/**
+ * Given an instance's tag list, return the ids that mean "skip me".
+ * (A label can in principle exist more than once, so this returns a set.)
+ */
+export function resolveSkipTagIds(
+  tags: ArrTag[] | undefined | null,
+  label: string = SKIP_TAG_LABEL
+): Set<number> {
+  const want = label.trim().toLowerCase();
+  const out = new Set<number>();
+  for (const t of tags ?? []) {
+    if (typeof t?.id === "number" && t?.label?.trim().toLowerCase() === want) out.add(t.id);
+  }
+  return out;
+}
+
+/** Whether a title's tag ids include any of the skip tag ids. */
+export function hasSkipTag(
+  titleTags: number[] | undefined | null,
+  skipIds: Set<number>
+): boolean {
+  if (!skipIds.size || !titleTags?.length) return false;
+  return titleTags.some((id) => skipIds.has(id));
+}
+
 /* ------------------------------- Sonarr -------------------------------- */
 
 export interface SonarrSeries {
   id: number;
   title: string;
+  tags?: number[];
   year?: number;
   monitored: boolean;
   tvdbId?: number;
@@ -83,6 +124,10 @@ export class SonarrClient {
 
   getSeries() {
     return arrFetch<SonarrSeries[]>(this.baseUrl, this.apiKey, "/api/v3/series");
+  }
+
+  getTags() {
+    return arrFetch<ArrTag[]>(this.baseUrl, this.apiKey, "/api/v3/tag");
   }
 
   getEpisodes(seriesId: number) {
@@ -124,6 +169,7 @@ export class SonarrClient {
 export interface RadarrMovie {
   id: number;
   title: string;
+  tags?: number[];
   year?: number;
   monitored: boolean;
   hasFile: boolean;
@@ -142,6 +188,10 @@ export class RadarrClient {
 
   getMovies() {
     return arrFetch<RadarrMovie[]>(this.baseUrl, this.apiKey, "/api/v3/movie");
+  }
+
+  getTags() {
+    return arrFetch<ArrTag[]>(this.baseUrl, this.apiKey, "/api/v3/tag");
   }
 
   getMovie(id: number) {
