@@ -37,6 +37,7 @@ export const GET = withGuard(requireSession, async () => {
         posterUrl: true,
         monitored: true,
         hasFile: true,
+        tmdbId: true,
         streamingInfo: true,
         lastSyncedAt: true,
       },
@@ -74,7 +75,13 @@ export const GET = withGuard(requireSession, async () => {
     posterUrl: m.posterUrl,
     monitored: m.monitored,
     hasFile: m.hasFile,
-    services: dedupeServices(m.streamingInfo),
+    tmdbId: m.tmdbId,
+    // Movie availability comes from TMDB, so link each provider logo to TMDB's
+    // "where to watch" page for the title.
+    services: dedupeServices(
+      m.streamingInfo,
+      m.tmdbId ? `https://www.themoviedb.org/movie/${m.tmdbId}/watch` : null
+    ),
     lastSyncedAt: m.lastSyncedAt,
   }));
 
@@ -91,14 +98,37 @@ export const GET = withGuard(requireSession, async () => {
   });
 });
 
-function dedupeServices(info: unknown): { name: string; type: string }[] {
+interface ServiceOut {
+  name: string;
+  type: string;
+  logo: string | null;
+  /** Deep link to the title on that service, when we have one. */
+  url: string | null;
+}
+
+/**
+ * One entry per streaming service, with its logo and a link to the title.
+ * `fallbackUrl` is used when the stored entry has no deep link of its own
+ * (TMDB gives us availability but not per-provider links).
+ */
+function dedupeServices(info: unknown, fallbackUrl: string | null = null): ServiceOut[] {
   if (!Array.isArray(info)) return [];
   const seen = new Set<string>();
-  const out: { name: string; type: string }[] = [];
-  for (const s of info as { name: string; type: string }[]) {
-    if (seen.has(s.name)) continue;
+  const out: ServiceOut[] = [];
+  for (const s of info as {
+    name: string;
+    type: string;
+    logo?: string | null;
+    webUrl?: string | null;
+  }[]) {
+    if (!s?.name || seen.has(s.name)) continue;
     seen.add(s.name);
-    out.push({ name: s.name, type: s.type });
+    out.push({
+      name: s.name,
+      type: s.type,
+      logo: s.logo ?? null,
+      url: s.webUrl ?? fallbackUrl,
+    });
   }
   return out;
 }

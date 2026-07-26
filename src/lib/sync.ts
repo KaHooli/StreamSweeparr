@@ -7,6 +7,7 @@
  * dashboard reads exclusively from this snapshot.
  */
 
+import type { Prisma } from "@prisma/client";
 import { prisma, getSettings } from "./db";
 import {
   SonarrClient,
@@ -16,7 +17,7 @@ import {
 } from "./arr";
 import { WatchmodeClient, matchSources, type WatchmodeTitleSource } from "./watchmode";
 import { lookupWatchmodeId, refreshTitleMap } from "./titlemap";
-import { TmdbClient, matchTmdbProviders } from "./tmdb";
+import { TmdbClient, matchTmdbProviders, type MatchedTmdbProvider } from "./tmdb";
 
 export interface SyncResult {
   connections: number;
@@ -45,14 +46,59 @@ const TTL_MS = TTL_DAYS * 24 * 60 * 60 * 1000;
 // from free to paid, or vice versa).
 const PLAN_RECHECK_MS = 7 * 24 * 60 * 60 * 1000;
 
-function streamingInfoJson(matched: WatchmodeTitleSource[]) {
+/** Prisma's Json input type needs an index signature; our shapes are plain
+ *  JSON-safe objects, so cast at the boundary rather than polluting the types. */
+const asJson = (v: unknown) => v as Prisma.InputJsonValue;
+
+interface StreamingInfoEntry {
+  sourceId: number;
+  name: string;
+  type: string;
+  region: string;
+  logo?: string | null;
+  webUrl?: string | null;
+}
+
+function streamingInfoJson(
+  matched: WatchmodeTitleSource[],
+  logos?: Map<number, string | null>
+): StreamingInfoEntry[] {
   return matched.map((s) => ({
     sourceId: s.source_id,
     name: s.name,
     type: s.type,
     region: s.region,
+    logo: logos?.get(s.source_id) ?? null,
     webUrl: s.web_url ?? null,
   }));
+}
+
+/**
+ * Collapse the per-episode matches of a series into one provider list for the
+ * show tile: one entry per streaming service, keeping the first deep link we
+ * saw and filling in the service logo from the Watchmode sources catalogue.
+ */
+function aggregateSeriesProviders(
+  perEpisode: Iterable<StreamingInfoEntry[]>,
+  logos: Map<number, string | null>
+): StreamingInfoEntry[] {
+  const bySource = new Map<number, StreamingInfoEntry>();
+  for (const entries of perEpisode) {
+    for (const e of entries) {
+      const existing = bySource.get(e.sourceId);
+      if (!existing) {
+        bySource.set(e.sourceId, {
+          ...e,
+          // Always take the logo from the catalogue so shows whose episode data
+          // came from cache (before logos were stored) still render one.
+          logo: logos.get(e.sourceId) ?? e.logo ?? null,
+        });
+      } else if (!existing.webUrl && e.webUrl) {
+        existing.webUrl = e.webUrl;
+      }
+    }
+  }
+  return [...bySource.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 
 export async function runSync(progress: ProgressFn = noopProgress): Promise<SyncResult> {
@@ -157,6 +203,19 @@ export async function runSync(progress: ProgressFn = noopProgress): Promise<Sync
   const serviceIds = settings.serviceIds;
   const countedTypes = settings.countedTypes;
 
+  // Service id -> logo URL, used to show provider logos on the dashboard.
+  // One cheap call per sync (in-process cached for 6h) and non-fatal on failure.
+  const wmLogos = new Map<number, string | null>();
+  if (wm) {
+    try {
+      for (const src of await wm.sources(regions)) {
+        if (!wmLogos.has(src.id)) wmLogos.set(src.id, src.logo_100px ?? null);
+      }
+    } catch (e) {
+      errors.push(`Could not load Watchmode service logos: ${(e as Error).message}`);
+    }
+  }
+
   // Movie (TMDB) setup — only when a Radarr connection exists.
   const tmdb = hasRadarr && settings.tmdbApiKey ? new TmdbClient(settings.tmdbApiKey) : null;
   const tmdbRegions = settings.tmdbRegions;
@@ -171,7 +230,7 @@ export async function runSync(progress: ProgressFn = noopProgress): Promise<Sync
         await syncRadarr(conn, tmdb, tmdbRegions, tmdbProviderIds, tmdbCountedTypes, result, errors);
       } else {
         if (!wm) throw new Error("Watchmode is not configured.");
-        await syncSonarr(conn, wm, regions, serviceIds, countedTypes, result, errors, changedIds);
+        await syncSonarr(conn, wm, regions, serviceIds, countedTypes, result, errors, changedIds, wmLogos);
       }
     } catch (e) {
       errors.push(`[${conn.name}] ${(e as Error).message}`);
@@ -212,7 +271,7 @@ async function syncRadarr(
   const seen: number[] = [];
 
   for (const movie of movies) {
-    let matched: { providerId: number; name: string; type: string; region: string }[] = [];
+    let matched: MatchedTmdbProvider[] = [];
     // Track whether we could actually determine streaming availability. A
     // failed lookup must not be treated as "not on streaming".
     let streamingUnknown = false;
@@ -239,6 +298,7 @@ async function syncRadarr(
       name: m.name,
       type: m.type,
       region: m.region,
+      logo: m.logo,
       webUrl: null,
     }));
 
@@ -291,7 +351,9 @@ async function syncSonarr(
   errors: string[],
   // Watchmode ids known to have changed since last sync (null = feed
   // unavailable → rely on the TTL alone).
-  changedIds: Set<number> | null
+  changedIds: Set<number> | null,
+  // Streaming service id -> logo URL, for the dashboard tiles.
+  logos: Map<number, string | null>
 ) {
   const client = new SonarrClient(conn.baseUrl, conn.apiKey);
   const seriesList = await client.getSeries();
@@ -355,7 +417,7 @@ async function syncSonarr(
         for (const ep of wmEpisodes) {
           const matched = matchSources(ep.sources, serviceIds, countedTypes);
           if (matched.length) {
-            wmMap.set(`${ep.season_number}x${ep.episode_number}`, streamingInfoJson(matched));
+            wmMap.set(`${ep.season_number}x${ep.episode_number}`, streamingInfoJson(matched, logos));
           }
         }
       } catch (e) {
@@ -432,7 +494,7 @@ async function syncSonarr(
         episodeFileId: ep.episodeFileId ?? null,
         onStreaming,
         streamingUnknown,
-        streamingInfo: matched,
+        streamingInfo: asJson(matched),
       };
     });
 
@@ -453,6 +515,9 @@ async function syncSonarr(
         streamingEpisodes,
         onStreaming,
         streamingUnknown,
+        // Series-level provider list (deduped across episodes) so the dashboard
+        // tile can show one logo per streaming service.
+        streamingInfo: asJson(aggregateSeriesProviders(wmMap.values(), logos)),
       },
     });
     seen.push(series.id);

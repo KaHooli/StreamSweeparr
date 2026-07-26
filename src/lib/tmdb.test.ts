@@ -46,6 +46,21 @@ describe("matchTmdbProviders", () => {
     expect(matchTmdbProviders(avail, ["GB"], providerIds, types)).toHaveLength(1);
   });
 
+  it("exposes an absolute logo URL, or null when TMDB has no logo", () => {
+    const avail: Record<string, TmdbRegionAvailability> = {
+      US: {
+        flatrate: [
+          { ...prov(8), logo_path: "/abc.jpg" },
+          prov(9), // no logo_path
+        ],
+      },
+    };
+    const out = matchTmdbProviders(avail, regions, providerIds, types);
+    const byId = new Map(out.map((m) => [m.providerId, m.logo]));
+    expect(byId.get(8)).toBe("https://image.tmdb.org/t/p/original/abc.jpg");
+    expect(byId.get(9)).toBeNull();
+  });
+
   it("dedupes duplicate provider/region/category", () => {
     const avail: Record<string, TmdbRegionAvailability> = {
       US: { flatrate: [prov(8), prov(8)] },

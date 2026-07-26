@@ -176,6 +176,8 @@ export interface MatchedTmdbProvider {
   name: string;
   type: string; // flatrate | free | ads | rent | buy
   region: string;
+  /** Absolute logo URL, or null when TMDB has no logo for the provider. */
+  logo: string | null;
 }
 
 /**
@@ -208,7 +210,13 @@ export function matchTmdbProviders(
         const key = `${p.provider_id}:${region}:${cat}`;
         if (seen.has(key)) continue;
         seen.add(key);
-        out.push({ providerId: p.provider_id, name: p.provider_name, type: cat, region });
+        out.push({
+          providerId: p.provider_id,
+          name: p.provider_name,
+          type: cat,
+          region,
+          logo: p.logo_path ? `${TMDB_IMAGE_BASE}${p.logo_path}` : null,
+        });
       }
     }
   }

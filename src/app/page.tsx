@@ -6,6 +6,12 @@ import { RunControls } from "@/components/RunControls";
 
 export const dynamic = "force-dynamic";
 
+interface ServiceRef {
+  name: string;
+  type: string;
+  logo: string | null;
+  url: string | null;
+}
 interface TvShow {
   id: number;
   title: string;
@@ -17,7 +23,7 @@ interface TvShow {
   unmonitoredEpisodes: number;
   streamingEpisodes: number;
   unmonitoredPct: number;
-  services: { name: string; type: string }[];
+  services: ServiceRef[];
 }
 interface Movie {
   id: number;
@@ -26,13 +32,66 @@ interface Movie {
   posterUrl: string | null;
   monitored: boolean;
   hasFile: boolean;
-  services: { name: string; type: string }[];
+  tmdbId: number | null;
+  services: ServiceRef[];
 }
 interface DashboardData {
   tvShows: TvShow[];
   movies: Movie[];
   counts: { movies: number; tv: number };
   lastRun: { id: number; status: string; startedAt: string; dryRun: boolean } | null;
+}
+
+/**
+ * How much of a show is unmonitored, in words:
+ *  - every episode unmonitored -> "Show unmonitored"
+ *  - some episodes unmonitored -> "N episodes unmonitored"
+ *  - none                      -> "Fully monitored"
+ */
+function unmonitoredLabel(s: TvShow): string {
+  if (s.totalEpisodes > 0 && s.unmonitoredEpisodes >= s.totalEpisodes) return "Show unmonitored";
+  if (s.unmonitoredEpisodes === 0) return "Fully monitored";
+  const n = s.unmonitoredEpisodes;
+  return `${n} ${n === 1 ? "episode" : "episodes"} unmonitored`;
+}
+
+/**
+ * The streaming services a title was matched on, as logos linking straight to
+ * the title on that service (TV: Watchmode deep link; movies: TMDB watch page).
+ */
+function ProviderLogos({ services, title }: { services: ServiceRef[]; title: string }) {
+  if (!services.length) return null;
+  return (
+    <div className="providers">
+      {services.map((sv) => {
+        const label = `${title} on ${sv.name}`;
+        const inner = sv.logo ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img className="provider-logo" src={sv.logo} alt={sv.name} title={label} loading="lazy" />
+        ) : (
+          <span className="chip" title={label}>
+            {sv.name}
+          </span>
+        );
+        return sv.url ? (
+          <a
+            key={sv.name}
+            href={sv.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label={label}
+            className="provider-link"
+          >
+            {inner}
+          </a>
+        ) : (
+          <span key={sv.name} className="provider-link" aria-label={label}>
+            {inner}
+          </span>
+        );
+      })}
+    </div>
+  );
 }
 
 async function getData(): Promise<DashboardData> {
@@ -88,11 +147,19 @@ export default async function DashboardPage() {
     <main>
       <div className="stats">
         <div className="stat">
-          <div className="label">TV on streaming</div>
+          <div className="label">
+            <a href="#tv-on-streaming" className="stat-link">
+              TV on streaming
+            </a>
+          </div>
           <div className="value">{data.tvShows.length}</div>
         </div>
         <div className="stat">
-          <div className="label">Movies on streaming</div>
+          <div className="label">
+            <a href="#movies-on-streaming" className="stat-link">
+              Movies on streaming
+            </a>
+          </div>
           <div className="value">{data.movies.length}</div>
         </div>
         <div className="stat">
@@ -122,7 +189,7 @@ export default async function DashboardPage() {
       </div>
 
       {/* -------- TV shows -------- */}
-      <div className="section-title">
+      <div className="section-title" id="tv-on-streaming">
         <h2>TV shows on streaming</h2>
         <span className="count">{data.tvShows.length} shows</span>
       </div>
@@ -138,7 +205,7 @@ export default async function DashboardPage() {
                 <span className="poster-year">{s.year ?? ""}</span>
                 <div className="progress">
                   <div className="row">
-                    <span>{s.unmonitoredEpisodes} unmonitored</span>
+                    <span>{unmonitoredLabel(s)}</span>
                     <span>{s.unmonitoredPct}%</span>
                   </div>
                   <div className="track">
@@ -150,14 +217,7 @@ export default async function DashboardPage() {
                     </span>
                   </div>
                 </div>
-                <div className="chips">
-                  {s.services.slice(0, 3).map((sv) => (
-                    <span className="chip" key={sv.name}>
-                      {sv.name}
-                    </span>
-                  ))}
-                  {s.services.length > 3 && <span className="chip">+{s.services.length - 3}</span>}
-                </div>
+                <ProviderLogos services={s.services} title={s.title} />
               </div>
             </div>
           ))}
@@ -165,7 +225,7 @@ export default async function DashboardPage() {
       )}
 
       {/* -------- Movies -------- */}
-      <div className="section-title">
+      <div className="section-title" id="movies-on-streaming">
         <h2>Movies on streaming</h2>
         <span className="count">{data.movies.length} movies</span>
       </div>
@@ -185,14 +245,7 @@ export default async function DashboardPage() {
                     {m.monitored ? "Monitored" : "Unmonitored"}
                   </span>
                 </div>
-                <div className="chips">
-                  {m.services.slice(0, 3).map((sv) => (
-                    <span className="chip" key={sv.name}>
-                      {sv.name}
-                    </span>
-                  ))}
-                  {m.services.length > 3 && <span className="chip">+{m.services.length - 3}</span>}
-                </div>
+                <ProviderLogos services={m.services} title={m.title} />
               </div>
             </div>
           ))}
