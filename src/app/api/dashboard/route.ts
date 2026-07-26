@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { requireSession, withGuard } from "@/lib/auth";
+import { sanitizeExternalUrl, tmdbWatchUrl } from "@/lib/urls";
 
 export const dynamic = "force-dynamic";
 
@@ -20,6 +21,7 @@ export const GET = withGuard(requireSession, async () => {
         year: true,
         posterUrl: true,
         monitored: true,
+        tmdbId: true,
         totalEpisodes: true,
         monitoredEpisodes: true,
         streamingEpisodes: true,
@@ -63,7 +65,9 @@ export const GET = withGuard(requireSession, async () => {
       unmonitoredEpisodes: unmonitored,
       streamingEpisodes: s.streamingEpisodes,
       unmonitoredPct,
-      services: dedupeServices(s.streamingInfo),
+      // Prefer Watchmode's per-provider deep link; fall back to TMDB's
+      // "where to watch" page (free Watchmode plans don't return episode links).
+      services: dedupeServices(s.streamingInfo, tmdbWatchUrl("tv", s.tmdbId)),
       lastSyncedAt: s.lastSyncedAt,
     };
   });
@@ -78,10 +82,7 @@ export const GET = withGuard(requireSession, async () => {
     tmdbId: m.tmdbId,
     // Movie availability comes from TMDB, so link each provider logo to TMDB's
     // "where to watch" page for the title.
-    services: dedupeServices(
-      m.streamingInfo,
-      m.tmdbId ? `https://www.themoviedb.org/movie/${m.tmdbId}/watch` : null
-    ),
+    services: dedupeServices(m.streamingInfo, tmdbWatchUrl("movie", m.tmdbId)),
     lastSyncedAt: m.lastSyncedAt,
   }));
 
@@ -127,7 +128,8 @@ function dedupeServices(info: unknown, fallbackUrl: string | null = null): Servi
       name: s.name,
       type: s.type,
       logo: s.logo ?? null,
-      url: s.webUrl ?? fallbackUrl,
+      // Guard against non-URL values already persisted by earlier syncs.
+      url: sanitizeExternalUrl(s.webUrl) ?? fallbackUrl,
     });
   }
   return out;

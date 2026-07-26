@@ -20,6 +20,7 @@ import {
 } from "./arr";
 import { WatchmodeClient, matchSources, type WatchmodeTitleSource } from "./watchmode";
 import { lookupWatchmodeId, refreshTitleMap } from "./titlemap";
+import { sanitizeExternalUrl } from "./urls";
 import { TmdbClient, matchTmdbProviders, type MatchedTmdbProvider } from "./tmdb";
 
 export interface SyncResult {
@@ -74,7 +75,9 @@ function streamingInfoJson(
     type: s.type,
     region: s.region,
     logo: logos?.get(s.source_id) ?? null,
-    webUrl: s.web_url ?? null,
+    // Watchmode returns a placeholder sentence here on free plans, so only keep
+    // real absolute URLs.
+    webUrl: sanitizeExternalUrl(s.web_url),
   }));
 }
 
