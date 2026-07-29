@@ -200,9 +200,11 @@ configured on **separate tabs** under Settings.
 
 ### External API endpoints used
 - **Watchmode (TV):** `/v1/regions/`, `/v1/sources/`, `/v1/search/` (fallback
-  only), `/v1/title/{id}/episodes/`, `/v1/changes/titles_episodes_changed/`
-  (paid plans; used for change detection), `/v1/status/` (auth via
-  `X-API-Key`), plus the public `datasets/title_id_map.csv`.
+  only), `/v1/title/{id}/episodes/`, `/v1/title/{id}/sources/` (only when the
+  episode data yields no usable `web_url`, i.e. free plans — see below),
+  `/v1/changes/titles_episodes_changed/` (paid plans; used for change
+  detection), `/v1/status/` (auth via `X-API-Key`), plus the public
+  `datasets/title_id_map.csv`.
 - **TheMovieDB (movies):** `/3/watch/providers/regions`,
   `/3/watch/providers/movie`, `/3/movie/{id}/watch/providers`
   (auth via the `api_key` query param).
@@ -311,6 +313,14 @@ block the request or the browser (`src/lib/jobs.ts`).
 - **TV shows on streaming** — each card shows a progress bar of how many
   episodes are **unmonitored** (with `x/total on streaming`).
 - **Movies on streaming** — each card shows a **Monitored / Unmonitored** badge.
+- **Provider logos** under each card link straight to the title on that service,
+  using Watchmode's `web_url` (never `ios_url`/`android_url`, which are
+  app-scheme links a browser can't open). Watchmode only returns per-episode
+  links on paid plans, so for TV the show-level `/title/{id}/sources/` links are
+  fetched when needed — once per provider refresh (7-day TTL), then reused from
+  the stored snapshot. If Watchmode has no link at all, the logo falls back to
+  the TMDB "where to watch" page; movies always use that page, since TMDB
+  provides availability but no per-provider link.
 
 ## Movies deleted from TMDB
 TMDB sometimes deletes or merges entries — typically cancelled or

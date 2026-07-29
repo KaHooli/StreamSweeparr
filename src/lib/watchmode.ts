@@ -33,7 +33,14 @@ export interface WatchmodeTitleSource {
   name: string;
   type: string;
   region: string;
+  /**
+   * Browser deep link to the title on that service. This is the only link we
+   * ever surface in the UI: `ios_url`/`android_url` are app-scheme links that
+   * do nothing in a desktop browser, so they are deliberately unused.
+   */
   web_url?: string;
+  ios_url?: string;
+  android_url?: string;
   format?: string;
   price?: number | null;
   seasons?: number | null;
@@ -272,6 +279,21 @@ export class WatchmodeClient {
       60 * 60 * 1000
     );
     return data.title_results ?? [];
+  }
+
+  /**
+   * Streaming sources for a title as a whole (as opposed to per episode).
+   *
+   * Unlike the per-episode links from `titleEpisodes`, the `web_url` here is a
+   * real URL on every plan tier, so this is what makes the dashboard provider
+   * logos clickable on a free Watchmode plan. Cached 30m.
+   */
+  async titleSources(watchmodeId: number, regions: string[]): Promise<WatchmodeTitleSource[]> {
+    return this.get<WatchmodeTitleSource[]>(
+      `/title/${watchmodeId}/sources/`,
+      { regions: regions.join(",") },
+      30 * 60 * 1000
+    );
   }
 
   /** Episodes for a TV title, each with per-episode sources. Cached 30m. */

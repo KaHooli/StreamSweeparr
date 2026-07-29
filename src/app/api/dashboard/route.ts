@@ -65,8 +65,9 @@ export const GET = withGuard(requireSession, async () => {
       unmonitoredEpisodes: unmonitored,
       streamingEpisodes: s.streamingEpisodes,
       unmonitoredPct,
-      // Prefer Watchmode's per-provider deep link; fall back to TMDB's
-      // "where to watch" page (free Watchmode plans don't return episode links).
+      // Link each logo to the show on that service using Watchmode's `web_url`;
+      // TMDB's "where to watch" page is only a last resort for the rare source
+      // Watchmode gives us no link for.
       services: dedupeServices(s.streamingInfo, tmdbWatchUrl("tv", s.tmdbId)),
       lastSyncedAt: s.lastSyncedAt,
     };

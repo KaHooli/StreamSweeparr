@@ -63,7 +63,7 @@ const PLAN_RECHECK_MS = 7 * 24 * 60 * 60 * 1000;
  *  JSON-safe objects, so cast at the boundary rather than polluting the types. */
 const asJson = (v: unknown) => v as Prisma.InputJsonValue;
 
-interface StreamingInfoEntry {
+export interface StreamingInfoEntry {
   sourceId: number;
   name: string;
   type: string;
@@ -114,6 +114,47 @@ function aggregateSeriesProviders(
     }
   }
   return [...bySource.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/**
+ * Streaming service id -> browser deep link, from a set of title sources.
+ *
+ * Only `web_url` is considered: Watchmode also returns `ios_url`/`android_url`,
+ * but those are app-scheme links that are useless in a browser.
+ */
+export function providerLinkMap(
+  sources: Pick<WatchmodeTitleSource, "source_id" | "web_url">[]
+): Map<number, string> {
+  const links = new Map<number, string>();
+  for (const s of sources) {
+    if (links.has(s.source_id)) continue; // first region wins
+    const url = sanitizeExternalUrl(s.web_url);
+    if (url) links.set(s.source_id, url);
+  }
+  return links;
+}
+
+/** Deep links already persisted on a series' provider list (free to reuse). */
+function storedProviderLinks(info: unknown): Map<number, string> {
+  if (!Array.isArray(info)) return new Map();
+  return providerLinkMap(
+    (info as StreamingInfoEntry[])
+      .filter((e) => e && typeof e.sourceId === "number")
+      .map((e) => ({ source_id: e.sourceId, web_url: e.webUrl ?? undefined }))
+  );
+}
+
+/** Fill in any missing deep links from `links`. Returns true if all are set. */
+export function applyProviderLinks(
+  entries: StreamingInfoEntry[],
+  links: Map<number, string>
+): boolean {
+  let complete = true;
+  for (const e of entries) {
+    if (!e.webUrl) e.webUrl = links.get(e.sourceId) ?? null;
+    if (!e.webUrl) complete = false;
+  }
+  return complete;
 }
 
 export async function runSync(progress: ProgressFn = noopProgress): Promise<SyncResult> {
@@ -650,6 +691,31 @@ async function syncSonarr(
     if (onStreaming) result.onStreamingSeries++;
     result.series++;
 
+    // Series-level provider list (deduped across episodes) so the dashboard
+    // tile can show one logo per streaming service.
+    const seriesProviders = aggregateSeriesProviders(wmMap.values(), logos);
+
+    // The dashboard links each logo to the show on that service. Per-episode
+    // `web_url`s are a paid-plan feature (free plans return a placeholder that
+    // we discard), so fill any gaps from the *title*-level sources endpoint —
+    // its `web_url` is a real link on every plan tier. Reuse links we already
+    // persisted first, and only spend a request on a sync that was going to hit
+    // Watchmode anyway, so the 7-day TTL still caps the credit cost.
+    const linksComplete = applyProviderLinks(
+      seriesProviders,
+      storedProviderLinks(existing?.streamingInfo)
+    );
+    if (onStreaming && !linksComplete && pulledFresh && watchmodeId !== null) {
+      try {
+        const titleSources = await wm.titleSources(watchmodeId, regions);
+        result.tvProviderCalls++;
+        applyProviderLinks(seriesProviders, providerLinkMap(titleSources));
+      } catch (e) {
+        // Non-fatal: the tile falls back to a TMDB "where to watch" link.
+        errors.push(`[${conn.name}] ${series.title} provider links: ${(e as Error).message}`);
+      }
+    }
+
     await prisma.mediaItem.update({
       where: { id: mediaItem.id },
       data: {
@@ -658,9 +724,7 @@ async function syncSonarr(
         streamingEpisodes,
         onStreaming,
         streamingUnknown,
-        // Series-level provider list (deduped across episodes) so the dashboard
-        // tile can show one logo per streaming service.
-        streamingInfo: asJson(aggregateSeriesProviders(wmMap.values(), logos)),
+        streamingInfo: asJson(seriesProviders),
       },
     });
     seen.push(series.id);
