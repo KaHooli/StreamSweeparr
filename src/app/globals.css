@@ -809,6 +809,17 @@ a.provider-link:hover {
 }
 
 @media (max-width: 640px) {
+  .topbar {
+    flex-wrap: wrap;
+    row-gap: 10px;
+    gap: 10px;
+  }
+  .nav {
+    order: 3;
+    flex: 1 1 100%;
+    margin-left: 0;
+    justify-content: space-between;
+  }
   .nav a {
     padding: 8px 10px;
     font-size: 13px;
@@ -818,5 +829,8 @@ a.provider-link:hover {
   }
   .user-name {
     display: none;
+  }
+  .user-menu {
+    margin-left: 0;
   }
 }
