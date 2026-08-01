@@ -21,7 +21,6 @@ export const GET = withGuard(requireSession, async () => {
         year: true,
         posterUrl: true,
         monitored: true,
-        tmdbId: true,
         totalEpisodes: true,
         monitoredEpisodes: true,
         streamingEpisodes: true,
@@ -65,10 +64,11 @@ export const GET = withGuard(requireSession, async () => {
       unmonitoredEpisodes: unmonitored,
       streamingEpisodes: s.streamingEpisodes,
       unmonitoredPct,
-      // Link each logo to the show on that service using Watchmode's `web_url`;
-      // TMDB's "where to watch" page is only a last resort for the rare source
-      // Watchmode gives us no link for.
-      services: dedupeServices(s.streamingInfo, tmdbWatchUrl("tv", s.tmdbId)),
+      // Link each logo to the show on that service using Watchmode's `web_url`
+      // and nothing else: `ios_url`/`android_url` are app-scheme links a browser
+      // can't open, and a TMDB "where to watch" page isn't the service. A source
+      // Watchmode gives us no link for renders as a plain (unlinked) logo.
+      services: dedupeServices(s.streamingInfo),
       lastSyncedAt: s.lastSyncedAt,
     };
   });

@@ -152,8 +152,8 @@ function storedProviderLinks(info: unknown): Map<number, string> {
  * Whether it is time to (re)ask Watchmode for a series' provider deep links.
  *
  * Intentionally independent of the episode-availability TTL — a show whose
- * episodes are still fresh would otherwise keep its TMDB fallback links for up
- * to a week — but still rate-limited to one request per TTL so a source
+ * episodes are still fresh would otherwise keep its unlinked logos for up to a
+ * week — but still rate-limited to one request per TTL so a source
  * Watchmode has no link for can't be re-probed on every sync.
  */
 export function providerLinksAreStale(
@@ -339,7 +339,7 @@ export async function runSync(progress: ProgressFn = noopProgress): Promise<Sync
     progress(
       "warn",
       `${result.tvMissingLinks} series have a streaming service Watchmode gives no web_url for — ` +
-        `those provider logos link to TMDB's "where to watch" page instead.`
+        `those provider logos are shown without a link.`
     );
   }
 
@@ -748,12 +748,12 @@ async function syncSonarr(
         providerLinksSyncedAt = new Date();
         linksComplete = applyProviderLinks(seriesProviders, providerLinkMap(titleSources));
       } catch (e) {
-        // Non-fatal: the tile falls back to a TMDB "where to watch" link.
+        // Non-fatal: the affected logos just render without a link.
         errors.push(`[${conn.name}] ${series.title} provider links: ${(e as Error).message}`);
       }
     }
     // Surface the one case the user can otherwise only diagnose by clicking a
-    // logo: Watchmode gave us no deep link, so the logo goes to TMDB instead.
+    // logo: Watchmode gave us no deep link, so the logo isn't clickable.
     if (onStreaming && !linksComplete) result.tvMissingLinks++;
 
     await prisma.mediaItem.update({
