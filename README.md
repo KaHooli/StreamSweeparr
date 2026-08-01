@@ -200,8 +200,8 @@ configured on **separate tabs** under Settings.
 
 ### External API endpoints used
 - **Watchmode (TV):** `/v1/regions/`, `/v1/sources/`, `/v1/search/` (fallback
-  only), `/v1/title/{id}/episodes/`, `/v1/title/{id}/sources/` (only when the
-  episode data yields no usable `web_url`, i.e. free plans — see below),
+  only), `/v1/title/{id}/episodes/`, `/v1/title/{id}/sources/` (provider deep
+  links, only for shows still missing one — see **Dashboard**),
   `/v1/changes/titles_episodes_changed/` (paid plans; used for change
   detection), `/v1/status/` (auth via `X-API-Key`), plus the public
   `datasets/title_id_map.csv`.
@@ -315,12 +315,21 @@ block the request or the browser (`src/lib/jobs.ts`).
 - **Movies on streaming** — each card shows a **Monitored / Unmonitored** badge.
 - **Provider logos** under each card link straight to the title on that service,
   using Watchmode's `web_url` (never `ios_url`/`android_url`, which are
-  app-scheme links a browser can't open). Watchmode only returns per-episode
-  links on paid plans, so for TV the show-level `/title/{id}/sources/` links are
-  fetched when needed — once per provider refresh (7-day TTL), then reused from
-  the stored snapshot. If Watchmode has no link at all, the logo falls back to
-  the TMDB "where to watch" page; movies always use that page, since TMDB
-  provides availability but no per-provider link.
+  app-scheme links a browser can't open).
+
+  Watchmode only returns *per-episode* links on paid plans — free plans get the
+  placeholder `"Episode links available for paid plans only."`, which is
+  discarded — so for TV the **show-level** `/title/{id}/sources/` links are
+  fetched instead. That lookup is on its own schedule
+  (`MediaItem.providerLinksSyncedAt`, same 7-day TTL) rather than the episode
+  one, so a show doesn't sit on a fallback link for a week just because its
+  availability is still fresh, and it only runs for shows that are actually
+  missing a link. Results are stored in `streamingInfo` and reused from then on.
+
+  If Watchmode has no link for a source at all, that logo falls back to the TMDB
+  "where to watch" page and the run log says how many shows that affected.
+  Movies always use the TMDB page, since TMDB gives availability but no
+  per-provider link.
 
 ## Movies deleted from TMDB
 TMDB sometimes deletes or merges entries — typically cancelled or

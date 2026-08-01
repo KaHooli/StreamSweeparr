@@ -38,6 +38,10 @@ export interface SyncResult {
   // and how many were skipped as unchanged/fresh (credit-saving visibility).
   tvProviderCalls: number;
   tvSkipped: number;
+  /** Series that hit the title-level sources endpoint for provider deep links. */
+  tvLinkCalls: number;
+  /** On-streaming series with ≥1 provider Watchmode gave no `web_url` for. */
+  tvMissingLinks: number;
   /** Titles left alone because they carry the ss-skip tag. */
   taggedSkipped: number;
   /** Movies whose TMDB id no longer resolves (candidates for removal). */
@@ -144,6 +148,23 @@ function storedProviderLinks(info: unknown): Map<number, string> {
   );
 }
 
+/**
+ * Whether it is time to (re)ask Watchmode for a series' provider deep links.
+ *
+ * Intentionally independent of the episode-availability TTL — a show whose
+ * episodes are still fresh would otherwise keep its TMDB fallback links for up
+ * to a week — but still rate-limited to one request per TTL so a source
+ * Watchmode has no link for can't be re-probed on every sync.
+ */
+export function providerLinksAreStale(
+  lastCheckedAt: Date | null | undefined,
+  now = Date.now(),
+  ttlMs = TTL_MS
+): boolean {
+  if (!lastCheckedAt) return true; // never asked (incl. rows predating the column)
+  return now - lastCheckedAt.getTime() >= ttlMs;
+}
+
 /** Fill in any missing deep links from `links`. Returns true if all are set. */
 export function applyProviderLinks(
   entries: StreamingInfoEntry[],
@@ -168,6 +189,8 @@ export async function runSync(progress: ProgressFn = noopProgress): Promise<Sync
     onStreamingSeries: 0,
     tvProviderCalls: 0,
     tvSkipped: 0,
+    tvLinkCalls: 0,
+    tvMissingLinks: 0,
     taggedSkipped: 0,
     tmdbMissingMovies: 0,
     errors,
@@ -308,9 +331,17 @@ export async function runSync(progress: ProgressFn = noopProgress): Promise<Sync
   progress(
     "info",
     `Watchmode calls this sync: ${result.tvProviderCalls} episode fetch(es) across ${result.series} series ` +
-      `(${result.tvSkipped} skipped as unchanged/fresh). ` +
+      `(${result.tvSkipped} skipped as unchanged/fresh), ` +
+      `${result.tvLinkCalls} provider-link fetch(es). ` +
       `${result.taggedSkipped} title(s) ignored via the "${SKIP_TAG_LABEL}" tag.`
   );
+  if (result.tvMissingLinks) {
+    progress(
+      "warn",
+      `${result.tvMissingLinks} series have a streaming service Watchmode gives no web_url for — ` +
+        `those provider logos link to TMDB's "where to watch" page instead.`
+    );
+  }
 
   return result;
 }
@@ -695,26 +726,35 @@ async function syncSonarr(
     // tile can show one logo per streaming service.
     const seriesProviders = aggregateSeriesProviders(wmMap.values(), logos);
 
-    // The dashboard links each logo to the show on that service. Per-episode
-    // `web_url`s are a paid-plan feature (free plans return a placeholder that
-    // we discard), so fill any gaps from the *title*-level sources endpoint —
-    // its `web_url` is a real link on every plan tier. Reuse links we already
-    // persisted first, and only spend a request on a sync that was going to hit
-    // Watchmode anyway, so the 7-day TTL still caps the credit cost.
-    const linksComplete = applyProviderLinks(
+    // The dashboard links each logo to the show on that service, using
+    // Watchmode's `web_url`. Per-episode `web_url`s are a paid-plan feature
+    // (free plans return a placeholder that we discard), so fill any gaps from
+    // the *title*-level sources endpoint, whose `web_url` is a real link on
+    // every plan tier. Links we already persisted are reused for free.
+    let linksComplete = applyProviderLinks(
       seriesProviders,
       storedProviderLinks(existing?.streamingInfo)
     );
-    if (onStreaming && !linksComplete && pulledFresh && watchmodeId !== null) {
+    let providerLinksSyncedAt = existing?.providerLinksSyncedAt ?? null;
+    if (
+      onStreaming &&
+      !linksComplete &&
+      watchmodeId !== null &&
+      providerLinksAreStale(providerLinksSyncedAt, now)
+    ) {
       try {
         const titleSources = await wm.titleSources(watchmodeId, regions);
-        result.tvProviderCalls++;
-        applyProviderLinks(seriesProviders, providerLinkMap(titleSources));
+        result.tvLinkCalls++;
+        providerLinksSyncedAt = new Date();
+        linksComplete = applyProviderLinks(seriesProviders, providerLinkMap(titleSources));
       } catch (e) {
         // Non-fatal: the tile falls back to a TMDB "where to watch" link.
         errors.push(`[${conn.name}] ${series.title} provider links: ${(e as Error).message}`);
       }
     }
+    // Surface the one case the user can otherwise only diagnose by clicking a
+    // logo: Watchmode gave us no deep link, so the logo goes to TMDB instead.
+    if (onStreaming && !linksComplete) result.tvMissingLinks++;
 
     await prisma.mediaItem.update({
       where: { id: mediaItem.id },
@@ -725,6 +765,7 @@ async function syncSonarr(
         onStreaming,
         streamingUnknown,
         streamingInfo: asJson(seriesProviders),
+        providerLinksSyncedAt,
       },
     });
     seen.push(series.id);

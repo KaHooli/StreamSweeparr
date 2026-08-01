@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { providerLinkMap, applyProviderLinks, type StreamingInfoEntry } from "./sync";
+import {
+  providerLinkMap,
+  applyProviderLinks,
+  providerLinksAreStale,
+  type StreamingInfoEntry,
+} from "./sync";
 
 const entry = (sourceId: number, webUrl: string | null = null): StreamingInfoEntry => ({
   sourceId,
@@ -44,6 +49,25 @@ describe("providerLinkMap", () => {
     ]);
     // First entry is unusable, so the later real URL still wins.
     expect(links.get(203)).toBe("https://netflix.com/us");
+  });
+});
+
+describe("providerLinksAreStale", () => {
+  const now = Date.UTC(2026, 0, 30);
+  const ttl = 7 * 24 * 60 * 60 * 1000;
+
+  it("is stale when never checked (rows predating the column)", () => {
+    expect(providerLinksAreStale(null, now, ttl)).toBe(true);
+    expect(providerLinksAreStale(undefined, now, ttl)).toBe(true);
+  });
+
+  it("is fresh inside the TTL", () => {
+    expect(providerLinksAreStale(new Date(now - ttl + 1000), now, ttl)).toBe(false);
+  });
+
+  it("is stale at and beyond the TTL", () => {
+    expect(providerLinksAreStale(new Date(now - ttl), now, ttl)).toBe(true);
+    expect(providerLinksAreStale(new Date(now - ttl * 2), now, ttl)).toBe(true);
   });
 });
 

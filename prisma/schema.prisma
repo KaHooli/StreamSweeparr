@@ -205,7 +205,9 @@ model MediaItem {
   // The sweep must NOT re-monitor items whose streaming status is unknown, to
   // avoid churn from a temporary Watchmode outage.
   streamingUnknown Boolean @default(false)
-  // JSON blob of matched sources: [{sourceId,name,logo,type,region}]
+  // JSON blob of matched sources: [{sourceId,name,logo,type,region,webUrl}]
+  // `webUrl` is Watchmode's `web_url` deep link to this title on that service,
+  // and is what the dashboard provider logos link to.
   streamingInfo  Json?
 
   // Episode roll-ups for TV (movies leave these at 0).
@@ -218,6 +220,11 @@ model MediaItem {
   // (Watchmode for TV). Used to skip the provider call when data is fresh and
   // the changes-feed says the title hasn't changed. Null = never pulled.
   providerSyncedAt DateTime?
+  // Last time we asked Watchmode's title-level sources endpoint for per-provider
+  // deep links (`web_url`). Tracked separately from providerSyncedAt because the
+  // per-episode availability pull does not return usable links on free plans, so
+  // the two calls are made on independent schedules. Null = never asked.
+  providerLinksSyncedAt DateTime?
 
   connection     ArrConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
   connectionId   Int
