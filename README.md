@@ -324,14 +324,14 @@ block the request or the browser (`src/lib/jobs.ts`).
   discarded — so for TV the **show-level** `/title/{id}/sources/` links are
   fetched instead. That lookup is on its own schedule
   (`MediaItem.providerLinksSyncedAt`, same 7-day TTL) rather than the episode
-  one, so a show doesn't sit on a fallback link for a week just because its
+  one, so a show doesn't sit on unlinked logos for a week just because its
   availability is still fresh, and it only runs for shows that are actually
   missing a link. Results are stored in `streamingInfo` and reused from then on.
 
-  If Watchmode has no link for a source at all, that logo falls back to the TMDB
-  "where to watch" page and the run log says how many shows that affected.
-  Movies always use the TMDB page, since TMDB gives availability but no
-  per-provider link.
+  If Watchmode has no link for a source at all, that logo is rendered without a
+  link — a TV logo never points anywhere but the service itself — and the run
+  log says how many shows that affected. Movies always use the TMDB page, since
+  TMDB gives availability but no per-provider link.
 
 ## Movies deleted from TMDB
 TMDB sometimes deletes or merges entries — typically cancelled or
