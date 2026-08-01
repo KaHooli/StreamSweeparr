@@ -17,6 +17,7 @@ interface SettingsDto {
   tmdbProviderIds: number[];
   tmdbCountedTypes: string[];
   deleteFiles: boolean;
+  purgeUnmonitoredFiles: boolean;
   searchAtEnd: boolean;
   removeMissingTmdbMovies: boolean;
   applyChanges: boolean;
@@ -860,6 +861,13 @@ function OptionsCard({ settings, onChange }: { settings: SettingsDto; onChange: 
         desc="Delete the episode/movie file after unmonitoring a title that's on streaming."
         checked={settings.deleteFiles}
         onChange={(v) => set({ deleteFiles: v })}
+      />
+      <Toggle
+        title="Remove files for all unmonitored items"
+        desc="At the end of a sweep, delete files for every unmonitored movie and episode — not just the ones this sweep unmonitored. Clears an existing unmonitored back-catalogue."
+        checked={settings.purgeUnmonitoredFiles}
+        danger
+        onChange={(v) => set({ purgeUnmonitoredFiles: v })}
       />
       <Toggle
         title="Remove movies deleted from TMDB"

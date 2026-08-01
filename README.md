@@ -295,7 +295,9 @@ is created/updated automatically from the committed migrations.
    instances*, or add Sonarr/Radarr manually (URL + API key; the app verifies
    before saving).
 5. **Run options** tab → leave **Apply changes** *off* for a safe dry-run first.
-   Toggle **Delete files** and **Search at end** to taste.
+   Toggle **Delete files** and **Search at end** to taste. **Remove files for all
+   unmonitored items** is off by default — see
+   [Clearing files for unmonitored titles](#clearing-files-for-unmonitored-titles).
 
 ## Running a sweep
 From the **Dashboard**:
@@ -345,6 +347,28 @@ Like every destructive action this only happens in **LIVE mode** — a dry-run
 just reports `Would remove …`. Turn it off with **Settings → Run options →
 Remove movies deleted from TMDB**. Removals are counted on the **Runs** page.
 
+## Clearing files for unmonitored titles
+**Delete files when unmonitoring** only covers titles the sweep unmonitors *that
+run*. Anything already unmonitored — a back-catalogue you unmonitored by hand, or
+titles swept before you turned file deletion on — keeps its files forever.
+
+**Settings → Run options → Remove files for all unmonitored items** closes that
+gap: at the end of a sweep, every movie and episode still unmonitored has its
+file deleted. Monitoring is never changed, since those titles are already
+unmonitored.
+
+It is **off by default** so upgrading never retroactively wipes an existing
+library, and like every destructive action it is LIVE-mode only — a dry-run
+reports `Would delete file for … (unmonitored)`. Two things are deliberately out
+of scope:
+
+- titles being **re-monitored** this run (they left streaming, so they end the
+  sweep monitored and their files are kept), and
+- `ss-skip` tagged titles, which are never touched.
+
+Note this is a superset of **Delete files when unmonitoring**: with it enabled,
+files are removed from unmonitored titles even if that narrower toggle is off.
+
 ## Excluding titles: the `ss-skip` tag
 Add the tag **`ss-skip`** (case-insensitive) to any series in Sonarr or movie in
 Radarr and StreamSweeparr will leave it completely alone:
@@ -362,9 +386,10 @@ reports how many titles were ignored this way.
 ## Safety notes
 - **Dry-run is the default.** No changes are made until **Apply changes (LIVE
   mode)** is enabled in Settings.
-- **File deletion is destructive** and permanent. It only happens in LIVE mode
-  with **Delete files** enabled, and only for titles found on your selected
-  streaming services.
+- **File deletion is destructive** and permanent. It only happens in LIVE mode.
+  With **Delete files when unmonitoring** it is limited to titles found on your
+  selected streaming services; **Remove files for all unmonitored items** widens
+  it to every unmonitored title (see below), so enable that one deliberately.
 - **Transient Watchmode failures never cause churn.** When a title's streaming
   status can't be determined (lookup error or unmapped title), it is flagged
   *unknown* and the sweep will **not** re-monitor it — avoiding a mass

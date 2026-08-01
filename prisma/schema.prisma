@@ -43,6 +43,10 @@ model Settings {
   tmdbCountedTypes  String[] @default(["flatrate", "free"])
   // Automatically delete files when unmonitoring (destructive).
   deleteFiles       Boolean  @default(true)
+  // Delete files for EVERY item left unmonitored after a sweep, not just the
+  // titles that sweep itself unmonitored. Clears a pre-existing unmonitored
+  // back-catalogue. Off by default because it is broad and destructive.
+  purgeUnmonitoredFiles Boolean @default(false)
   // Trigger a search for all monitored items at the end of a run.
   searchAtEnd       Boolean  @default(true)
   // Remove movies from Radarr when TMDB reports their id no longer exists.

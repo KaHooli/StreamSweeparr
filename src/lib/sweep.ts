@@ -7,7 +7,11 @@
  *      if enabled, their files are deleted.
  *   2. RE-MONITOR: unmonitored items that are NO LONGER on any selected
  *      streaming service are set back to monitored.
- *   3. SEARCH: at the end, trigger a search for every monitored movie/episode.
+ *   3. PURGE (optional, `purgeUnmonitoredFiles`): delete files for every item
+ *      that is still unmonitored once 1 and 2 are decided. Unlike `deleteFiles`
+ *      — which only covers titles this sweep just unmonitored — this also clears
+ *      an unmonitored back-catalogue. Items re-monitored by 2 are never purged.
+ *   4. SEARCH: at the end, trigger a search for every monitored movie/episode.
  *
  * A run always syncs first so decisions are based on fresh data. When
  * `applyChanges` is false the run is a dry-run: it records what *would* happen
@@ -57,7 +61,7 @@ async function sweepBody(ctx: RunContext, dryRun: boolean): Promise<void> {
     }
   }
 
-  // 3. Search all monitored items.
+  // 4. Search all monitored items.
   if (settings.searchAtEnd) {
     push("info", "Triggering search for all monitored items…");
     for (const conn of connections) {
@@ -75,9 +79,104 @@ async function sweepBody(ctx: RunContext, dryRun: boolean): Promise<void> {
   // avoids a second full Watchmode pull (previously doubling TV credit usage).
 }
 
+/** What the sweep should do with one item's monitoring flag. */
+export type MonitorAction = "unmonitor" | "remonitor" | "none";
+
+/** Why an item's file should be deleted, or null to keep it. */
+export type DeleteReason = "on streaming" | "unmonitored";
+
+export interface ItemPlan {
+  monitor: MonitorAction;
+  deleteFile: DeleteReason | null;
+}
+
+/**
+ * Decide what happens to a single movie/episode. Pure: no I/O, so the whole
+ * decision matrix (including the destructive ones) is unit-testable.
+ *
+ * Monitoring:
+ *   - monitored + on streaming            -> unmonitor
+ *   - unmonitored + confidently not on it -> remonitor
+ *   - unknown streaming status            -> leave alone, so a Watchmode/TMDB
+ *     outage can never re-monitor an entire library
+ *
+ * File deletion (at most one reason, so a file is never queued twice):
+ *   - `deleteFiles` covers only the item this sweep just unmonitored.
+ *   - `purgeUnmonitoredFiles` additionally covers anything left unmonitored,
+ *     which is what clears a pre-existing unmonitored back-catalogue. Items
+ *     being re-monitored are excluded: they are monitored once the sweep ends,
+ *     so their files must survive.
+ */
+export function planItem(
+  item: {
+    monitored: boolean;
+    onStreaming: boolean;
+    streamingUnknown: boolean;
+    hasFile: boolean;
+  },
+  settings: { deleteFiles: boolean; purgeUnmonitoredFiles: boolean }
+): ItemPlan {
+  let monitor: MonitorAction = "none";
+  let monitoredAfter = item.monitored;
+
+  if (item.monitored && item.onStreaming) {
+    monitor = "unmonitor";
+    monitoredAfter = false;
+  } else if (!item.monitored && !item.onStreaming && !item.streamingUnknown) {
+    monitor = "remonitor";
+    monitoredAfter = true;
+  }
+
+  if (!item.hasFile) return { monitor, deleteFile: null };
+  if (monitor === "unmonitor" && settings.deleteFiles) {
+    return { monitor, deleteFile: "on streaming" };
+  }
+  if (settings.purgeUnmonitoredFiles && !monitoredAfter) {
+    return { monitor, deleteFile: "unmonitored" };
+  }
+  return { monitor, deleteFile: null };
+}
+
+/**
+ * Delete a movie's file. The DB snapshot only records *whether* a file exists,
+ * so the file id is resolved from Radarr at deletion time. Returns true when a
+ * file was deleted (or would be, in a dry-run) so the caller can track state.
+ */
+async function deleteMovieFile(
+  client: RadarrClient,
+  conn: { name: string },
+  m: { id: number; arrId: number; title: string },
+  reason: string,
+  dryRun: boolean,
+  counts: RunCounts,
+  push: Push
+): Promise<boolean> {
+  if (dryRun) {
+    // Preview: count what would be deleted.
+    push("action", `[${conn.name}] Would delete file for "${m.title}" (${reason}).`);
+    counts.deletedFiles++;
+    return true;
+  }
+  const movie = await client.getMovie(m.arrId);
+  const fileId = movie?.movieFile?.id;
+  if (!fileId) {
+    push("warn", `[${conn.name}] No file id found for "${m.title}"; skipped delete.`);
+    return false;
+  }
+  push("action", `[${conn.name}] Delete file for "${m.title}" (${reason}).`);
+  await client.deleteMovieFile(fileId);
+  await prisma.mediaItem.update({ where: { id: m.id }, data: { hasFile: false } });
+  counts.deletedFiles++; // only count actual deletions
+  return true;
+}
+
 async function sweepRadarr(
   conn: { id: number; name: string; baseUrl: string; apiKey: string },
-  settings: { deleteFiles: boolean; removeMissingTmdbMovies: boolean },
+  settings: {
+    deleteFiles: boolean;
+    removeMissingTmdbMovies: boolean;
+    purgeUnmonitoredFiles: boolean;
+  },
   dryRun: boolean,
   counts: RunCounts,
   push: Push
@@ -108,37 +207,16 @@ async function sweepRadarr(
       continue;
     }
 
-    // Case 1: monitored + on streaming -> unmonitor (+ delete file).
-    if (m.monitored && m.onStreaming) {
+    const plan = planItem(m, settings);
+
+    if (plan.monitor === "unmonitor") {
       push("action", `[${conn.name}] Unmonitor movie "${m.title}" (on streaming).`);
       counts.unmonitoredMovies++;
       if (!dryRun) {
         await client.setMovieMonitored(m.arrId, false);
         await prisma.mediaItem.update({ where: { id: m.id }, data: { monitored: false } });
       }
-      if (settings.deleteFiles && m.hasFile) {
-        if (dryRun) {
-          // Preview: count what would be deleted.
-          push("action", `[${conn.name}] Would delete file for "${m.title}".`);
-          counts.deletedFiles++;
-        } else {
-          const movie = await client.getMovie(m.arrId);
-          const fileId = movie?.movieFile?.id;
-          if (fileId) {
-            push("action", `[${conn.name}] Delete file for "${m.title}".`);
-            await client.deleteMovieFile(fileId);
-            await prisma.mediaItem.update({ where: { id: m.id }, data: { hasFile: false } });
-            counts.deletedFiles++; // only count actual deletions
-          } else {
-            push("warn", `[${conn.name}] No file id found for "${m.title}"; skipped delete.`);
-          }
-        }
-      }
-    }
-    // Case 2: unmonitored + confidently NOT on streaming -> re-monitor.
-    // Skip when streaming status is unknown (failed/absent Watchmode lookup)
-    // so a transient outage never re-monitors the whole library.
-    else if (!m.monitored && !m.onStreaming && !m.streamingUnknown) {
+    } else if (plan.monitor === "remonitor") {
       push("action", `[${conn.name}] Re-monitor movie "${m.title}" (left streaming).`);
       counts.remonitoredMovies++;
       if (!dryRun) {
@@ -146,12 +224,18 @@ async function sweepRadarr(
         await prisma.mediaItem.update({ where: { id: m.id }, data: { monitored: true } });
       }
     }
+
+    // Monitoring is never changed for a purge: the title is already unmonitored,
+    // so only the file goes.
+    if (plan.deleteFile) {
+      await deleteMovieFile(client, conn, m, plan.deleteFile, dryRun, counts, push);
+    }
   }
 }
 
 async function sweepSonarr(
   conn: { id: number; name: string; baseUrl: string; apiKey: string },
-  settings: { deleteFiles: boolean },
+  settings: { deleteFiles: boolean; purgeUnmonitoredFiles: boolean },
   dryRun: boolean,
   counts: RunCounts,
   push: Push
@@ -165,22 +249,26 @@ async function sweepSonarr(
   for (const s of series) {
     const toUnmonitor: number[] = [];
     const toRemonitor: number[] = [];
-    const filesToDelete: { epId: number; fileId: number; label: string }[] = [];
+    const filesToDelete: {
+      epId: number;
+      fileId: number;
+      label: string;
+      reason: DeleteReason;
+    }[] = [];
 
     for (const ep of s.episodes) {
-      if (ep.monitored && ep.onStreaming) {
-        toUnmonitor.push(ep.arrEpisodeId);
-        if (settings.deleteFiles && ep.hasFile && ep.episodeFileId) {
-          filesToDelete.push({
-            epId: ep.id,
-            fileId: ep.episodeFileId,
-            label: `${s.title} S${ep.seasonNumber}E${ep.episodeNumber}`,
-          });
-        }
-      } else if (!ep.monitored && !ep.onStreaming && !ep.streamingUnknown) {
-        // Only re-monitor when we're confident the episode left streaming;
-        // skip episodes whose availability we couldn't determine.
-        toRemonitor.push(ep.arrEpisodeId);
+      const plan = planItem(ep, settings);
+
+      if (plan.monitor === "unmonitor") toUnmonitor.push(ep.arrEpisodeId);
+      else if (plan.monitor === "remonitor") toRemonitor.push(ep.arrEpisodeId);
+
+      if (plan.deleteFile && ep.episodeFileId) {
+        filesToDelete.push({
+          epId: ep.id,
+          fileId: ep.episodeFileId,
+          label: `${s.title} S${ep.seasonNumber}E${ep.episodeNumber}`,
+          reason: plan.deleteFile,
+        });
       }
     }
 
@@ -197,7 +285,7 @@ async function sweepSonarr(
     }
 
     for (const f of filesToDelete) {
-      push("action", `[${conn.name}] Delete file for ${f.label}.`);
+      push("action", `[${conn.name}] Delete file for ${f.label} (${f.reason}).`);
       counts.deletedFiles++;
       if (!dryRun) {
         await client.deleteEpisodeFile(f.fileId);
