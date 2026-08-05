@@ -21,6 +21,7 @@ import {
 import { WatchmodeClient, matchSources, type WatchmodeTitleSource } from "./watchmode";
 import { lookupWatchmodeId, refreshTitleMap } from "./titlemap";
 import { sanitizeExternalUrl } from "./urls";
+import { mapWithConcurrency, syncConcurrency } from "./concurrency";
 import {
   TmdbClient,
   matchTmdbProviders,
@@ -38,6 +39,9 @@ export interface SyncResult {
   // and how many were skipped as unchanged/fresh (credit-saving visibility).
   tvProviderCalls: number;
   tvSkipped: number;
+  /** Movies that hit TMDB this sync, and those served from the cached answer. */
+  movieProviderCalls: number;
+  movieSkipped: number;
   /** Series that hit the title-level sources endpoint for provider deep links. */
   tvLinkCalls: number;
   /** On-streaming series with ≥1 provider Watchmode gave no `web_url` for. */
@@ -58,6 +62,11 @@ const noopProgress: ProgressFn = () => {};
 // unavailable or misses something.
 const TTL_DAYS = 7;
 const TTL_MS = TTL_DAYS * 24 * 60 * 60 * 1000;
+
+// Movies have no changes feed to consult, so their freshness is purely
+// time-based and the window is correspondingly shorter than the TV one.
+const MOVIE_TTL_HOURS = 24;
+export const MOVIE_TTL_MS = MOVIE_TTL_HOURS * 60 * 60 * 1000;
 
 // Re-probe the Watchmode plan at most this often (in case the user upgrades
 // from free to paid, or vice versa).
@@ -189,6 +198,8 @@ export async function runSync(progress: ProgressFn = noopProgress): Promise<Sync
     onStreamingSeries: 0,
     tvProviderCalls: 0,
     tvSkipped: 0,
+    movieProviderCalls: 0,
+    movieSkipped: 0,
     tvLinkCalls: 0,
     tvMissingLinks: 0,
     taggedSkipped: 0,
@@ -333,6 +344,8 @@ export async function runSync(progress: ProgressFn = noopProgress): Promise<Sync
     `Watchmode calls this sync: ${result.tvProviderCalls} episode fetch(es) across ${result.series} series ` +
       `(${result.tvSkipped} skipped as unchanged/fresh), ` +
       `${result.tvLinkCalls} provider-link fetch(es). ` +
+      `TMDB calls: ${result.movieProviderCalls} across ${result.movies} movies ` +
+      `(${result.movieSkipped} served from cache, ${MOVIE_TTL_HOURS}h freshness window). ` +
       `${result.taggedSkipped} title(s) ignored via the "${SKIP_TAG_LABEL}" tag.`
   );
   if (result.tvMissingLinks) {
@@ -366,53 +379,89 @@ async function syncRadarr(
   } catch (e) {
     errors.push(`[${conn.name}] Could not read tags: ${(e as Error).message}`);
   }
-  // Track which arrIds we saw so we can prune stale rows afterwards.
-  const seen: number[] = [];
 
-  for (const movie of movies) {
-    const skipped = hasSkipTag(movie.tags, skipIds);
+  // One read of the existing snapshot instead of a lookup per title. Used for
+  // the freshness check and to carry cached availability forward on a skip.
+  const existingRows = await prisma.mediaItem.findMany({
+    where: { connectionId: conn.id, type: "MOVIE" },
+    select: {
+      arrId: true,
+      providerSyncedAt: true,
+      streamingUnknown: true,
+      onStreaming: true,
+      streamingInfo: true,
+      tmdbMissing: true,
+      skipped: true,
+    },
+  });
+  const existingByArrId = new Map(existingRows.map((r) => [r.arrId, r]));
 
-    if (skipped) {
+  // Every row touched by this pass gets exactly this timestamp, so anything
+  // still older afterwards is a title that has left Radarr. Comparing against a
+  // single app-side instant avoids both the "send every id we saw" query and
+  // any dependence on the database clock agreeing with ours.
+  const syncedAt = new Date();
+  const now = syncedAt.getTime();
+
+  await mapWithConcurrency(movies, syncConcurrency(), async (movie) => {
+    const base = {
+      title: movie.title,
+      year: movie.year ?? null,
+      posterUrl: posterFromImages(movie.images),
+      tmdbId: movie.tmdbId ?? null,
+      imdbId: movie.imdbId ?? null,
+      monitored: movie.monitored,
+      hasFile: movie.hasFile,
+      movieFileId: movie.movieFile?.id ?? null,
+      lastSyncedAt: syncedAt,
+    };
+    const key = {
+      connectionId_type_arrId: { connectionId: conn.id, type: "MOVIE" as const, arrId: movie.id },
+    };
+
+    if (hasSkipTag(movie.tags, skipIds)) {
       // Don't spend an API call and don't record availability: the sweep must
       // never act on this title. We still refresh the basic metadata so it
       // shows up correctly elsewhere.
       result.taggedSkipped++;
       result.movies++;
+      const skippedState = {
+        skipped: true,
+        onStreaming: false,
+        streamingUnknown: true,
+        streamingInfo: [],
+      };
       await prisma.mediaItem.upsert({
-        where: { connectionId_type_arrId: { connectionId: conn.id, type: "MOVIE", arrId: movie.id } },
-        create: {
-          connectionId: conn.id,
-          type: "MOVIE",
-          arrId: movie.id,
-          title: movie.title,
-          year: movie.year ?? null,
-          posterUrl: posterFromImages(movie.images),
-          tmdbId: movie.tmdbId ?? null,
-          imdbId: movie.imdbId ?? null,
-          monitored: movie.monitored,
-          hasFile: movie.hasFile,
-          skipped: true,
-          onStreaming: false,
-          streamingUnknown: true,
-          streamingInfo: [],
-        },
-        update: {
-          title: movie.title,
-          year: movie.year ?? null,
-          posterUrl: posterFromImages(movie.images),
-          tmdbId: movie.tmdbId ?? null,
-          imdbId: movie.imdbId ?? null,
-          monitored: movie.monitored,
-          hasFile: movie.hasFile,
-          skipped: true,
-          onStreaming: false,
-          streamingUnknown: true,
-          streamingInfo: [],
-          lastSyncedAt: new Date(),
-        },
+        where: key,
+        create: { connectionId: conn.id, type: "MOVIE", arrId: movie.id, ...base, ...skippedState },
+        update: { ...base, ...skippedState },
       });
-      seen.push(movie.id);
-      continue;
+      return;
+    }
+
+    const existing = existingByArrId.get(movie.id);
+
+    // Movies have no equivalent of Watchmode's changes feed, so freshness is
+    // purely time-based: a title looked up recently, successfully, and not
+    // flagged as missing keeps its answer. Availability moves on a monthly
+    // cadence, so a day-old answer is still a good one — and on a 12-hourly
+    // schedule this halves the TMDB traffic.
+    const fresh =
+      !!existing &&
+      !existing.skipped &&
+      !existing.streamingUnknown &&
+      !existing.tmdbMissing &&
+      !!existing.providerSyncedAt &&
+      now - existing.providerSyncedAt.getTime() < MOVIE_TTL_MS;
+
+    if (fresh) {
+      result.movieSkipped++;
+      result.movies++;
+      if (existing!.onStreaming) result.onStreamingMovies++;
+      // Metadata still refreshes (title, monitored, file state); the cached
+      // availability columns are simply left untouched.
+      await prisma.mediaItem.update({ where: key, data: { ...base, skipped: false } });
+      return;
     }
 
     let matched: MatchedTmdbProvider[] = [];
@@ -425,6 +474,7 @@ async function syncRadarr(
     try {
       if (movie.tmdbId) {
         const availability = await tmdb.movieWatchProviders(movie.tmdbId);
+        result.movieProviderCalls++;
         matched = matchTmdbProviders(availability, regions, providerIds, countedTypes);
       } else {
         // No TMDB id from Radarr -> we can't look it up. Mark unknown so the
@@ -449,55 +499,39 @@ async function syncRadarr(
     if (onStreaming) result.onStreamingMovies++;
     result.movies++;
 
-    const info = matched.map((m) => ({
-      sourceId: m.providerId,
-      name: m.name,
-      type: m.type,
-      region: m.region,
-      logo: m.logo,
-      webUrl: null,
-    }));
+    const availabilityState = {
+      skipped: false,
+      tmdbMissing,
+      onStreaming,
+      streamingUnknown,
+      streamingInfo: matched.map((m) => ({
+        sourceId: m.providerId,
+        name: m.name,
+        type: m.type,
+        region: m.region,
+        logo: m.logo,
+        webUrl: null,
+      })),
+      // Only start the freshness clock on a lookup that actually answered.
+      providerSyncedAt: streamingUnknown ? null : syncedAt,
+    };
 
     await prisma.mediaItem.upsert({
-      where: { connectionId_type_arrId: { connectionId: conn.id, type: "MOVIE", arrId: movie.id } },
+      where: key,
       create: {
         connectionId: conn.id,
         type: "MOVIE",
         arrId: movie.id,
-        title: movie.title,
-        year: movie.year ?? null,
-        posterUrl: posterFromImages(movie.images),
-        tmdbId: movie.tmdbId ?? null,
-        imdbId: movie.imdbId ?? null,
-        monitored: movie.monitored,
-        hasFile: movie.hasFile,
-        skipped: false,
-        tmdbMissing,
-        onStreaming,
-        streamingUnknown,
-        streamingInfo: info,
+        ...base,
+        ...availabilityState,
       },
-      update: {
-        title: movie.title,
-        year: movie.year ?? null,
-        posterUrl: posterFromImages(movie.images),
-        tmdbId: movie.tmdbId ?? null,
-        imdbId: movie.imdbId ?? null,
-        monitored: movie.monitored,
-        hasFile: movie.hasFile,
-        skipped: false,
-        tmdbMissing,
-        onStreaming,
-        streamingUnknown,
-        streamingInfo: info,
-        lastSyncedAt: new Date(),
-      },
+      update: { ...base, ...availabilityState },
     });
-    seen.push(movie.id);
-  }
+  });
 
+  // Anything this pass did not touch is no longer in Radarr.
   await prisma.mediaItem.deleteMany({
-    where: { connectionId: conn.id, type: "MOVIE", arrId: { notIn: seen.length ? seen : [-1] } },
+    where: { connectionId: conn.id, type: "MOVIE", lastSyncedAt: { lt: syncedAt } },
   });
 }
 
@@ -523,10 +557,29 @@ async function syncSonarr(
   } catch (e) {
     errors.push(`[${conn.name}] Could not read tags: ${(e as Error).message}`);
   }
-  const seen: number[] = [];
-  const now = Date.now();
 
-  for (const series of seriesList) {
+  // One read of the existing snapshot for the whole connection, without the
+  // episode rows: those are only needed for series we end up skipping, and
+  // eagerly joining them loads the entire episode table on every sync.
+  const existingRows = await prisma.mediaItem.findMany({
+    where: { connectionId: conn.id, type: "TV" },
+    select: {
+      id: true,
+      arrId: true,
+      watchmodeId: true,
+      providerSyncedAt: true,
+      providerLinksSyncedAt: true,
+      streamingUnknown: true,
+      streamingInfo: true,
+    },
+  });
+  const existingByArrId = new Map(existingRows.map((r) => [r.arrId, r]));
+
+  // See syncRadarr: one timestamp for the pass, used to prune untouched rows.
+  const syncedAt = new Date();
+  const now = syncedAt.getTime();
+
+  await mapWithConcurrency(seriesList, syncConcurrency(), async (series) => {
     if (hasSkipTag(series.tags, skipIds)) {
       // Leave the show entirely alone: no Watchmode call, no availability
       // recorded, and its episode rows are dropped so the sweep can't act on
@@ -550,6 +603,7 @@ async function syncSonarr(
           onStreaming: false,
           streamingUnknown: true,
           streamingInfo: [],
+          lastSyncedAt: syncedAt,
         },
         update: {
           title: series.title,
@@ -566,19 +620,15 @@ async function syncSonarr(
           totalEpisodes: 0,
           monitoredEpisodes: 0,
           streamingEpisodes: 0,
-          lastSyncedAt: new Date(),
+          lastSyncedAt: syncedAt,
         },
       });
       await prisma.episode.deleteMany({ where: { mediaId: existingSkipped.id } });
-      seen.push(series.id);
-      continue;
+      return;
     }
 
     // Existing cached snapshot (for freshness + reusing streaming data).
-    const existing = await prisma.mediaItem.findUnique({
-      where: { connectionId_type_arrId: { connectionId: conn.id, type: "TV", arrId: series.id } },
-      include: { episodes: true },
-    });
+    const existing = existingByArrId.get(series.id) ?? null;
 
     let watchmodeId: number | null = existing?.watchmodeId ?? null;
     // Resolve the Watchmode id from the local map (free) if not already known.
@@ -614,9 +664,14 @@ async function syncSonarr(
     let streamingUnknown = false;
 
     if (canSkipWatchmode) {
-      // Reuse cached streaming info — NO Watchmode call.
+      // Reuse cached streaming info — NO Watchmode call. The episode rows are
+      // fetched only on this branch, which is the only one that reads them.
       result.tvSkipped++;
-      for (const ep of existing!.episodes) {
+      const cachedEpisodes = await prisma.episode.findMany({
+        where: { mediaId: existing!.id },
+        select: { seasonNumber: true, episodeNumber: true, streamingInfo: true },
+      });
+      for (const ep of cachedEpisodes) {
         const info = (ep.streamingInfo as ReturnType<typeof streamingInfoJson> | null) ?? [];
         if (Array.isArray(info) && info.length) {
           wmMap.set(`${ep.seasonNumber}x${ep.episodeNumber}`, info);
@@ -672,7 +727,8 @@ async function syncSonarr(
         watchmodeId,
         monitored: series.monitored,
         skipped: false,
-        providerSyncedAt: pulledFresh ? new Date() : null,
+        lastSyncedAt: syncedAt,
+        providerSyncedAt: pulledFresh ? syncedAt : null,
       },
       update: {
         title: series.title,
@@ -684,10 +740,10 @@ async function syncSonarr(
         watchmodeId,
         monitored: series.monitored,
         skipped: false,
-        lastSyncedAt: new Date(),
+        lastSyncedAt: syncedAt,
         // Advance the provider timestamp only when we pulled fresh; leave it
         // untouched when skipping so the TTL keeps counting from the real pull.
-        ...(pulledFresh ? { providerSyncedAt: new Date() } : {}),
+        ...(pulledFresh ? { providerSyncedAt: syncedAt } : {}),
       },
     });
 
@@ -745,7 +801,7 @@ async function syncSonarr(
       try {
         const titleSources = await wm.titleSources(watchmodeId, regions);
         result.tvLinkCalls++;
-        providerLinksSyncedAt = new Date();
+        providerLinksSyncedAt = syncedAt;
         linksComplete = applyProviderLinks(seriesProviders, providerLinkMap(titleSources));
       } catch (e) {
         // Non-fatal: the affected logos just render without a link.
@@ -768,10 +824,10 @@ async function syncSonarr(
         providerLinksSyncedAt,
       },
     });
-    seen.push(series.id);
-  }
+  });
 
+  // Anything this pass did not touch is no longer in Sonarr.
   await prisma.mediaItem.deleteMany({
-    where: { connectionId: conn.id, type: "TV", arrId: { notIn: seen.length ? seen : [-1] } },
+    where: { connectionId: conn.id, type: "TV", lastSyncedAt: { lt: syncedAt } },
   });
 }

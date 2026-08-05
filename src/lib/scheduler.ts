@@ -16,6 +16,7 @@
  */
 
 import { prisma, getSettings } from "./db";
+import { logger } from "./logger";
 import { runSweep } from "./sweep";
 import { RunLockError } from "./jobs";
 import {
@@ -24,6 +25,8 @@ import {
   addInterval,
   schedulerDisabledByEnv,
 } from "./schedule";
+
+const log = logger("schedule");
 
 /** How often the scheduler asks the database whether a sweep is due. */
 export const SCHEDULER_TICK_MS = 60_000;
@@ -91,8 +94,7 @@ export async function tickScheduler(now: Date = new Date()): Promise<SchedulerTi
  */
 export function startSweepScheduler(): () => void {
   if (schedulerDisabledByEnv()) {
-    // eslint-disable-next-line no-console
-    console.log("[schedule] sweep scheduler disabled by SWEEP_SCHEDULER env var.");
+    log.info("sweep scheduler disabled by SWEEP_SCHEDULER env var.");
     return () => {};
   }
 
@@ -100,18 +102,14 @@ export function startSweepScheduler(): () => void {
     try {
       const r = await tickScheduler();
       if (r.status === "started") {
-        // eslint-disable-next-line no-console
-        console.log(`[schedule] started scheduled sweep #${r.runId}.`);
+        log.info(`started scheduled sweep #${r.runId}.`);
       } else if (r.status === "locked") {
-        // eslint-disable-next-line no-console
-        console.log("[schedule] scheduled sweep skipped — a run is already in progress.");
+        log.info("scheduled sweep skipped — a run is already in progress.");
       } else if (r.status === "error") {
-        // eslint-disable-next-line no-console
-        console.error(`[schedule] scheduled sweep failed to start: ${r.error}`);
+        log.error(`scheduled sweep failed to start: ${r.error}`);
       }
     } catch (e) {
-      // eslint-disable-next-line no-console
-      console.error(`[schedule] scheduler tick failed: ${(e as Error).message}`);
+      log.error(`scheduler tick failed: ${(e as Error).message}`);
     }
   };
 

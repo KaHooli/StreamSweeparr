@@ -20,6 +20,14 @@ export interface SessionPayload {
   role: SessionRole;
   method: "local" | "oidc";
   mustChangePassword?: boolean; // gate the app until the password is changed
+  /**
+   * The account's `tokenVersion` when this token was minted. A signature check
+   * alone cannot tell a still-valid token from one whose account has since been
+   * demoted or deleted, so `requireSession()` (Node runtime, has a database)
+   * compares this against the stored version and rejects stale tokens. Absent
+   * on tokens issued before this field existed — treated as version 0.
+   */
+  ver?: number;
   exp: number; // unix seconds
 }
 
@@ -40,10 +48,12 @@ function getSecret(): string {
 
   // Development only: warn loudly but allow booting for convenience.
   if (!warnedInsecureSecret) {
+    // Not the logger module: this file is also compiled for the edge runtime,
+    // which must stay free of Node-only imports.
     // eslint-disable-next-line no-console
     console.warn(
-      "[auth] AUTH_SECRET is not set (or too short). Using an insecure DEV fallback — " +
-        "set AUTH_SECRET before deploying."
+      "[warn] [auth] AUTH_SECRET is not set (or too short). Using an insecure DEV " +
+        "fallback — set AUTH_SECRET before deploying."
     );
     warnedInsecureSecret = true;
   }
@@ -94,7 +104,13 @@ function timingSafeEqual(a: string, b: string): boolean {
 
 /** Create a signed session token for the given user. */
 export async function createSession(
-  user: { id: number; username: string; role: SessionRole; mustChangePassword?: boolean },
+  user: {
+    id: number;
+    username: string;
+    role: SessionRole;
+    mustChangePassword?: boolean;
+    tokenVersion?: number;
+  },
   method: "local" | "oidc"
 ): Promise<string> {
   const payload: SessionPayload = {
@@ -103,6 +119,7 @@ export async function createSession(
     role: user.role,
     method,
     mustChangePassword: !!user.mustChangePassword,
+    ver: user.tokenVersion ?? 0,
     exp: Math.floor(Date.now() / 1000) + SESSION_TTL_SECONDS,
   };
   const body = b64urlEncode(enc.encode(JSON.stringify(payload)));

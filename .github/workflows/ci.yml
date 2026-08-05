@@ -11,6 +11,27 @@ on:
 jobs:
   verify:
     runs-on: ubuntu-latest
+
+    # Integration tests run against a throwaway PostgreSQL, so the sync/sweep
+    # engines are exercised against real SQL rather than a mocked client.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: streamsweeparr
+          POSTGRES_PASSWORD: streamsweeparr
+          POSTGRES_DB: streamsweeparr_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U streamsweeparr"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      TEST_DATABASE_URL: postgresql://streamsweeparr:streamsweeparr@localhost:5432/streamsweeparr_test?schema=public
+
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -27,6 +48,15 @@ jobs:
       - name: Prisma generate
         run: npx prisma generate
 
+      # Fail the build on critical advisories in shipped dependencies. High and
+      # below are reported but not blocking: several Next.js advisories have no
+      # fix inside the 14.x line, so gating on them would wedge CI on an upgrade
+      # that has to be done deliberately.
+      - name: Audit dependencies
+        run: |
+          npm audit --omit=dev || true
+          npm audit --omit=dev --audit-level=critical
+
       - name: Lint
         run: npm run lint
 
@@ -35,6 +65,16 @@ jobs:
 
       - name: Test
         run: npm test
+
+      - name: Apply migrations to the test database
+        run: npx prisma migrate deploy
+        env:
+          DATABASE_URL: ${{ env.TEST_DATABASE_URL }}
+
+      - name: Integration test
+        run: npm run test:integration
+        env:
+          DATABASE_URL: ${{ env.TEST_DATABASE_URL }}
 
       - name: Build
         run: npx next build

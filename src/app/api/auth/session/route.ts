@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { SESSION_COOKIE, verifySession } from "@/lib/session";
+import { resolveSession } from "@/lib/auth";
 import { getSettings } from "@/lib/db";
 import {
   isOidcConfigured,
@@ -14,7 +15,10 @@ export const dynamic = "force-dynamic";
 // The login page is public, so this must not require authentication.
 export async function GET() {
   const token = cookies().get(SESSION_COOKIE)?.value;
-  const payload = await verifySession(token);
+  // Resolved against the database, not just the cookie: the UI hides the
+  // admin-only controls based on this, so it should agree with what the API
+  // will actually allow rather than with a role frozen at sign-in.
+  const payload = await resolveSession(await verifySession(token));
   const s = await getSettings();
   return NextResponse.json({
     user: payload

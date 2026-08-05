@@ -329,6 +329,17 @@ yet); every sync after that is cheap. To force a full re-pull, clear
 `watchmodeChangesCursor` (and `providerSyncedAt`) — e.g. after changing your
 selected countries/services.
 
+**Movies (TMDB)** get the same treatment on a shorter clock. TMDB has no
+changes feed, so freshness is purely time-based: a movie looked up successfully
+within the last **24 hours** is served from the cached answer instead of being
+re-fetched. On a 12-hourly schedule that halves TMDB traffic; a title whose
+lookup failed, or that has just had its `ss-skip` tag removed, is always
+re-checked. The run log reports calls made vs. served from cache.
+
+Sync also looks titles up **in parallel** (`SYNC_CONCURRENCY`, default 4).
+Sync is almost entirely waiting on HTTP, so this is what turns a large library's
+sync from minutes of latency into something much shorter.
+
 #### Title ID map (TMDB/IMDB → Watchmode id)
 
 The Watchmode API is keyed on **Watchmode ids**, so every title from
@@ -448,11 +459,27 @@ the fully commented version.
 | `LOCAL_LOGIN_DISABLED` | — | `true` hides the password form (SSO-only); `false` forces it back on |
 | `AUTH_COOKIE_INSECURE` | — | `true` when serving over plain HTTP, or login silently fails |
 | `PUBLIC_URL` | — | Public origin behind a reverse proxy; fixes the OIDC `redirect_uri` |
+| `TRUST_PROXY` | — | `true` to believe `X-Forwarded-For/Proto/Host`. Only with a proxy that overwrites them — see below |
 | `OIDC_REDIRECT_URI` | — | Override the OIDC callback outright (rarely needed) |
 | `SSRF_ALLOW_PRIVATE` | — | `true` to allow private LAN ranges (needed for LAN *arr apps) |
+| `SYNC_CONCURRENCY` | — | Titles looked up in parallel during a sync (default `4`, max `32`) |
+| `LOG_LEVEL` | — | `debug` / `info` / `warn` / `error` for background work (default `info`) |
 | `TITLE_MAP_SCHEDULER` | — | `off` disables the 12h Title ID map refresh on this instance |
 | `SWEEP_SCHEDULER` | — | `off` stops this instance running [scheduled sweeps](#-scheduled-sweeps) (the schedule itself stays configured) |
 | `PORT` | — | Port for `next start` (default `3000`) |
+
+### Running behind a reverse proxy
+
+`X-Forwarded-*` headers are only meaningful when something you control
+overwrites them. If the app is reachable directly, any client can forge them —
+and since the login rate limiter buckets by client IP, a forged header would let
+an attacker pick a fresh bucket for every attempt. So they are ignored unless
+you set `TRUST_PROXY=true`.
+
+With `TRUST_PROXY` off, per-IP login throttling effectively collapses into one
+bucket; the per-username and instance-wide limiters still apply, so brute force
+is still bounded. Behind a real proxy, set `TRUST_PROXY=true` **and**
+`PUBLIC_URL`.
 
 ---
 
@@ -472,6 +499,10 @@ the fully commented version.
   browser (only a "configured" flag is exposed). *(Note: secrets are stored
   as-is; encrypting them at rest is a planned improvement — keep DB access
   restricted.)*
+- **Sessions are revocable.** Changing a user's role, changing a password, or
+  deleting an account bumps that account's `tokenVersion`, and every
+  server-side guard re-reads the account on each request. A demoted admin loses
+  admin rights on their *next* request rather than when their cookie expires.
 
 ---
 
@@ -560,11 +591,41 @@ the fully commented version.
 | Command | What it does |
 |---|---|
 | `npm run dev` | Next.js dev server on `:3000` |
-| `npm test` | Vitest unit suite (session tokens, password hashing, rate limiter, `matchSources`, the SSRF guard, flags, sweep scheduling) |
+| `npm test` | Vitest unit suite — needs no database |
+| `npm run test:integration` | Integration suite against a real PostgreSQL (needs `DATABASE_URL`) |
+| `npm run test:all` | Both suites |
 | `npm run typecheck` | `tsc --noEmit` |
-| `npm run lint` | ESLint (`eslint-config-next`) |
+| `npm run lint` | ESLint (`eslint-config-next`, `no-console`) |
 | `npm run prisma:migrate` | `prisma migrate deploy` |
 
+### The two suites
+
+**Unit** (`src/**/*.test.ts`) covers the pure decision logic and anything
+mockable: `planItem`'s full decision matrix, session tokens, the auth guards,
+password hashing, rate limiting, provider matching, the SSRF guard, sweep
+scheduling, the concurrency pool, and the Sonarr/Radarr clients' wire format
+(fetch-mocked). Fast, and runnable with nothing installed.
+
+**Integration** (`src/**/*.itest.ts`) runs sync, sweep, the run lock and the
+admin user routes against a throwaway PostgreSQL, stubbing only the outbound
+HTTP. This is where the persistence behaviour is pinned: which titles get
+pruned, which lookups are skipped as fresh, that a failing instance does not
+abandon the rest of the library, that concurrent sweep requests cannot both
+acquire the lock, and that demoting or deleting an account really does end its
+sessions.
+
+```bash
+createdb streamsweeparr_test
+export DATABASE_URL="postgresql://localhost:5432/streamsweeparr_test?schema=public"
+npx prisma migrate deploy
+npm run test:integration
+```
+
+The suite refuses to start without an explicit `DATABASE_URL` — it truncates
+tables, so pointing it at a real deployment should take deliberate effort.
+
 GitHub Actions (`.github/workflows/ci.yml`) gates every push/PR on
-lint + typecheck + test + build. The Docker image is published
+audit + lint + typecheck + unit tests + integration tests (against a Postgres
+service container) + build. Dependency updates arrive via Dependabot
+(`.github/dependabot.yml`), grouped weekly. The Docker image is published
 (`docker-publish.yml`) only from `main` and version tags.

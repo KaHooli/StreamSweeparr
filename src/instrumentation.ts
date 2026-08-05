@@ -27,15 +27,15 @@ export async function register() {
   // Allow opting out (e.g. multiple replicas — run the timer on one only).
   if (process.env.TITLE_MAP_SCHEDULER !== "off") {
     const { refreshTitleMap, TITLE_MAP_TTL_MS } = await import("./lib/titlemap");
+    const { logger } = await import("./lib/logger");
+    const log = logger("titlemap");
 
     const tick = async () => {
       try {
         const r = await refreshTitleMap();
-        // eslint-disable-next-line no-console
-        console.log(`[titlemap] scheduled refresh: ${r.status} (${r.rowCount} rows)`);
+        log.info(`scheduled refresh: ${r.status} (${r.rowCount} rows)`);
       } catch (e) {
-        // eslint-disable-next-line no-console
-        console.error(`[titlemap] scheduled refresh failed: ${(e as Error).message}`);
+        log.error(`scheduled refresh failed: ${(e as Error).message}`);
       }
     };
 

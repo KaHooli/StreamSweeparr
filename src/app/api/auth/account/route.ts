@@ -46,6 +46,7 @@ export const PATCH = withGuard(requireSession, async (session, req: NextRequest)
       username: updated.username,
       role: updated.role,
       mustChangePassword: updated.mustChangePassword,
+      tokenVersion: updated.tokenVersion,
     },
     session.method
   );

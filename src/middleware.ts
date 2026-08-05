@@ -14,6 +14,7 @@ export async function middleware(req: NextRequest) {
   const isPublic =
     pathname === "/login" ||
     pathname.startsWith("/api/auth/") || // login, logout, oidc, session
+    pathname === "/api/health" || // container probe; exposes no data
     pathname.startsWith("/_next/") ||
     pathname === "/favicon.ico";
 

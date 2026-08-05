@@ -154,6 +154,20 @@ export class SonarrClient {
     });
   }
 
+  /**
+   * Delete many episode files in one request.
+   *
+   * A library-wide purge would otherwise issue one DELETE per file — thousands
+   * of round trips where Sonarr accepts a single batch.
+   */
+  deleteEpisodeFiles(episodeFileIds: number[]) {
+    if (!episodeFileIds.length) return Promise.resolve(undefined);
+    return arrFetch<void>(this.baseUrl, this.apiKey, "/api/v3/episodefile/bulk", {
+      method: "DELETE",
+      body: JSON.stringify({ episodeFileIds }),
+    });
+  }
+
   /** Kick off a search for the given episode ids. */
   searchEpisodes(episodeIds: number[]) {
     if (!episodeIds.length) return Promise.resolve(undefined);
@@ -198,6 +212,21 @@ export class RadarrClient {
     return arrFetch<RadarrMovie>(this.baseUrl, this.apiKey, `/api/v3/movie/${id}`);
   }
 
+  /**
+   * Toggle monitoring for many movies in one request.
+   *
+   * Radarr's editor endpoint takes a list of ids and the fields to change. The
+   * per-movie alternative is a GET (to read the resource) plus a full-resource
+   * PUT each — two round trips per title, where this is one for the batch.
+   */
+  setMoviesMonitored(movieIds: number[], monitored: boolean) {
+    if (!movieIds.length) return Promise.resolve(undefined);
+    return arrFetch<void>(this.baseUrl, this.apiKey, "/api/v3/movie/editor", {
+      method: "PUT",
+      body: JSON.stringify({ movieIds, monitored }),
+    });
+  }
+
   /** Toggle monitoring by PUTting the full movie resource back. */
   async setMovieMonitored(id: number, monitored: boolean) {
     const movie = await this.getMovie(id);
@@ -229,6 +258,15 @@ export class RadarrClient {
   deleteMovieFile(movieFileId: number) {
     return arrFetch<void>(this.baseUrl, this.apiKey, `/api/v3/moviefile/${movieFileId}`, {
       method: "DELETE",
+    });
+  }
+
+  /** Delete many movie files in one request. */
+  deleteMovieFiles(movieFileIds: number[]) {
+    if (!movieFileIds.length) return Promise.resolve(undefined);
+    return arrFetch<void>(this.baseUrl, this.apiKey, "/api/v3/moviefile/bulk", {
+      method: "DELETE",
+      body: JSON.stringify({ movieFileIds }),
     });
   }
 
