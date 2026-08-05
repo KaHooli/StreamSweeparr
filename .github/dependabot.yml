@@ -10,10 +10,17 @@ updates:
     open-pull-requests-limit: 5
     groups:
       # Next/React move together; a split upgrade usually fails to build.
+      #
+      # `eslint` belongs here too, even though it looks like generic tooling:
+      # `eslint-config-next` declares a peer dependency on it, and a major
+      # release tightens the range (v16 requires eslint >= 9). Leaving eslint to
+      # the dev-dependencies group once let the config move without it, which
+      # made `npm ci` unresolvable and took every workflow down with it.
       next:
         patterns:
           - "next"
           - "eslint-config-next"
+          - "eslint"
           - "react"
           - "react-dom"
           - "@types/react"

@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState } from "react";
+import { useSyncedState } from "@/lib/useSyncedState";
 import useSWR from "swr";
 import { fetcher, sendJson } from "@/lib/fetcher";
 import type { CardProps } from "./types";
@@ -16,12 +17,9 @@ export function TmdbProvidersCard({ settings, onChange }: CardProps) {
       ? `/api/tmdb/providers?regions=${settings.tmdbRegions.join(",")}`
       : null;
   const { data, error } = useSWR<{ groups: TmdbProviderGroup[] }>(key, fetcher);
-  const [selected, setSelected] = useState<number[]>(settings.tmdbProviderIds);
-  const [types, setTypes] = useState<string[]>(settings.tmdbCountedTypes);
+  const [selected, setSelected] = useSyncedState<number[]>(settings.tmdbProviderIds);
+  const [types, setTypes] = useSyncedState<string[]>(settings.tmdbCountedTypes);
   const [saving, setSaving] = useState(false);
-
-  useEffect(() => setSelected(settings.tmdbProviderIds), [settings.tmdbProviderIds]);
-  useEffect(() => setTypes(settings.tmdbCountedTypes), [settings.tmdbCountedTypes]);
 
   const toggle = (id: number) =>
     setSelected((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));

@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState } from "react";
+import { useSyncedState } from "@/lib/useSyncedState";
 import useSWR from "swr";
 import { fetcher, sendJson } from "@/lib/fetcher";
 import type { CardProps, ServiceGroup } from "./types";
@@ -12,12 +13,9 @@ export function ServicesCard({ settings, onChange }: CardProps) {
       ? `/api/watchmode/sources?countries=${settings.countries.join(",")}`
       : null;
   const { data, error } = useSWR<{ groups: ServiceGroup[] }>(key, fetcher);
-  const [selected, setSelected] = useState<number[]>(settings.serviceIds);
-  const [types, setTypes] = useState<string[]>(settings.countedTypes);
+  const [selected, setSelected] = useSyncedState<number[]>(settings.serviceIds);
+  const [types, setTypes] = useSyncedState<string[]>(settings.countedTypes);
   const [saving, setSaving] = useState(false);
-
-  useEffect(() => setSelected(settings.serviceIds), [settings.serviceIds]);
-  useEffect(() => setTypes(settings.countedTypes), [settings.countedTypes]);
 
   const toggle = (id: number) =>
     setSelected((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));

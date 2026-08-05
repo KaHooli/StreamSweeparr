@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState } from "react";
+import { useSyncedState } from "@/lib/useSyncedState";
 import useSWR from "swr";
 import { fetcher, sendJson } from "@/lib/fetcher";
 import type { CardProps, Region } from "./types";
@@ -10,10 +11,8 @@ export function TmdbRegionsCard({ settings, onChange }: CardProps) {
     settings.tmdbApiKeySet ? "/api/tmdb/regions" : null,
     fetcher
   );
-  const [selected, setSelected] = useState<string[]>(settings.tmdbRegions);
+  const [selected, setSelected] = useSyncedState<string[]>(settings.tmdbRegions);
   const [saving, setSaving] = useState(false);
-
-  useEffect(() => setSelected(settings.tmdbRegions), [settings.tmdbRegions]);
 
   const toggle = (code: string) =>
     setSelected((prev) => (prev.includes(code) ? prev.filter((c) => c !== code) : [...prev, code]));

@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState } from "react";
+import { useSyncedState } from "@/lib/useSyncedState";
 import useSWR from "swr";
 import { fetcher, sendJson } from "@/lib/fetcher";
 import type { CardProps, Region } from "./types";
@@ -10,10 +11,8 @@ export function CountriesCard({ settings, onChange }: CardProps) {
     settings.watchmodeApiKeySet ? "/api/watchmode/regions" : null,
     fetcher
   );
-  const [selected, setSelected] = useState<string[]>(settings.countries);
+  const [selected, setSelected] = useSyncedState<string[]>(settings.countries);
   const [saving, setSaving] = useState(false);
-
-  useEffect(() => setSelected(settings.countries), [settings.countries]);
 
   const toggle = (code: string) =>
     setSelected((prev) => (prev.includes(code) ? prev.filter((c) => c !== code) : [...prev, code]));

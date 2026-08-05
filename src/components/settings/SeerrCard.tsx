@@ -1,16 +1,15 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState } from "react";
+import { useSyncedState } from "@/lib/useSyncedState";
 import { postJson, sendJson } from "@/lib/fetcher";
 import type { CardProps } from "./types";
 
 export function SeerrCard({ settings, onChange }: CardProps) {
-  const [url, setUrl] = useState(settings.seerrUrl);
+  const [url, setUrl] = useSyncedState(settings.seerrUrl);
   const [apiKey, setApiKey] = useState("");
   const [busy, setBusy] = useState<null | "save" | "discover">(null);
   const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
-
-  useEffect(() => setUrl(settings.seerrUrl), [settings.seerrUrl]);
 
   const save = async () => {
     setBusy("save");

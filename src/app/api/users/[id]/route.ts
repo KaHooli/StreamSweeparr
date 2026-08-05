@@ -7,11 +7,15 @@ export const dynamic = "force-dynamic";
 
 const schema = z.object({ role: z.enum(["ADMIN", "USER"]) });
 
-type Ctx = { params: { id: string } };
+// Next 16 delivers route params as a Promise, and this type is written by hand
+// rather than inferred — so it has to say so. Left as a plain object, the
+// handler reads a property off a Promise, gets undefined, and every request
+// 400s on an "invalid id" that was perfectly valid.
+type Ctx = { params: Promise<{ id: string }> };
 
 // Change a user's role (admins only).
 export const PATCH = withGuard(requireAdmin, async (_session, req: NextRequest, ctx: Ctx) => {
-  const id = Number(ctx.params.id);
+  const id = Number((await ctx.params).id);
   if (Number.isNaN(id)) return NextResponse.json({ error: "Invalid id" }, { status: 400 });
 
   const parsed = schema.safeParse(await req.json().catch(() => ({})));
@@ -55,7 +59,7 @@ export const PATCH = withGuard(requireAdmin, async (_session, req: NextRequest, 
 
 // Remove an account (admins only). The local account cannot be deleted.
 export const DELETE = withGuard(requireAdmin, async (session, _req: NextRequest, ctx: Ctx) => {
-  const id = Number(ctx.params.id);
+  const id = Number((await ctx.params).id);
   if (Number.isNaN(id)) return NextResponse.json({ error: "Invalid id" }, { status: 400 });
 
   const target = await prisma.user.findUnique({ where: { id } });

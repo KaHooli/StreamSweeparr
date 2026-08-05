@@ -20,6 +20,10 @@ export function trustProxy(): boolean {
  * client collapses into one bucket, which is deliberately conservative: the
  * per-username and global limiters in the login route still bound brute force,
  * whereas an attacker-chosen bucket would bound nothing.
+ *
+ * Next 16 removed `NextRequest.ip` (it was only ever populated on Vercel), and
+ * the framework exposes no socket address, so with TRUST_PROXY off there is
+ * genuinely nothing to key on and every caller shares the "unknown" bucket.
  */
 export function clientIp(req: NextRequest): string {
   if (trustProxy()) {
@@ -28,9 +32,7 @@ export function clientIp(req: NextRequest): string {
     const real = req.headers.get("x-real-ip");
     if (real) return real.trim();
   }
-  // `req.ip` is populated by some hosts; self-hosted Node usually leaves it
-  // undefined, in which case all direct clients share the "unknown" bucket.
-  return req.ip?.trim() || "unknown";
+  return "unknown";
 }
 
 /**

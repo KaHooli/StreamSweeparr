@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState } from "react";
+import { useSyncedState } from "@/lib/useSyncedState";
 import useSWR from "swr";
 import { fetcher, postJson, sendJson } from "@/lib/fetcher";
 
@@ -12,17 +13,13 @@ export function AccountCard() {
     "/api/auth/session",
     fetcher
   );
-  const [username, setUsername] = useState("");
+  // Follows the session once SWR resolves it, and again if it changes.
+  const [username, setUsername] = useSyncedState(session?.user?.username ?? "");
   const [current, setCurrent] = useState("");
   const [next, setNext] = useState("");
   const [confirm, setConfirm] = useState("");
   const [busy, setBusy] = useState<null | "name" | "pw">(null);
   const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
-
-  // Seed the username field once the session is known.
-  useEffect(() => {
-    if (session?.user) setUsername(session.user.username);
-  }, [session?.user]);
 
   const saveUsername = async () => {
     setBusy("name");

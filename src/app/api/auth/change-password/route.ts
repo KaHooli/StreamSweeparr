@@ -18,7 +18,7 @@ export async function POST(req: NextRequest) {
   // its own check rather than using requireSession — but it must still honour
   // revocation, so the token is resolved against the stored account.
   const payload = await resolveSession(
-    await verifySession(cookies().get(SESSION_COOKIE)?.value)
+    await verifySession((await cookies()).get(SESSION_COOKIE)?.value)
   );
   if (!payload) return NextResponse.json({ error: "Not authenticated." }, { status: 401 });
 
