@@ -3,6 +3,7 @@ import { z } from "zod";
 import { prisma, getSettings } from "@/lib/db";
 import { SonarrClient, RadarrClient } from "@/lib/arr";
 import { requireAdmin, withGuard } from "@/lib/auth";
+import { encryptSecret } from "@/lib/secrets";
 
 export const dynamic = "force-dynamic";
 
@@ -44,10 +45,20 @@ export const POST = withGuard(requireAdmin, async (_session, req: NextRequest) =
     return NextResponse.json({ error: `Could not connect: ${(e as Error).message}` }, { status: 502 });
   }
 
+  // The key is validated above in plaintext, then stored encrypted.
+  const storedKey = encryptSecret(apiKey) ?? "";
   const conn = await prisma.arrConnection.upsert({
     where: { type_baseUrl: { type, baseUrl } },
-    create: { type, name, baseUrl, apiKey, enabled: enabled ?? true, origin: "manual", settingsId: 1 },
-    update: { name, apiKey, enabled: enabled ?? true },
+    create: {
+      type,
+      name,
+      baseUrl,
+      apiKey: storedKey,
+      enabled: enabled ?? true,
+      origin: "manual",
+      settingsId: 1,
+    },
+    update: { name, apiKey: storedKey, enabled: enabled ?? true },
   });
 
   return NextResponse.json({ id: conn.id });

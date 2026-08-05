@@ -94,6 +94,17 @@ export default function SettingsPage() {
         <div className="card">Loading…</div>
       ) : (
         <>
+          {settings.secretsUnreadable && (
+            // Without this the keys would just appear to have vanished, and the
+            // obvious guess — "the database lost them" — is the wrong one.
+            <div className="banner err">
+              <strong>Stored credentials can&rsquo;t be decrypted.</strong> API keys are
+              encrypted with a key derived from <code>AUTH_SECRET</code>, and it looks like
+              that value changed. Restore the previous <code>AUTH_SECRET</code> to recover
+              them, or re-enter the affected keys below to save them under the new one.
+            </div>
+          )}
+
           {tab === "watchmode" && (
             <>
               <p className="muted" style={{ marginTop: 0 }}>

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { prisma, getSettings } from "@/lib/db";
 import { SeerrClient } from "@/lib/arr";
 import { requireAdmin, withGuard } from "@/lib/auth";
+import { encryptSecret } from "@/lib/secrets";
 
 export const dynamic = "force-dynamic";
 
@@ -21,8 +22,15 @@ export const POST = withGuard(requireAdmin, async () => {
       if (!inst.baseUrl || !inst.apiKey) continue;
       await prisma.arrConnection.upsert({
         where: { type_baseUrl: { type: "SONARR", baseUrl: inst.baseUrl } },
-        create: { type: "SONARR", name: inst.name, baseUrl: inst.baseUrl, apiKey: inst.apiKey, origin: "seerr", settingsId: 1 },
-        update: { name: inst.name, apiKey: inst.apiKey, origin: "seerr" },
+        create: {
+          type: "SONARR",
+          name: inst.name,
+          baseUrl: inst.baseUrl,
+          apiKey: encryptSecret(inst.apiKey) ?? "",
+          origin: "seerr",
+          settingsId: 1,
+        },
+        update: { name: inst.name, apiKey: encryptSecret(inst.apiKey) ?? "", origin: "seerr" },
       });
       added++;
     }
@@ -30,8 +38,15 @@ export const POST = withGuard(requireAdmin, async () => {
       if (!inst.baseUrl || !inst.apiKey) continue;
       await prisma.arrConnection.upsert({
         where: { type_baseUrl: { type: "RADARR", baseUrl: inst.baseUrl } },
-        create: { type: "RADARR", name: inst.name, baseUrl: inst.baseUrl, apiKey: inst.apiKey, origin: "seerr", settingsId: 1 },
-        update: { name: inst.name, apiKey: inst.apiKey, origin: "seerr" },
+        create: {
+          type: "RADARR",
+          name: inst.name,
+          baseUrl: inst.baseUrl,
+          apiKey: encryptSecret(inst.apiKey) ?? "",
+          origin: "seerr",
+          settingsId: 1,
+        },
+        update: { name: inst.name, apiKey: encryptSecret(inst.apiKey) ?? "", origin: "seerr" },
       });
       added++;
     }

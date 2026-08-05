@@ -8,6 +8,13 @@
  */
 
 export interface SettingsDto {
+  /**
+   * A stored credential exists but could not be decrypted — in practice,
+   * AUTH_SECRET changed since it was saved. The individual `…Set` flags below
+   * all read false in that case, so this is what tells the difference between
+   * "never configured" and "no longer readable".
+   */
+  secretsUnreadable: boolean;
   watchmodeApiKeySet: boolean;
   watchmodePlan: "paid" | "free" | "unknown" | null;
   seerrUrl: string;

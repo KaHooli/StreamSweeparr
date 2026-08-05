@@ -24,6 +24,29 @@ export async function register() {
   // We deliberately do NOT import lib/users here: this hook is also compiled
   // for the edge runtime, which cannot resolve node:crypto.
 
+  // Convert any plaintext credentials left by an older version to ciphertext.
+  // A SQL migration cannot do this: the key is derived from AUTH_SECRET, which
+  // only the application can see. Idempotent, so it is safe on every boot, and
+  // non-fatal — reads handle both forms, so a database that is briefly
+  // unreachable at startup only delays the conversion.
+  {
+    const { encryptStoredSecrets } = await import("./lib/secrets");
+    const { logger } = await import("./lib/logger");
+    const log = logger("secrets");
+    try {
+      const migrated = await encryptStoredSecrets();
+      const total = migrated.settingsFields + migrated.connections;
+      if (total > 0) {
+        log.info(
+          `encrypted ${migrated.settingsFields} stored setting(s) and ` +
+            `${migrated.connections} connection key(s) at rest.`
+        );
+      }
+    } catch (e) {
+      log.error(`could not encrypt stored credentials at boot: ${(e as Error).message}`);
+    }
+  }
+
   // Allow opting out (e.g. multiple replicas — run the timer on one only).
   if (process.env.TITLE_MAP_SCHEDULER !== "off") {
     const { refreshTitleMap, TITLE_MAP_TTL_MS } = await import("./lib/titlemap");

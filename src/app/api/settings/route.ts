@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { prisma, getSettings } from "@/lib/db";
+import { prisma, getSettings, getRawSettings } from "@/lib/db";
+import { hasUnreadableSecret, encryptSettingsData } from "@/lib/secrets";
 import { requireAdmin, withGuard } from "@/lib/auth";
 import {
   effectiveLocalLoginEnabled,
@@ -69,9 +70,19 @@ const settingsSchema = z.object({
   oidcAllowedUsers: z.array(z.string()).optional(),
 });
 
-/** Mask secrets before returning to the client. */
-function serialize(s: Awaited<ReturnType<typeof getSettings>>) {
+/**
+ * Mask secrets before returning to the client.
+ *
+ * `secretsUnreadable` distinguishes "no key configured" from "a key is stored
+ * but cannot be decrypted" — the latter means AUTH_SECRET changed, and without
+ * saying so the keys simply appear to have vanished.
+ */
+function serialize(
+  s: Awaited<ReturnType<typeof getSettings>>,
+  secretsUnreadable = false
+) {
   return {
+    secretsUnreadable,
     watchmodeApiKeySet: !!s.watchmodeApiKey,
     watchmodePlan: s.watchmodePlan ?? null,
     seerrUrl: s.seerrUrl ?? "",
@@ -125,7 +136,10 @@ function serialize(s: Awaited<ReturnType<typeof getSettings>>) {
 
 export const GET = withGuard(requireAdmin, async () => {
   const s = await getSettings();
-  return NextResponse.json(serialize(s));
+  // The stored form is needed to tell an unset credential from an unreadable
+  // one; getSettings has already decrypted (and blanked) the latter.
+  const raw = await getRawSettings();
+  return NextResponse.json(serialize(s, raw ? hasUnreadableSecret(raw) : false));
 });
 
 export const PATCH = withGuard(requireAdmin, async (_session, req: NextRequest) => {
@@ -188,7 +202,9 @@ export const PATCH = withGuard(requireAdmin, async (_session, req: NextRequest) 
   if (p.oidcUserinfoUrl !== undefined) data.oidcUserinfoUrl = p.oidcUserinfoUrl || null;
   if (p.oidcAllowedUsers !== undefined) data.oidcAllowedUsers = p.oidcAllowedUsers;
 
-  await prisma.settings.update({ where: { id: 1 }, data });
+  // Credentials are encrypted at rest; everything else is stored as-is.
+  await prisma.settings.update({ where: { id: 1 }, data: encryptSettingsData(data) });
   const s = await getSettings();
-  return NextResponse.json(serialize(s));
+  const raw = await getRawSettings();
+  return NextResponse.json(serialize(s, raw ? hasUnreadableSecret(raw) : false));
 });
