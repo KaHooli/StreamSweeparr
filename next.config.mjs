@@ -13,13 +13,14 @@ const nextConfig = {
     instrumentationHook: true,
   },
   webpack: (config, { nextRuntime, webpack }) => {
-    // The Title ID map importer is Node-only (uses pg + node streams), and the
-    // sweep scheduler reaches it through the sweep engine. The instrumentation
-    // hook is also compiled for the edge runtime, which pulls both into the edge
+    // Several lib modules are Node-only: the Title ID map importer (pg + node
+    // streams), the sweep scheduler that reaches it through the sweep engine,
+    // and the credential encryption (node:crypto). The instrumentation hook is
+    // also compiled for the edge runtime, which pulls all of them into the edge
     // graph. Stub them out there so the edge bundle never tries to resolve pg /
-    // node:stream.
+    // node:stream / node:crypto.
     if (nextRuntime === "edge") {
-      for (const name of ["titlemap", "scheduler"]) {
+      for (const name of ["titlemap", "scheduler", "secrets"]) {
         const pattern = new RegExp(`lib[\\\\/]${name}(\\.ts)?$`);
         config.plugins.push(
           new webpack.NormalModuleReplacementPlugin(pattern, (resource) => {

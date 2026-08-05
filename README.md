@@ -49,6 +49,7 @@ you actually subscribe to — **Watchmode** for TV (per-episode data) and
   - [How availability is decided](#-how-availability-is-decided)
   - [Minimising Watchmode credit usage](#-minimising-watchmode-credit-usage-tv)
 - [Authentication &amp; security](#-authentication--security)
+  - [Encrypted credentials](#-encrypted-credentials)
 - [Environment variables](#-environment-variables)
 - [Safety notes](#-safety-notes)
 - [Architecture](#-architecture)
@@ -436,6 +437,50 @@ value of at least 16 characters (`openssl rand -hex 32`).
 > screen. Set **`AUTH_COOKIE_INSECURE=true`** for HTTP deployments (the bundled
 > `docker-compose.yml` already does this). Prefer putting the app behind HTTPS.
 
+### 🔒 Encrypted credentials
+
+Everything StreamSweeparr stores that can be used as a credential — the
+Watchmode, TMDB and Seerr API keys, the OIDC client secret, and the API key for
+each Sonarr/Radarr instance — is encrypted before it reaches the database.
+
+An *arr API key can delete media, so a database dump, an old backup, or a
+`SELECT * FROM "Settings"` over a shared connection should not hand that over in
+the clear.
+
+- **Cipher:** AES-256-GCM, fresh IV per value, stored as
+  `enc:v1:<base64url(iv‖tag‖ciphertext)>`.
+- **Key:** derived from `AUTH_SECRET` with HKDF-SHA256, under an `info` string
+  specific to this use so it is separate from the session-signing key.
+- **Scope:** this protects data *at rest*. The running process must be able to
+  decrypt, so anyone who can read the app's environment can derive the key.
+  Without a key-management service that is the honest limit of what a
+  self-hosted app can offer — worth knowing rather than assuming more.
+
+Password hashes are deliberately **not** encrypted: they are already one-way,
+and encrypting them would add a failure mode without adding protection.
+
+**Upgrading.** Existing plaintext credentials are converted on the first boot
+after upgrading — a SQL migration cannot do it, because the key lives in the
+app's environment rather than the database. Reads accept both forms throughout,
+so a partial conversion is harmless and the step is idempotent.
+
+**Rotating `AUTH_SECRET` makes stored credentials unrecoverable.** GCM
+authenticates, so a changed secret means the values fail to decrypt rather than
+decrypting to nonsense. When that happens:
+
+- Affected keys read as *not configured*, and Settings shows a banner
+  explaining why rather than letting them appear to vanish.
+- A sync **refuses to run** without an API key, so nothing destructive happens
+  on the strength of a missing credential.
+- If OIDC was your only login method, its client secret becoming unreadable
+  makes OIDC "not configured", which **automatically re-enables the password
+  form** — rotating the secret cannot lock you out of your own instance.
+
+To recover, restore the previous `AUTH_SECRET`, or re-enter the affected keys in
+Settings to save them under the new one.
+
+---
+
 ### SSRF protection
 
 Any URL you supply (Sonarr/Radarr/Seerr base URLs, OIDC endpoints) is fetched
@@ -454,7 +499,7 @@ the fully commented version.
 | Variable | Required | Description |
 |---|---|---|
 | `DATABASE_URL` | ✅ | PostgreSQL connection string. On 1–2 vCPU hosts append `&connection_limit=10&pool_timeout=20` |
-| `AUTH_SECRET` | ✅ (prod) | Signs session cookies. ≥16 chars — `openssl rand -hex 32` |
+| `AUTH_SECRET` | ✅ (prod) | Signs session cookies **and** derives the key that encrypts stored credentials. ≥16 chars — `openssl rand -hex 32`. Changing it makes saved API keys unreadable — see [Encrypted credentials](#-encrypted-credentials) |
 | `ADMIN_USERNAME` / `ADMIN_PASSWORD` | — | Seed **and** keep authoritative the local admin account |
 | `LOCAL_LOGIN_DISABLED` | — | `true` hides the password form (SSO-only); `false` forces it back on |
 | `AUTH_COOKIE_INSECURE` | — | `true` when serving over plain HTTP, or login silently fails |
@@ -495,10 +540,9 @@ is still bounded. Behind a real proxy, set `TRUST_PROXY=true` **and**
   status can't be determined (lookup error or unmapped title), it is flagged
   *unknown* and the sweep will **not** re-monitor it — avoiding a mass
   re-monitor during a Watchmode outage.
-- API keys are stored in your PostgreSQL database and are never returned to the
-  browser (only a "configured" flag is exposed). *(Note: secrets are stored
-  as-is; encrypting them at rest is a planned improvement — keep DB access
-  restricted.)*
+- API keys are **encrypted at rest** and are never returned to the browser (only
+  a "configured" flag is exposed). See
+  [Encrypted credentials](#-encrypted-credentials).
 - **Sessions are revocable.** Changing a user's role, changing a password, or
   deleting an account bumps that account's `tokenVersion`, and every
   server-side guard re-reads the account on each request. A demoted admin loses
