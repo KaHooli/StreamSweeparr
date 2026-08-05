@@ -54,6 +54,19 @@ model Settings {
   // Perform destructive changes. When false the run is a dry-run (preview only).
   applyChanges      Boolean  @default(false)
 
+  // --- Scheduled sweeps ---
+  // Run a sweep automatically every `sweepIntervalHours` hours. Scheduled runs
+  // honour applyChanges exactly like a manual sweep, so leaving LIVE mode off
+  // makes the schedule a recurring dry-run.
+  sweepScheduleEnabled Boolean @default(false)
+  sweepIntervalHours   Int     @default(12)
+  // When the next scheduled sweep is due. Persisted (rather than kept in the
+  // process) so restarts don't reset the countdown and replicas agree on the
+  // slot — claiming a slot is an atomic update of this column.
+  sweepNextRunAt       DateTime?
+  // Last time the scheduler claimed a slot and started a sweep.
+  sweepLastRunAt       DateTime?
+
   // --- Watchmode Title ID map dataset sync metadata ---
   // HTTP validators from the last successful title_id_map.csv download, used to
   // skip re-importing when the dataset has not changed.

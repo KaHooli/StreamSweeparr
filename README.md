@@ -42,6 +42,7 @@ you actually subscribe to — **Watchmode** for TV (per-episode data) and
 - [Running a sweep](#-running-a-sweep)
 - [The dashboard](#-the-dashboard)
 - [Behaviour &amp; options](#-behaviour--options)
+  - [Scheduled sweeps](#-scheduled-sweeps)
   - [Excluding titles: the `ss-skip` tag](#-excluding-titles-the-ss-skip-tag)
   - [Clearing files for unmonitored titles](#-clearing-files-for-unmonitored-titles)
   - [Movies deleted from TMDB](#-movies-deleted-from-tmdb)
@@ -139,6 +140,8 @@ npm run build && npm run start
    first. Toggle **Delete files** and **Search at end** to taste. **Remove files
    for all unmonitored items** is off by default — see
    [Clearing files for unmonitored titles](#-clearing-files-for-unmonitored-titles).
+   Once you're happy with a manual run, **Scheduled sweeps** can repeat it every
+   few hours — see [Scheduled sweeps](#-scheduled-sweeps).
 
 ---
 
@@ -158,6 +161,9 @@ Sync and sweep run **in the background** behind a single concurrency lock (only
 one run at a time; stale runs are auto-reclaimed). The action bar returns
 immediately and polls the run for **live progress**, so long runs never block
 the request or the browser (`src/lib/jobs.ts`).
+
+To run sweeps automatically instead — e.g. every 12 hours — see
+[Scheduled sweeps](#-scheduled-sweeps).
 
 ---
 
@@ -192,6 +198,36 @@ gives availability but no per-provider link.
 ---
 
 ## ⚙️ Behaviour &amp; options
+
+### ⏱ Scheduled sweeps
+
+**Settings → Run options → Scheduled sweeps** runs a sweep on a timer, so you
+don't have to press **Run sweep** yourself. Turn on **Run sweep at regular
+intervals** and pick how often — every **1, 2, 3, 4, 6, 8 or 12 hours**, or
+every **1, 2, 3 or 7 days**. The card shows when the next run is due and when
+the last scheduled one started.
+
+A scheduled sweep is exactly the sweep the button runs, so it obeys every other
+run option — most importantly **Apply changes**: with LIVE mode off the schedule
+is a recurring *dry-run* that only logs what it would do. Each run appears on
+the **Runs** page like any other, and its log opens with
+`Starting scheduled … sweep (every 12 hours).`
+
+Details worth knowing:
+
+- **The countdown survives restarts.** The next due time is stored in the
+  database, not in the process, so restarting the container doesn't reset it.
+- **Turning the schedule on never fires immediately** — the first run is one
+  full interval away. Changing the interval re-anchors on the last scheduled run
+  (never in the past), so shortening it takes effect straight away.
+- **Missed slots are skipped, not replayed.** If the app was down for a day, it
+  runs once when it comes back, not once per missed slot.
+- **Overlaps are skipped, not queued.** If a sync or sweep is already running,
+  the scheduled one is dropped and picks up at the next interval — the run lock
+  in `src/lib/jobs.ts` is the single source of truth.
+- **Multiple replicas are safe.** A slot is claimed with a conditional update on
+  the settings row, so exactly one instance fires it. Set `SWEEP_SCHEDULER=off`
+  to opt an instance out entirely.
 
 ### 🏷 Excluding titles: the `ss-skip` tag
 
@@ -415,6 +451,7 @@ the fully commented version.
 | `OIDC_REDIRECT_URI` | — | Override the OIDC callback outright (rarely needed) |
 | `SSRF_ALLOW_PRIVATE` | — | `true` to allow private LAN ranges (needed for LAN *arr apps) |
 | `TITLE_MAP_SCHEDULER` | — | `off` disables the 12h Title ID map refresh on this instance |
+| `SWEEP_SCHEDULER` | — | `off` stops this instance running [scheduled sweeps](#-scheduled-sweeps) (the schedule itself stays configured) |
 | `PORT` | — | Port for `next start` (default `3000`) |
 
 ---
@@ -477,6 +514,7 @@ the fully commented version.
 | 12h scheduler for the Title ID map | `src/instrumentation.ts` |
 | **Sync engine** — snapshot library + streaming availability into Postgres | `src/lib/sync.ts` |
 | **Sweep engine** — unmonitor/delete, re-monitor, search | `src/lib/sweep.ts` |
+| **Scheduled sweeps** — interval maths (pure) + the timer that claims a slot | `src/lib/{schedule,scheduler}.ts` |
 | Country flags | `src/lib/flags.ts` |
 | REST API | `src/app/api/**` |
 | UI (Dracula theme, dark/light/system) | `src/app/**`, `src/components/**`, `src/app/globals.css` |
@@ -522,7 +560,7 @@ the fully commented version.
 | Command | What it does |
 |---|---|
 | `npm run dev` | Next.js dev server on `:3000` |
-| `npm test` | Vitest unit suite (session tokens, password hashing, rate limiter, `matchSources`, the SSRF guard, flags) |
+| `npm test` | Vitest unit suite (session tokens, password hashing, rate limiter, `matchSources`, the SSRF guard, flags, sweep scheduling) |
 | `npm run typecheck` | `tsc --noEmit` |
 | `npm run lint` | ESLint (`eslint-config-next`) |
 | `npm run prisma:migrate` | `prisma migrate deploy` |
