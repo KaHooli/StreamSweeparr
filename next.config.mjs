@@ -8,26 +8,28 @@ const nextConfig = {
   },
   experimental: {
     serverComponentsExternalPackages: ["@prisma/client", "pg", "pg-copy-streams"],
-    // Enables src/instrumentation.ts (the 12h Title ID map scheduler).
+    // Enables src/instrumentation.ts (the 12h Title ID map refresh and the
+    // scheduled-sweep timer).
     instrumentationHook: true,
   },
   webpack: (config, { nextRuntime, webpack }) => {
-    // The Title ID map importer is Node-only (uses pg + node streams). The
-    // instrumentation hook is also compiled for the edge runtime, which pulls
-    // titlemap.ts into the edge graph. Stub it out there so the edge bundle
-    // never tries to resolve pg / node:stream.
+    // The Title ID map importer is Node-only (uses pg + node streams), and the
+    // sweep scheduler reaches it through the sweep engine. The instrumentation
+    // hook is also compiled for the edge runtime, which pulls both into the edge
+    // graph. Stub them out there so the edge bundle never tries to resolve pg /
+    // node:stream.
     if (nextRuntime === "edge") {
-      config.plugins.push(
-        new webpack.NormalModuleReplacementPlugin(
-          /lib[\\/]titlemap(\.ts)?$/,
-          (resource) => {
+      for (const name of ["titlemap", "scheduler"]) {
+        const pattern = new RegExp(`lib[\\\\/]${name}(\\.ts)?$`);
+        config.plugins.push(
+          new webpack.NormalModuleReplacementPlugin(pattern, (resource) => {
             resource.request = resource.request.replace(
-              /titlemap(\.ts)?$/,
-              "titlemap.edge-stub"
+              new RegExp(`${name}(\\.ts)?$`),
+              `${name}.edge-stub`
             );
-          }
-        )
-      );
+          })
+        );
+      }
     }
     return config;
   },

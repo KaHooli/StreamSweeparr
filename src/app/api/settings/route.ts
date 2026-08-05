@@ -7,6 +7,13 @@ import {
   localLoginToggleLocked,
   DEFAULT_SSO_BUTTON_LABEL,
 } from "@/lib/loginOptions";
+import {
+  MIN_SWEEP_INTERVAL_HOURS,
+  MAX_SWEEP_INTERVAL_HOURS,
+  SWEEP_INTERVAL_CHOICES,
+  nextRunAfterChange,
+  schedulerDisabledByEnv,
+} from "@/lib/schedule";
 
 export const dynamic = "force-dynamic";
 
@@ -40,6 +47,14 @@ const settingsSchema = z.object({
   searchAtEnd: z.boolean().optional(),
   removeMissingTmdbMovies: z.boolean().optional(),
   applyChanges: z.boolean().optional(),
+  // Scheduled sweeps.
+  sweepScheduleEnabled: z.boolean().optional(),
+  sweepIntervalHours: z
+    .number()
+    .int("Interval must be a whole number of hours.")
+    .min(MIN_SWEEP_INTERVAL_HOURS, `Interval must be at least ${MIN_SWEEP_INTERVAL_HOURS} hour.`)
+    .max(MAX_SWEEP_INTERVAL_HOURS, `Interval must be at most ${MAX_SWEEP_INTERVAL_HOURS} hours.`)
+    .optional(),
   localLoginEnabled: z.boolean().optional(),
   // OIDC
   oidcEnabled: z.boolean().optional(),
@@ -73,6 +88,14 @@ function serialize(s: Awaited<ReturnType<typeof getSettings>>) {
     searchAtEnd: s.searchAtEnd,
     removeMissingTmdbMovies: s.removeMissingTmdbMovies,
     applyChanges: s.applyChanges,
+    // Scheduled sweeps: the stored schedule plus when it will next fire, and
+    // whether this instance's scheduler has been switched off by env var.
+    sweepScheduleEnabled: s.sweepScheduleEnabled,
+    sweepIntervalHours: s.sweepIntervalHours,
+    sweepIntervalChoices: [...SWEEP_INTERVAL_CHOICES],
+    sweepNextRunAt: s.sweepNextRunAt ? s.sweepNextRunAt.toISOString() : null,
+    sweepLastRunAt: s.sweepLastRunAt ? s.sweepLastRunAt.toISOString() : null,
+    sweepSchedulerDisabledByEnv: schedulerDisabledByEnv(),
     // Login options: the stored preference, the value actually in force, and
     // whether the UI control must be locked (OIDC unusable or env override).
     localLoginEnabled: s.localLoginEnabled,
@@ -111,7 +134,7 @@ export const PATCH = withGuard(requireAdmin, async (_session, req: NextRequest) 
   if (!parsed.success) {
     return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
   }
-  await getSettings(); // ensure row exists
+  const prev = await getSettings(); // ensure row exists
 
   const data: Record<string, unknown> = {};
   const p = parsed.data;
@@ -137,6 +160,18 @@ export const PATCH = withGuard(requireAdmin, async (_session, req: NextRequest) 
   if (p.removeMissingTmdbMovies !== undefined)
     data.removeMissingTmdbMovies = p.removeMissingTmdbMovies;
   if (p.applyChanges !== undefined) data.applyChanges = p.applyChanges;
+  // Scheduled sweeps: whenever the schedule itself is touched, recompute when
+  // it next fires (see nextRunAfterChange for the rules).
+  if (p.sweepScheduleEnabled !== undefined || p.sweepIntervalHours !== undefined) {
+    const enabled = p.sweepScheduleEnabled ?? prev.sweepScheduleEnabled;
+    const hours = p.sweepIntervalHours ?? prev.sweepIntervalHours;
+    data.sweepScheduleEnabled = enabled;
+    data.sweepIntervalHours = hours;
+    data.sweepNextRunAt = nextRunAfterChange(prev, {
+      sweepScheduleEnabled: enabled,
+      sweepIntervalHours: hours,
+    });
+  }
   if (p.localLoginEnabled !== undefined) data.localLoginEnabled = p.localLoginEnabled;
   // OIDC (only overwrite the secret when a non-empty value is provided).
   if (p.oidcEnabled !== undefined) data.oidcEnabled = p.oidcEnabled;

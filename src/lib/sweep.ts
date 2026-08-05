@@ -22,25 +22,36 @@ import { prisma, getSettings } from "./db";
 import { SonarrClient, RadarrClient } from "./arr";
 import { runSync } from "./sync";
 import { startRun, RunContext, type LogLevel, type RunCounts } from "./jobs";
+import { describeSchedule } from "./schedule";
 
 type Push = (level: LogLevel, msg: string) => void;
+
+/** What kicked the sweep off — recorded in the run log. */
+export type SweepTrigger = "manual" | "schedule";
 
 /**
  * Start a sweep in the background (behind the run lock). Returns the runId.
  * Throws RunLockError if another run is active.
  */
-export async function runSweep(): Promise<number> {
+export async function runSweep(trigger: SweepTrigger = "manual"): Promise<number> {
   const settings = await getSettings();
   const dryRun = !settings.applyChanges;
-  return startRun("SWEEP", dryRun, (ctx) => sweepBody(ctx, dryRun));
+  return startRun("SWEEP", dryRun, (ctx) => sweepBody(ctx, dryRun, trigger));
 }
 
-async function sweepBody(ctx: RunContext, dryRun: boolean): Promise<void> {
+async function sweepBody(ctx: RunContext, dryRun: boolean, trigger: SweepTrigger): Promise<void> {
   const settings = await getSettings();
   const push: Push = (level, msg) => ctx.push(level, msg);
   const counts = ctx.counts;
 
-  push("info", `Starting ${dryRun ? "DRY-RUN" : "LIVE"} sweep.`);
+  push(
+    "info",
+    trigger === "schedule"
+      ? `Starting scheduled ${dryRun ? "DRY-RUN" : "LIVE"} sweep (${describeSchedule(
+          settings.sweepIntervalHours
+        )}).`
+      : `Starting ${dryRun ? "DRY-RUN" : "LIVE"} sweep.`
+  );
 
   // 1. Refresh snapshot first.
   push("info", "Syncing latest state from Sonarr/Radarr + Watchmode…");
