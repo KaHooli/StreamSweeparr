@@ -43,7 +43,13 @@ export const PATCH = withGuard(requireAdmin, async (_session, req: NextRequest, 
     }
   }
 
-  await prisma.user.update({ where: { id }, data: { role } });
+  // Bump tokenVersion so the change takes effect on the target's *existing*
+  // sessions. Without it a demoted admin would keep admin rights until their
+  // session token expired, because the role is baked into the signed cookie.
+  await prisma.user.update({
+    where: { id },
+    data: { role, tokenVersion: { increment: 1 } },
+  });
   return NextResponse.json({ ok: true, role });
 });
 

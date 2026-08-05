@@ -1,46 +1,14 @@
 import Link from "next/link";
-import { headers } from "next/headers";
 import { getSettings } from "@/lib/db";
+import {
+  getDashboardData,
+  type DashboardService as ServiceRef,
+  type DashboardTvShow as TvShow,
+} from "@/lib/dashboard";
 import { Poster } from "@/components/Poster";
 import { RunControls } from "@/components/RunControls";
 
 export const dynamic = "force-dynamic";
-
-interface ServiceRef {
-  name: string;
-  type: string;
-  logo: string | null;
-  url: string | null;
-}
-interface TvShow {
-  id: number;
-  title: string;
-  year: number | null;
-  posterUrl: string | null;
-  monitored: boolean;
-  totalEpisodes: number;
-  monitoredEpisodes: number;
-  unmonitoredEpisodes: number;
-  streamingEpisodes: number;
-  unmonitoredPct: number;
-  services: ServiceRef[];
-}
-interface Movie {
-  id: number;
-  title: string;
-  year: number | null;
-  posterUrl: string | null;
-  monitored: boolean;
-  hasFile: boolean;
-  tmdbId: number | null;
-  services: ServiceRef[];
-}
-interface DashboardData {
-  tvShows: TvShow[];
-  movies: Movie[];
-  counts: { movies: number; tv: number };
-  lastRun: { id: number; status: string; startedAt: string; dryRun: boolean } | null;
-}
 
 /**
  * How much of a show is unmonitored, in words:
@@ -94,20 +62,6 @@ function ProviderLogos({ services, title }: { services: ServiceRef[]; title: str
   );
 }
 
-async function getData(): Promise<DashboardData> {
-  const h = headers();
-  const host = h.get("host");
-  const proto = h.get("x-forwarded-proto") ?? "http";
-  // Forward the session cookie so the auth middleware lets this internal
-  // server-to-server request through.
-  const cookie = h.get("cookie") ?? "";
-  const res = await fetch(`${proto}://${host}/api/dashboard`, {
-    cache: "no-store",
-    headers: { cookie },
-  });
-  return res.json();
-}
-
 export default async function DashboardPage() {
   const settings = await getSettings();
   const configured =
@@ -141,7 +95,7 @@ export default async function DashboardPage() {
     );
   }
 
-  const data = await getData();
+  const data = await getDashboardData();
 
   return (
     <main>

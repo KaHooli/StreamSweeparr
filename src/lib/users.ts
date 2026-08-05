@@ -82,6 +82,9 @@ export async function ensureLocalAdmin() {
     if (!matches) {
       data.passwordHash = await hashPassword(wantPassword);
       data.mustChangePassword = false;
+      // Rotating the password from the environment is also a recovery path, so
+      // end any sessions minted against the old credentials.
+      data.tokenVersion = { increment: 1 };
     } else if (local.mustChangePassword) {
       // Password came from the environment — nothing for the user to fix.
       data.mustChangePassword = false;

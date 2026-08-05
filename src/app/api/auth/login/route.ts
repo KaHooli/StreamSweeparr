@@ -5,7 +5,12 @@ import { verifyPassword } from "@/lib/password";
 import { ensureDefaultAdmin } from "@/lib/users";
 import { effectiveLocalLoginEnabled } from "@/lib/loginOptions";
 import { createSession, SESSION_COOKIE, sessionCookieOptions } from "@/lib/session";
-import { checkRateLimit, registerFailure, resetRateLimit } from "@/lib/ratelimit";
+import {
+  checkRateLimit,
+  registerFailure,
+  resetRateLimit,
+  GLOBAL_POLICY,
+} from "@/lib/ratelimit";
 import { clientIp } from "@/lib/request";
 
 export const dynamic = "force-dynamic";
@@ -40,11 +45,15 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // Rate-limit per IP and per IP+username to blunt brute force.
+  // Rate-limit per IP, per username, and instance-wide. The IP is only as
+  // trustworthy as the proxy configuration (see clientIp), so the username and
+  // global buckets are what actually bound an attacker who can vary their
+  // apparent source address.
   const ip = clientIp(req);
   const ipKey = `login:ip:${ip}`;
-  const userKey = `login:user:${ip}:${username.toLowerCase()}`;
-  for (const key of [ipKey, userKey]) {
+  const userKey = `login:user:${username.toLowerCase()}`;
+  const globalKey = "login:global";
+  for (const key of [globalKey, ipKey, userKey]) {
     const rl = checkRateLimit(key);
     if (!rl.allowed) return tooMany(rl.retryAfterSeconds);
   }
@@ -57,14 +66,18 @@ export async function POST(req: NextRequest) {
   // Uniform failure to avoid leaking which usernames exist.
   const ok = user ? await verifyPassword(password, user.passwordHash) : false;
   if (!user || !ok) {
-    let last = { allowed: true, retryAfterSeconds: 0 };
-    registerFailure(ipKey);
-    last = registerFailure(userKey);
-    if (!last.allowed) return tooMany(last.retryAfterSeconds);
+    const results = [
+      registerFailure(globalKey, GLOBAL_POLICY),
+      registerFailure(ipKey),
+      registerFailure(userKey),
+    ];
+    const locked = results.find((r) => !r.allowed);
+    if (locked) return tooMany(locked.retryAfterSeconds);
     return NextResponse.json({ error: "Invalid username or password." }, { status: 401 });
   }
 
-  // Success — clear the counters.
+  // Success — clear this client's counters. The global bucket is deliberately
+  // left alone: one valid login should not reset an ongoing spray.
   resetRateLimit(ipKey);
   resetRateLimit(userKey);
 
@@ -74,6 +87,7 @@ export async function POST(req: NextRequest) {
       username: user.username,
       role: user.role,
       mustChangePassword: user.mustChangePassword,
+      tokenVersion: user.tokenVersion,
     },
     "local"
   );

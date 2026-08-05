@@ -138,6 +138,12 @@ model User {
   role          Role     @default(USER)
   // Set for the seeded default admin until the password is changed.
   mustChangePassword Boolean @default(false)
+  // Bumped whenever a session must stop being honoured: a role change, a
+  // password change, or an admin revoking the account's sessions. Session
+  // tokens embed the version they were minted with, and requireSession()
+  // rejects any token whose version is behind. Without this a stateless token
+  // keeps its baked-in role for the rest of its 7-day life.
+  tokenVersion  Int      @default(0)
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 }
@@ -208,6 +214,10 @@ model MediaItem {
 
   monitored      Boolean   @default(false)
   hasFile        Boolean   @default(false)
+  // Radarr's file id for a movie that has one (movies only; episodes carry
+  // their own). Captured during sync so a sweep can delete files in bulk
+  // instead of re-fetching each movie just to learn its file id.
+  movieFileId    Int?
 
   // Aggregated streaming state.
   onStreaming    Boolean   @default(false)
@@ -249,8 +259,11 @@ model MediaItem {
   episodes       Episode[]
 
   @@unique([connectionId, type, arrId])
-  @@index([type])
-  @@index([onStreaming])
+  // The dashboard always filters on both columns together; two single-column
+  // indexes make Postgres pick one and filter the rest by hand.
+  @@index([type, onStreaming])
+  // Sync prunes rows it did not touch this pass by timestamp.
+  @@index([connectionId, type, lastSyncedAt])
 }
 
 // Cached episode snapshot for TV media.
@@ -271,6 +284,8 @@ model Episode {
   mediaId       Int
 
   @@unique([mediaId, arrEpisodeId])
+  // The end-of-run search collects every monitored episode across the library.
+  @@index([mediaId, monitored])
 }
 
 enum RunStatus {
