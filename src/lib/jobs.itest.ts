@@ -35,6 +35,29 @@ afterAll(async () => {
   await prisma.$disconnect();
 });
 
+/** Statements currently parked waiting for a lock on the RunLog table. */
+async function blockedRunLogWrites(): Promise<number> {
+  const rows = await prisma.$queryRaw<{ n: bigint }[]>`
+    SELECT count(*)::bigint AS n
+    FROM pg_stat_activity
+    WHERE datname = current_database()
+      AND state = 'active'
+      AND wait_event_type = 'Lock'
+      AND query ILIKE '%RunLog%'
+  `;
+  return Number(rows[0].n);
+}
+
+/** Connections sitting inside an open transaction — how we know a lock is held. */
+async function idleInTransaction(): Promise<number> {
+  const rows = await prisma.$queryRaw<{ n: bigint }[]>`
+    SELECT count(*)::bigint AS n
+    FROM pg_stat_activity
+    WHERE datname = current_database() AND state = 'idle in transaction'
+  `;
+  return Number(rows[0].n);
+}
+
 /** A run body that blocks until we let it finish. */
 function heldRun() {
   let release!: () => void;
@@ -172,6 +195,91 @@ describe("RunContext logging", () => {
     expect(lines[0].msg).toBe("line 0"); // the opening steps survive
     expect(lines[lines.length - 1].msg).toBe(`line ${total - 1}`); // so does the tail
     expect(lines.some((l) => l.msg.includes("omitted"))).toBe(true);
+  });
+
+  it("does not issue the final write while a progress write is still in flight", async () => {
+    // The bug this guards against: `push` fires a flush without awaiting it,
+    // capturing the counts while they are still zero. When the terminal write
+    // was issued independently rather than queued behind that flush, the two
+    // raced on separate pooled connections — and a flush landing second reset
+    // the counts without touching `status`, leaving a run marked SUCCESS that
+    // reported having done nothing. It failed the sweep suite about one run in
+    // twenty, most often the first test against a cold connection pool.
+    //
+    // Asserting on the resulting row cannot catch this: whether the race is
+    // lost depends on connection timing, so a passing run proves nothing. What
+    // *is* deterministic is the invariant underneath — the terminal write must
+    // never be in flight at the same time as a progress write. So hold a lock
+    // on the row, park both writes against it, and count them.
+    const run = await prisma.runLog.create({
+      data: { kind: "SWEEP", status: "RUNNING", dryRun: false, log: [] },
+    });
+    const ctx = new RunContext(run.id);
+
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+
+    // A second connection holds the row, so any UPDATE to it blocks where
+    // pg_stat_activity can see it.
+    const locker = prisma.$transaction(
+      async (tx) => {
+        await tx.$executeRaw`SELECT 1 FROM "RunLog" WHERE id = ${run.id} FOR UPDATE`;
+        await held;
+      },
+      { timeout: 20_000 }
+    );
+    await waitFor(async () => (await idleInTransaction()) > 0);
+
+    ctx.push("info", "progress"); // the first push always flushes
+    ctx.counts.unmonitoredMovies = 2;
+    const finishing = ctx.finish({ status: "SUCCESS" });
+
+    await waitFor(async () => (await blockedRunLogWrites()) >= 1);
+    // A second statement, had one been issued, would have arrived long ago.
+    await new Promise((r) => setTimeout(r, 500));
+    expect(await blockedRunLogWrites()).toBe(1);
+
+    release();
+    await locker;
+    await finishing;
+
+    const stored = await prisma.runLog.findUniqueOrThrow({ where: { id: run.id } });
+    expect(stored.status).toBe("SUCCESS");
+    expect(stored.unmonitoredMovies).toBe(2);
+    expect(stored.finishedAt).not.toBeNull();
+  });
+
+  it("ignores progress writes scheduled after the run has finished", async () => {
+    const run = await prisma.runLog.create({
+      data: { kind: "SWEEP", status: "RUNNING", dryRun: false, log: [] },
+    });
+    const ctx = new RunContext(run.id);
+    ctx.counts.unmonitoredMovies = 2;
+    await ctx.finish({ status: "SUCCESS" });
+
+    // A late heartbeat or a straggling `push` must not reopen the row.
+    ctx.counts.unmonitoredMovies = 99;
+    ctx.push("info", "too late");
+    await ctx.flush();
+
+    const stored = await prisma.runLog.findUniqueOrThrow({ where: { id: run.id } });
+    expect(stored.status).toBe("SUCCESS");
+    expect(stored.unmonitoredMovies).toBe(2);
+  });
+
+  it("records a failure with the counts accumulated before it", async () => {
+    const run = await prisma.runLog.create({
+      data: { kind: "SWEEP", status: "RUNNING", dryRun: false, log: [] },
+    });
+    const ctx = new RunContext(run.id);
+    ctx.push("info", "starting");
+    ctx.counts.deletedFiles = 5;
+    await ctx.finish({ status: "FAILED", error: "radarr went away" });
+
+    const stored = await prisma.runLog.findUniqueOrThrow({ where: { id: run.id } });
+    expect(stored.status).toBe("FAILED");
+    expect(stored.error).toBe("radarr went away");
+    expect(stored.deletedFiles).toBe(5);
   });
 
   it("collapses overlapping flushes rather than interleaving them", async () => {

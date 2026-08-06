@@ -25,6 +25,15 @@ const config = [
       "no-console": "error",
     },
   },
+  {
+    // Repo maintenance scripts are command-line tools whose entire output is
+    // stdout/stderr, and they run before `npm ci` has installed anything — so
+    // routing them through the app's logger is neither possible nor wanted.
+    files: ["scripts/**/*.mjs"],
+    rules: {
+      "no-console": "off",
+    },
+  },
 ];
 
 export default config;

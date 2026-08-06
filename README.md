@@ -59,7 +59,7 @@ you actually subscribe to — **Watchmode** for TV (per-episode data) and
 
 ## 📋 Requirements
 
-- **Node.js 18+** (tested on 20/26) — or just Docker
+- **Node.js 24** (the version in `.nvmrc`, what CI tests and the image ships) — or just Docker
 - An **external PostgreSQL** server (v13+)
 - A **[Watchmode](https://api.watchmode.com)** API key — for TV
 - A **[TheMovieDB](https://www.themoviedb.org)** API key — for movies

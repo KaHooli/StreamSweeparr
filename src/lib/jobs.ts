@@ -90,6 +90,9 @@ export class RunContext {
   // ride along with it instead of adding another round trip.
   private chain: Promise<void> = Promise.resolve();
   private queued: Promise<void> | null = null;
+  // Set the moment the run starts finalising. After that the terminal write is
+  // the last word on this row and progress writes must not be scheduled.
+  private finished = false;
 
   constructor(public runId: number) {}
 
@@ -118,6 +121,9 @@ export class RunContext {
    * having persisted a snapshot older than the caller's own changes.
    */
   flush(): Promise<void> {
+    // Once `finish` has been called the row is being closed out; a progress
+    // write scheduled now could only undo it.
+    if (this.finished) return Promise.resolve();
     // A queued-but-not-yet-started write will read state at least as new as
     // ours, so there is nothing to gain from scheduling another.
     if (this.queued) return this.queued;
@@ -128,6 +134,42 @@ export class RunContext {
       return this.writeOnce();
     });
     this.queued = write;
+    this.chain = write.catch(() => {});
+    return write;
+  }
+
+  /**
+   * Write the run's terminal state — the last thing this row ever receives.
+   *
+   * It goes through the same queue as `flush` rather than issuing its own
+   * update, and that is the whole point. `push` fires progress writes without
+   * awaiting them, so when a body finishes there can still be an update in
+   * flight that snapshotted the counts while they were zero. Issued
+   * independently, the two updates travel on different pooled connections with
+   * no ordering between them; when the progress write lands second it silently
+   * resets the counts — and not `status`, which it does not set. The result is
+   * a run marked SUCCESS that claims it changed nothing.
+   *
+   * That is not hypothetical: it is what made the sweep integration suite fail
+   * roughly one run in twenty, and in production it would quietly under-report
+   * what a sweep actually did.
+   */
+  finish(final: { status: "SUCCESS" | "FAILED"; error?: string }): Promise<void> {
+    // Synchronous, so a `push` racing with finalisation cannot slip a write in
+    // behind us.
+    this.finished = true;
+    const write = this.chain.then(async () => {
+      this.queued = null;
+      await prisma.runLog.update({
+        where: { id: this.runId },
+        data: {
+          ...final,
+          finishedAt: new Date(),
+          log: this.snapshotLog() as unknown as object,
+          ...this.counts,
+        },
+      });
+    });
     this.chain = write.catch(() => {});
     return write;
   }
@@ -204,31 +246,16 @@ export async function startRun(
   void (async () => {
     try {
       await body(ctx);
-      await prisma.runLog.update({
-        where: { id: run.id },
-        data: {
-          status: "SUCCESS",
-          finishedAt: new Date(),
-          log: ctx.snapshotLog() as unknown as object,
-          ...ctx.counts,
-        },
-      });
+      // Stop the heartbeat before finalising: it flushes, and nothing should be
+      // scheduling progress writes once the terminal write is queued.
+      clearInterval(heartbeat);
+      await ctx.finish({ status: "SUCCESS" });
     } catch (e) {
+      clearInterval(heartbeat);
       ctx.push("warn", `Run failed: ${(e as Error).message}`);
-      await prisma.runLog
-        .update({
-          where: { id: run.id },
-          data: {
-            status: "FAILED",
-            finishedAt: new Date(),
-            error: (e as Error).message,
-            log: ctx.snapshotLog() as unknown as object,
-            ...ctx.counts,
-          },
-        })
-        .catch((err) => {
-          log.error(`could not record failure for run #${run.id}: ${(err as Error).message}`);
-        });
+      await ctx.finish({ status: "FAILED", error: (e as Error).message }).catch((err) => {
+        log.error(`could not record failure for run #${run.id}: ${(err as Error).message}`);
+      });
     } finally {
       clearInterval(heartbeat);
     }
