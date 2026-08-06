@@ -17,6 +17,13 @@ jobs:
   verify:
     runs-on: ubuntu-latest
 
+    # Runs take ~90s (87-99s measured). 20 minutes is far above anything
+    # legitimate — a slow npm registry, a sluggish runner, Postgres taking its
+    # time to accept connections — while still failing an hour and a half
+    # sooner than GitHub's 6-hour default. A job that hangs here holds a
+    # required check pending, so the PR blocks with nothing to read.
+    timeout-minutes: 20
+
     # Integration tests run against a throwaway PostgreSQL, so the sync/sweep
     # engines are exercised against real SQL rather than a mocked client.
     services:
@@ -108,6 +115,12 @@ jobs:
   # workflow still does the real multi-arch build.
   image:
     runs-on: ubuntu-latest
+
+    # Cached runs take ~90-160s; the first uncached build took just over 4
+    # minutes. 20 minutes covers a cold cache plus a slow registry, and this
+    # is the single-arch build — the emulated arm64 one that hung for three
+    # hours lives in the publish workflow, which has its own timeout.
+    timeout-minutes: 20
 
     steps:
       - name: Checkout
