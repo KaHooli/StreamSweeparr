@@ -1,7 +1,12 @@
 name: CI
 
-# Lint, typecheck, test and build on every push and pull request. The Docker
-# publish workflow runs separately; this job is the quality gate.
+# The quality gate, in two jobs that run in parallel:
+#
+#   verify — lint, typecheck, unit + integration tests, and the Next build
+#   image  — builds the Docker image the project actually ships
+#
+# Both must be required in branch protection; each covers what the other does
+# not. Publishing the image is a separate workflow that runs only on `main`.
 on:
   push:
     branches:
@@ -87,13 +92,27 @@ jobs:
       - name: Build
         run: npx next build
 
-      # Everything above proves the app works on the Node in `.nvmrc`. This
-      # proves the image that actually ships is built on that same Node and
-      # still assembles — previously nothing did, because the publish workflow
-      # only runs on `main`, so a broken Dockerfile was discovered after merge.
-      #
-      # Single-arch and no push: this is a correctness check, not a release.
-      # The publish workflow still does the real multi-arch build.
+  # The image that actually ships, built on every PR.
+  #
+  # The publish workflow only runs on `main`, so before this existed nothing
+  # built the Dockerfile until after merge — a broken base image or a bad COPY
+  # was found in the registry rather than in review.
+  #
+  # A separate job rather than a step inside `verify`, so the ~4 minutes it
+  # takes runs alongside the tests instead of after them. The cost of that
+  # choice: it is its own required check. `verify` passing no longer implies
+  # the image builds, so `image` has to be named in the branch protection
+  # ruleset too, or a broken Dockerfile can merge with a green tick.
+  #
+  # Single-arch and no push: a correctness check, not a release. The publish
+  # workflow still does the real multi-arch build.
+  image:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
