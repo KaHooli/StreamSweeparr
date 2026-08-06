@@ -1,36 +1,25 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState } from "react";
+import { useSyncedState } from "@/lib/useSyncedState";
 import useSWR from "swr";
 import { fetcher, sendJson } from "@/lib/fetcher";
 import type { CardProps } from "./types";
 
 export function OidcCard({ settings, onChange }: CardProps) {
-  const [enabled, setEnabled] = useState(settings.oidcEnabled);
-  const [issuer, setIssuer] = useState(settings.oidcIssuer);
-  const [clientId, setClientId] = useState(settings.oidcClientId);
+  const [enabled, setEnabled] = useSyncedState(settings.oidcEnabled);
+  const [issuer, setIssuer] = useSyncedState(settings.oidcIssuer);
+  const [clientId, setClientId] = useSyncedState(settings.oidcClientId);
   const [clientSecret, setClientSecret] = useState("");
-  const [buttonLabel, setButtonLabel] = useState(settings.oidcButtonLabel);
-  const [scopes, setScopes] = useState(settings.oidcScopes);
-  const [authUrl, setAuthUrl] = useState(settings.oidcAuthUrl);
-  const [tokenUrl, setTokenUrl] = useState(settings.oidcTokenUrl);
-  const [userinfoUrl, setUserinfoUrl] = useState(settings.oidcUserinfoUrl);
-  const [allowed, setAllowed] = useState(settings.oidcAllowedUsers.join(", "));
+  const [buttonLabel, setButtonLabel] = useSyncedState(settings.oidcButtonLabel);
+  const [scopes, setScopes] = useSyncedState(settings.oidcScopes);
+  const [authUrl, setAuthUrl] = useSyncedState(settings.oidcAuthUrl);
+  const [tokenUrl, setTokenUrl] = useSyncedState(settings.oidcTokenUrl);
+  const [userinfoUrl, setUserinfoUrl] = useSyncedState(settings.oidcUserinfoUrl);
+  const [allowed, setAllowed] = useSyncedState(settings.oidcAllowedUsers.join(", "));
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
-
-  useEffect(() => {
-    setEnabled(settings.oidcEnabled);
-    setIssuer(settings.oidcIssuer);
-    setClientId(settings.oidcClientId);
-    setButtonLabel(settings.oidcButtonLabel);
-    setScopes(settings.oidcScopes);
-    setAuthUrl(settings.oidcAuthUrl);
-    setTokenUrl(settings.oidcTokenUrl);
-    setUserinfoUrl(settings.oidcUserinfoUrl);
-    setAllowed(settings.oidcAllowedUsers.join(", "));
-  }, [settings]);
 
   const save = async () => {
     setBusy(true);

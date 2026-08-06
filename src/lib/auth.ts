@@ -62,7 +62,7 @@ export async function resolveSession(
 
 /** Return the current session or throw AuthError(401). */
 export async function requireSession(): Promise<SessionPayload> {
-  const token = await verifySession(cookies().get(SESSION_COOKIE)?.value);
+  const token = await verifySession((await cookies()).get(SESSION_COOKIE)?.value);
   const payload = await resolveSession(token);
   if (!payload) throw new AuthError("Not authenticated.", 401);
   return payload;

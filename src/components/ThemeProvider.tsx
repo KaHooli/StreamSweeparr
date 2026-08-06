@@ -1,8 +1,60 @@
 "use client";
 
-import { createContext, useContext, useEffect, useState } from "react";
+import { createContext, useCallback, useContext, useMemo, useSyncExternalStore } from "react";
 
 type Theme = "system" | "dark" | "light";
+
+const STORAGE_KEY = "ss-theme";
+
+/**
+ * The stored theme preference, treated as what it actually is: an external
+ * store that lives outside React.
+ *
+ * It cannot be read during render — the server has no `localStorage`, and
+ * reading it in a state initialiser would make the server and client disagree
+ * about the first paint. Reading it in an effect and calling `setState` would
+ * work but commits one render with the wrong theme first, which is the flash of
+ * the wrong colours you sometimes see on themed sites. `useSyncExternalStore`
+ * is the primitive for exactly this: a server snapshot for SSR, a client
+ * snapshot read at the right moment, and a subscription for later changes.
+ */
+const themeStore = {
+  listeners: new Set<() => void>(),
+
+  subscribe(listener: () => void) {
+    themeStore.listeners.add(listener);
+    // Another tab changing the preference should update this one too.
+    window.addEventListener("storage", listener);
+    return () => {
+      themeStore.listeners.delete(listener);
+      window.removeEventListener("storage", listener);
+    };
+  },
+
+  getSnapshot(): Theme {
+    try {
+      return (localStorage.getItem(STORAGE_KEY) as Theme) || "system";
+    } catch {
+      // Private-mode browsers can throw on localStorage access.
+      return "system";
+    }
+  },
+
+  /** The server has no preference to read, so it renders the default. */
+  getServerSnapshot(): Theme {
+    return "system";
+  },
+
+  set(theme: Theme) {
+    try {
+      localStorage.setItem(STORAGE_KEY, theme);
+    } catch {
+      // Not persisting is survivable; the rest of the update still applies.
+    }
+    for (const listener of themeStore.listeners) listener();
+  },
+};
+
 const ThemeCtx = createContext<{ theme: Theme; setTheme: (t: Theme) => void }>({
   theme: "system",
   setTheme: () => {},
@@ -13,22 +65,23 @@ export function useTheme() {
 }
 
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
-  const [theme, setThemeState] = useState<Theme>("system");
+  const theme = useSyncExternalStore(
+    themeStore.subscribe,
+    themeStore.getSnapshot,
+    themeStore.getServerSnapshot
+  );
 
-  // Load persisted preference (defaults to "system" -> follows OS).
-  useEffect(() => {
-    const saved = (localStorage.getItem("ss-theme") as Theme) || "system";
-    setThemeState(saved);
-    document.documentElement.setAttribute("data-theme", saved);
-  }, []);
+  const setTheme = useCallback((t: Theme) => themeStore.set(t), []);
 
-  const setTheme = (t: Theme) => {
-    setThemeState(t);
-    localStorage.setItem("ss-theme", t);
-    document.documentElement.setAttribute("data-theme", t);
-  };
+  // The attribute drives the CSS, and has to track whatever the store says —
+  // including a change made in another tab.
+  if (typeof document !== "undefined") {
+    document.documentElement.setAttribute("data-theme", theme);
+  }
 
-  return <ThemeCtx.Provider value={{ theme, setTheme }}>{children}</ThemeCtx.Provider>;
+  const value = useMemo(() => ({ theme, setTheme }), [theme, setTheme]);
+
+  return <ThemeCtx.Provider value={value}>{children}</ThemeCtx.Provider>;
 }
 
 export function ThemeToggle() {

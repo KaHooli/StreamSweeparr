@@ -1,8 +1,9 @@
 /**
  * Stateless session tokens (a compact HMAC-signed JWT-like token).
  *
- * Uses the Web Crypto API (HMAC-SHA256) so it can be verified inside Next.js
- * middleware, which runs on the edge runtime and has no access to Node crypto.
+ * Uses the Web Crypto API (HMAC-SHA256) so it can be verified inside the proxy
+ * (`src/proxy.ts`), which runs on the edge runtime and has no access to Node
+ * crypto.
  *
  * The signing secret comes from AUTH_SECRET; if unset we derive a stable
  * fallback so the app still boots (a warning is logged). Set AUTH_SECRET in

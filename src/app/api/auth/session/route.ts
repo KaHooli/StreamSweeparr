@@ -14,7 +14,7 @@ export const dynamic = "force-dynamic";
 // Returns the current session (or null) plus which login methods are offered.
 // The login page is public, so this must not require authentication.
 export async function GET() {
-  const token = cookies().get(SESSION_COOKIE)?.value;
+  const token = (await cookies()).get(SESSION_COOKIE)?.value;
   // Resolved against the database, not just the cookie: the UI hides the
   // admin-only controls based on this, so it should agree with what the API
   // will actually allow rather than with a role frozen at sign-in.

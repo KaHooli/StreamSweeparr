@@ -7,8 +7,15 @@ import { SESSION_COOKIE, verifySession } from "@/lib/session";
  *
  * - Unauthenticated page requests -> redirect to /login?next=<path>.
  * - Unauthenticated API requests  -> 401 JSON.
+ *
+ * This runs on the edge runtime and can only check the cookie's signature. It
+ * turns anonymous traffic away; `lib/auth` is what decides whether a signed
+ * cookie still carries any authority (see resolveSession).
+ *
+ * Named `proxy` in a `proxy.ts` file: Next 16 renamed the middleware file
+ * convention, and the old name is deprecated.
  */
-export async function middleware(req: NextRequest) {
+export async function proxy(req: NextRequest) {
   const { pathname, search } = req.nextUrl;
 
   const isPublic =

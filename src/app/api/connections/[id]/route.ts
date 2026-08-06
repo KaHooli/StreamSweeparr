@@ -12,10 +12,14 @@ const patchSchema = z.object({
   enabled: z.boolean().optional(),
 });
 
-type Ctx = { params: { id: string } };
+// Next 16 delivers route params as a Promise, and this type is written by hand
+// rather than inferred — so it has to say so. Left as a plain object, the
+// handler reads a property off a Promise, gets undefined, and every request
+// 400s on an "invalid id" that was perfectly valid.
+type Ctx = { params: Promise<{ id: string }> };
 
 export const PATCH = withGuard(requireAdmin, async (_session, req: NextRequest, ctx: Ctx) => {
-  const id = Number(ctx.params.id);
+  const id = Number((await ctx.params).id);
   if (Number.isNaN(id)) return NextResponse.json({ error: "Invalid id" }, { status: 400 });
   const parsed = patchSchema.safeParse(await req.json());
   if (!parsed.success) return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
@@ -28,7 +32,7 @@ export const PATCH = withGuard(requireAdmin, async (_session, req: NextRequest, 
 });
 
 export const DELETE = withGuard(requireAdmin, async (_session, _req: NextRequest, ctx: Ctx) => {
-  const id = Number(ctx.params.id);
+  const id = Number((await ctx.params).id);
   if (Number.isNaN(id)) return NextResponse.json({ error: "Invalid id" }, { status: 400 });
   await prisma.arrConnection.delete({ where: { id } });
   return NextResponse.json({ ok: true });

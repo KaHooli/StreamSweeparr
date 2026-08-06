@@ -8,7 +8,7 @@
 
 [![CI](https://github.com/KaHooli/StreamSweeparr/actions/workflows/ci.yml/badge.svg)](https://github.com/KaHooli/StreamSweeparr/actions/workflows/ci.yml)
 [![Docker image](https://img.shields.io/badge/ghcr.io-streamsweeparr-2496ed?logo=docker&logoColor=white)](https://github.com/KaHooli/StreamSweeparr/pkgs/container/streamsweeparr)
-[![Next.js 14](https://img.shields.io/badge/Next.js-14-black?logo=nextdotjs)](https://nextjs.org)
+[![Next.js 16](https://img.shields.io/badge/Next.js-16-black?logo=nextdotjs)](https://nextjs.org)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-13%2B-336791?logo=postgresql&logoColor=white)](https://www.postgresql.org)
 
 </div>
@@ -369,7 +369,7 @@ to disable the timer (e.g. on secondary replicas).
 
 ## 🔐 Authentication &amp; security
 
-The whole app is behind a login. A `middleware.ts` gate validates a signed,
+The whole app is behind a login. A `proxy.ts` gate validates a signed,
 edge-safe session cookie on every route except `/login` and `/api/auth/*`;
 unauthenticated pages redirect to `/login`, unauthenticated API calls get `401`.
 
@@ -554,7 +554,7 @@ is still bounded. Behind a real proxy, set `TRUST_PROXY=true` **and**
 
 ```
                           ┌──────────────────────────────┐
-   Browser (Dracula UI) ──►  Next.js 14 App Router        │
+   Browser (Dracula UI) ──►  Next.js 16 App Router        │
    dashboard / settings    │  ├─ React Server + Client    │
    / runs                  │  └─ API routes (/api/*)      │
                            └──────┬───────────────┬───────┘
@@ -580,7 +580,7 @@ is still bounded. Behind a real proxy, set `TRUST_PROXY=true` **and**
 |---|---|
 | DB client + settings bootstrap | `src/lib/db.ts` |
 | Auth: sessions / passwords / users / OIDC | `src/lib/{session,password,users,oidc}.ts` |
-| Route protection (edge middleware) | `src/middleware.ts` |
+| Route protection (edge proxy) | `src/proxy.ts` |
 | Auth API (login, logout, session, change-password, OIDC) | `src/app/api/auth/**` |
 | Login page | `src/app/login/page.tsx` |
 | Watchmode client (regions, sources, title lookup, availability) | `src/lib/watchmode.ts` |
@@ -639,7 +639,7 @@ is still bounded. Behind a real proxy, set `TRUST_PROXY=true` **and**
 | `npm run test:integration` | Integration suite against a real PostgreSQL (needs `DATABASE_URL`) |
 | `npm run test:all` | Both suites |
 | `npm run typecheck` | `tsc --noEmit` |
-| `npm run lint` | ESLint (`eslint-config-next`, `no-console`) |
+| `npm run lint` | ESLint flat config (`eslint.config.mjs`: `eslint-config-next` + `no-console`) |
 | `npm run prisma:migrate` | `prisma migrate deploy` |
 
 ### The two suites

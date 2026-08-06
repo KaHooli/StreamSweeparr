@@ -57,7 +57,9 @@ const req = (body: unknown) =>
     headers: { "Content-Type": "application/json" },
   });
 
-const ctx = (id: number) => ({ params: { id: String(id) } });
+// Next 16 hands route params to the handler as a Promise, so the test has to
+// supply one too — otherwise it would pass a shape the real router never sends.
+const ctx = (id: number) => ({ params: Promise.resolve({ id: String(id) }) });
 
 /** Whether a token still resolves to an honoured session. */
 async function stillValid(token: string) {
