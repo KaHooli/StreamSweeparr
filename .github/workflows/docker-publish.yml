@@ -19,6 +19,20 @@ env:
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
+
+    # A hung publish is silent: no failure, no notification, just a run that
+    # never ends. One wedged on `Build and push` for over three hours and was
+    # only noticed by chance — GitHub's default would have let it sit for six.
+    #
+    # That matters more than a wasted runner, because this workflow tags
+    # `latest`. A stale run finishing after newer commits have published would
+    # move `latest` *backwards* onto an older image.
+    #
+    # Successful runs take 6-12 minutes (the slowest being a cold cache after
+    # a base-image change), so 45 is generous headroom for a legitimately slow
+    # arm64-under-QEMU build while still failing loudly the same hour.
+    timeout-minutes: 45
+
     permissions:
       contents: read
       packages: write # required to push to GHCR
