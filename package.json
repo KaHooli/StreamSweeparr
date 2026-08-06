@@ -4,13 +4,14 @@
   "private": true,
   "description": "Seerr-style tool that unmonitors/deletes Sonarr & Radarr media available on your chosen streaming services (via Watchmode), re-monitors media that has left streaming, and triggers searches.",
   "engines": {
-    "node": ">=20.19"
+    "node": ">=24"
   },
   "scripts": {
     "dev": "next dev",
     "build": "prisma generate && next build",
     "start": "next start",
     "lint": "eslint .",
+    "check:node": "node scripts/check-node-version.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -34,7 +35,7 @@
   "devDependencies": {
     "@testing-library/dom": "^10.4.1",
     "@testing-library/react": "^16.3.2",
-    "@types/node": "^20.14.10",
+    "@types/node": "^24.13.3",
     "@types/pg": "^8.11.6",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",

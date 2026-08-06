@@ -67,6 +67,10 @@ updates:
   # The runtime image. Majors excluded for the same reason as npm: the
   # node:20 -> node:25 bump moved the shipped runtime two majors ahead of the
   # one CI tests against, silently, and nothing failed to say so.
+  #
+  # `npm run check:node` now fails CI on that particular drift, but the check
+  # only proves the two agree — it can't tell you the agreed major is one you
+  # meant to be on. Moving Node is still a deliberate change to `.nvmrc`.
   - package-ecosystem: docker
     directory: "/"
     schedule:

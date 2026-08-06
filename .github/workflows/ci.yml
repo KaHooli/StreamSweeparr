@@ -36,11 +36,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
+      # `.nvmrc` is the single source of truth for the Node major, so CI cannot
+      # drift from it by construction. The Dockerfile can't read it, so the step
+      # below asserts the image agrees.
       - name: Setup Node
         uses: actions/setup-node@v7
         with:
-          node-version: "20"
+          node-version-file: ".nvmrc"
           cache: "npm"
+
+      # Cheap and first: no point installing anything if CI and the shipped
+      # image are about to test different runtimes.
+      - name: Check Node version alignment
+        run: npm run check:node
 
       - name: Install dependencies
         run: npm ci
@@ -78,3 +86,22 @@ jobs:
 
       - name: Build
         run: npx next build
+
+      # Everything above proves the app works on the Node in `.nvmrc`. This
+      # proves the image that actually ships is built on that same Node and
+      # still assembles — previously nothing did, because the publish workflow
+      # only runs on `main`, so a broken Dockerfile was discovered after merge.
+      #
+      # Single-arch and no push: this is a correctness check, not a release.
+      # The publish workflow still does the real multi-arch build.
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build the runtime image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
