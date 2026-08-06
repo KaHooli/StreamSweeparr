@@ -8,6 +8,27 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+
+    # Majors are excluded on purpose.
+    #
+    # Every breakage this repo has had came in as an auto-generated major:
+    # a grouped bump took Next 14 -> 16 and React 18 -> 19 without warning and
+    # left `main` unable to even install, and jsdom 30 later broke CI by
+    # quietly requiring a newer Node than the runner has. A major is a project
+    # decision — it wants a migration plan, a read of the release notes, and
+    # someone watching — not a Tuesday-morning pull request.
+    #
+    # Minors and patches still arrive automatically, which is where the
+    # security value of Dependabot mostly lives.
+    #
+    # Caveat worth knowing: this also suppresses *security* updates whose only
+    # fix is a major bump. The backstop is the CI audit step, which fails the
+    # build on a critical advisory — so such a case surfaces loudly and gets
+    # handled deliberately, which is the intent here anyway.
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
     groups:
       # Next/React move together; a split upgrade usually fails to build.
       #
@@ -34,15 +55,23 @@ updates:
       production-dependencies:
         dependency-type: production
 
-  # Keep the CI/publish workflows' actions current.
+  # Keep the CI/publish workflows' actions current. Majors are allowed here:
+  # action majors are few, self-contained, and a broken one fails the workflow
+  # immediately rather than shipping.
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
       interval: weekly
     open-pull-requests-limit: 3
 
+  # The runtime image. Majors excluded for the same reason as npm: the
+  # node:20 -> node:25 bump moved the shipped runtime two majors ahead of the
+  # one CI tests against, silently, and nothing failed to say so.
   - package-ecosystem: docker
     directory: "/"
     schedule:
       interval: weekly
     open-pull-requests-limit: 3
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
