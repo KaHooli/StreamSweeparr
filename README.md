@@ -624,7 +624,7 @@ is still bounded. Behind a real proxy, set `TRUST_PROXY=true` **and**
 `pg-copy-streams`, `swr`, `zod`
 
 **Dev/build:** `prisma`, `typescript`, `@types/*`, `eslint`,
-`eslint-config-next`, `vitest`
+`eslint-config-next`, `vitest`, `@testing-library/react`, `jsdom`
 
 </details>
 
@@ -644,11 +644,15 @@ is still bounded. Behind a real proxy, set `TRUST_PROXY=true` **and**
 
 ### The two suites
 
-**Unit** (`src/**/*.test.ts`) covers the pure decision logic and anything
+**Unit** (`src/**/*.test.{ts,tsx}`) covers the pure decision logic and anything
 mockable: `planItem`'s full decision matrix, session tokens, the auth guards,
-password hashing, rate limiting, provider matching, the SSRF guard, sweep
-scheduling, the concurrency pool, and the Sonarr/Radarr clients' wire format
-(fetch-mocked). Fast, and runnable with nothing installed.
+password hashing, rate limiting, provider matching, credential encryption, the
+SSRF guard, sweep scheduling, the concurrency pool, and the Sonarr/Radarr
+clients' wire format (fetch-mocked). Fast, and runnable with nothing installed.
+
+Component tests use React Testing Library and opt into a DOM per file with a
+`// @vitest-environment jsdom` docblock — the default environment stays `node`
+so the mostly-pure suite doesn't pay for a DOM it never touches.
 
 **Integration** (`src/**/*.itest.ts`) runs sync, sweep, the run lock and the
 admin user routes against a throwaway PostgreSQL, stubbing only the outbound

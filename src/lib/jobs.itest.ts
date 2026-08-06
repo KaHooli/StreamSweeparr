@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterAll } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, afterAll } from "vitest";
 import { prisma } from "@/lib/db";
 import { startRun, RunLockError, RunContext, MAX_LOG_LINES } from "@/lib/jobs";
 import { resetDatabase, waitFor } from "@/test/dbHelpers";
@@ -11,6 +11,26 @@ import { resetDatabase, waitFor } from "@/test/dbHelpers";
  */
 
 beforeEach(resetDatabase);
+
+/**
+ * Drain any run still executing before the next test truncates the tables.
+ *
+ * `startRun` runs its body detached by design, so a test can finish while its
+ * run is still writing. The next test's TRUNCATE then lands mid-write, which at
+ * best logs a swallowed "record to update not found" and at worst leaves a row
+ * behind for a later assertion to trip over. Waiting for the lock to clear
+ * keeps each test's writes inside its own test.
+ */
+afterEach(async () => {
+  await waitFor(
+    async () => (await prisma.runLog.count({ where: { status: "RUNNING" } })) === 0,
+    5_000
+  ).catch(() => {
+    // A test that deliberately leaves a run RUNNING (the stale-heartbeat and
+    // lock-held cases) is fine; beforeEach clears it.
+  });
+});
+
 afterAll(async () => {
   await prisma.$disconnect();
 });
