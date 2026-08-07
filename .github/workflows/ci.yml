@@ -35,8 +35,18 @@ jobs:
           POSTGRES_DB: streamsweeparr_test
         ports:
           - 5432:5432
+        # `-d` matters: without it pg_isready defaults the database name to the
+        # user name and probes for a "streamsweeparr" database, which does not
+        # exist — POSTGRES_DB creates "streamsweeparr_test". The probe still
+        # reports the server as up, so the healthcheck passed either way, but
+        # every 5s it left a line in the service log:
+        #
+        #   FATAL:  database "streamsweeparr" does not exist
+        #
+        # Harmless, and precisely the wrong thing to be scrolling past when
+        # reading these logs to diagnose a genuine failure.
         options: >-
-          --health-cmd "pg_isready -U streamsweeparr"
+          --health-cmd "pg_isready -U streamsweeparr -d streamsweeparr_test"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
