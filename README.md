@@ -305,10 +305,11 @@ you've ever done, dry-run or live.
   service, so "netflix 2019" is a valid thing to ask for. Press <kbd>/</kbd> to
   jump to the box from anywhere on the page, <kbd>Esc</kbd> to clear it. It
   filters what the page already loaded, so there's no round trip and no waiting.
-- **The A–Z rail** down the right edge jumps to the first title under a letter
-  in whichever section you're reading, and falls through to the other one if
-  that letter is only there. Letters nothing starts with are greyed out — as are
-  letters your search has filtered away.
+- **The A–Z rails** run down the right edge of the window, top to bottom, on
+  phones as well as desktops. TV shows and movies get one each — marked `TV` and
+  `MOV` — so a letter always jumps within the section you tapped it in. Letters
+  nothing starts with are greyed out, as are letters your search has filtered
+  away, and the letter you're currently reading is highlighted.
 
 <details>
 <summary>Where a provider logo takes you</summary>
