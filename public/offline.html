@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="en" data-theme="system">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex" />
+    <title>Offline · StreamSweeparr</title>
+    <link rel="icon" href="/favicon.ico" sizes="any" />
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f5f5fb" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#282a36" />
+    <!--
+      The service worker serves this page when a navigation cannot reach the
+      server. It is deliberately a plain static file rather than a Next route:
+      the fallback has to keep working when nothing else can be fetched, so it
+      carries no script bundles, no fonts and no images beyond the icon that is
+      already precached. The palette below is a copy of the tokens in
+      globals.css — copied on purpose, since a stylesheet request is exactly
+      what will not be available here.
+    -->
+    <style>
+      :root,
+      [data-theme="dark"] {
+        --bg: #282a36;
+        --surface: #2b2d3a;
+        --border: #3b3d4d;
+        --text: #f8f8f2;
+        --text-muted: #a3a8c3;
+        --accent: #bd93f9;
+        --accent-2: #ff79c6;
+        --shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+        color-scheme: dark;
+      }
+      [data-theme="light"] {
+        --bg: #f5f5fb;
+        --surface: #ffffff;
+        --border: #dedcee;
+        --text: #2a2c3a;
+        --text-muted: #5b5f78;
+        --accent: #7d4fe0;
+        --accent-2: #d6318c;
+        --shadow: 0 10px 24px rgba(80, 60, 140, 0.14);
+        color-scheme: light;
+      }
+      @media (prefers-color-scheme: light) {
+        [data-theme="system"] {
+          --bg: #f5f5fb;
+          --surface: #ffffff;
+          --border: #dedcee;
+          --text: #2a2c3a;
+          --text-muted: #5b5f78;
+          --accent: #7d4fe0;
+          --accent-2: #d6318c;
+          --shadow: 0 10px 24px rgba(80, 60, 140, 0.14);
+          color-scheme: light;
+        }
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+      }
+      body {
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        padding: 24px;
+        background: var(--bg);
+        color: var(--text);
+        font-family: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+          Helvetica, Arial, sans-serif;
+        -webkit-font-smoothing: antialiased;
+      }
+      .card {
+        width: 100%;
+        max-width: 380px;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        box-shadow: var(--shadow);
+        padding: 22px;
+        text-align: center;
+      }
+      .brand {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 10px;
+        font-weight: 800;
+        font-size: 18px;
+        letter-spacing: -0.2px;
+      }
+      .brand img {
+        width: 30px;
+        height: 30px;
+        border-radius: 8px;
+      }
+      .sweep {
+        color: var(--text);
+      }
+      .arr {
+        color: var(--accent);
+      }
+      h1 {
+        font-size: 17px;
+        margin: 18px 0 6px;
+      }
+      p {
+        margin: 0;
+        color: var(--text-muted);
+        font-size: 14px;
+        line-height: 1.5;
+      }
+      button {
+        margin-top: 18px;
+        width: 100%;
+        padding: 10px 14px;
+        border-radius: 10px;
+        border: 1px solid transparent;
+        background: var(--accent);
+        color: #1b1b25;
+        font: inherit;
+        font-weight: 700;
+        cursor: pointer;
+      }
+      button:hover {
+        background: var(--accent-2);
+      }
+    </style>
+  </head>
+  <body>
+    <main class="card">
+      <div class="brand">
+        <img src="/icons/favicon-48x48.png" alt="" width="30" height="30" />
+        <span><span class="sweep">Stream</span><span class="arr">Sweeparr</span></span>
+      </div>
+      <h1 id="heading">You're offline</h1>
+      <p id="detail">
+        StreamSweeparr needs its server to sweep anything. This page will reload on its own once
+        the connection is back.
+      </p>
+      <button type="button" id="retry">Try again</button>
+    </main>
+
+    <script>
+      (function () {
+        // Match the theme the app stores, so the fallback is not the one screen
+        // that ignores the user's choice.
+        try {
+          document.documentElement.setAttribute(
+            "data-theme",
+            localStorage.getItem("ss-theme") || "system"
+          );
+        } catch (e) {
+          /* private mode: keep the system default */
+        }
+
+        // Reaching this page while the device says it is online means the
+        // server itself is unreachable — a stopped container, not lost wifi.
+        if (navigator.onLine) {
+          document.getElementById("heading").textContent = "Can't reach StreamSweeparr";
+          document.getElementById("detail").textContent =
+            "Your device is online but the server did not respond. It may be restarting.";
+        }
+
+        document.getElementById("retry").addEventListener("click", function () {
+          location.reload();
+        });
+        window.addEventListener("online", function () {
+          location.reload();
+        });
+      })();
+    </script>
+  </body>
+</html>

@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import "./globals.css";
 import { ThemeProvider } from "@/components/ThemeProvider";
 import { Nav } from "@/components/Nav";
+import { ServiceWorkerRegistrar } from "@/components/ServiceWorkerRegistrar";
 
 const description =
   "Unmonitor & delete Sonarr/Radarr media available on your streaming services, re-monitor what leaves streaming, then search.";
@@ -66,6 +67,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       </head>
       <body>
         <ThemeProvider>
+          <ServiceWorkerRegistrar />
           <div className="app">
             <Nav />
             {children}

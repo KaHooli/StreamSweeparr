@@ -15,6 +15,28 @@ import { SESSION_COOKIE, verifySession } from "@/lib/session";
  * Named `proxy` in a `proxy.ts` file: Next 16 renamed the middleware file
  * convention, and the old name is deprecated.
  */
+/**
+ * The static files that make the app installable, plus the offline fallback.
+ *
+ * These have to be readable without a session. The browser fetches the manifest
+ * without credentials unless the link carries `crossorigin="use-credentials"`,
+ * which the Next metadata API does not emit — so a gated manifest is answered
+ * with a redirect to `/login`, fails to parse, and the install prompt never
+ * appears, signed in or not. The icons and the offline page are needed on the
+ * login screen itself, before any session exists.
+ *
+ * Nothing here is account data: they are the same bytes for every visitor, and
+ * the login page already tells an anonymous caller what this app is.
+ */
+function isPwaAsset(pathname: string): boolean {
+  return (
+    pathname === "/manifest.webmanifest" ||
+    pathname === "/sw.js" ||
+    pathname === "/offline.html" ||
+    pathname.startsWith("/icons/")
+  );
+}
+
 export async function proxy(req: NextRequest) {
   const { pathname, search } = req.nextUrl;
 
@@ -23,7 +45,8 @@ export async function proxy(req: NextRequest) {
     pathname.startsWith("/api/auth/") || // login, logout, oidc, session
     pathname === "/api/health" || // container probe; exposes no data
     pathname.startsWith("/_next/") ||
-    pathname === "/favicon.ico";
+    pathname === "/favicon.ico" ||
+    isPwaAsset(pathname);
 
   if (isPublic) return NextResponse.next();
 

@@ -48,6 +48,7 @@ you actually subscribe to — **Watchmode** for TV (per-episode data) and
   - [Movies deleted from TMDB](#-movies-deleted-from-tmdb)
   - [How availability is decided](#-how-availability-is-decided)
   - [Minimising Watchmode credit usage](#-minimising-watchmode-credit-usage-tv)
+- [Install it as an app (PWA)](#-install-it-as-an-app-pwa)
 - [Authentication &amp; security](#-authentication--security)
   - [Encrypted credentials](#-encrypted-credentials)
 - [Environment variables](#-environment-variables)
@@ -367,6 +368,51 @@ to disable the timer (e.g. on secondary replicas).
 
 ---
 
+## 📱 Install it as an app (PWA)
+
+StreamSweeparr is a progressive web app, so it can be installed from the browser
+and run in its own window with no address bar — handy on a phone, and it gets
+the sweep controls onto a home screen next to the rest of your *arr stack.
+
+- **Desktop Chrome / Edge:** the install icon in the address bar, or ⋮ →
+  *Cast, save and share* → *Install page as app*.
+- **Android Chrome:** ⋮ → *Add to Home screen*.
+- **iOS Safari:** Share → *Add to Home Screen*.
+
+Installed, it opens standalone with the Dracula theme colours in the system
+chrome, and long-pressing the icon offers shortcuts straight to **Dashboard**,
+**Runs** and **Settings**.
+
+**Serve it over HTTPS.** Browsers only register service workers — and only offer
+installation — in a secure context. `http://localhost` counts, so a local test
+works, but a LAN address over plain HTTP does not: put it behind a reverse proxy
+with TLS (and set `PUBLIC_URL` and `TRUST_PROXY=true` while you are there).
+
+### What works offline, and what deliberately does not
+
+Everything StreamSweeparr does needs its server, its database, and a third-party
+API, so an offline mode that "works" would be a lie. What the service worker
+(`public/sw.js`) does instead is narrow and boring on purpose:
+
+- **Cached:** Next's content-hashed build assets, the icons, the manifest and a
+  static offline page. Those bytes are identical for every user.
+- **Never cached:** anything under `/api/*`, and every HTML document. This app
+  is multi-user and the pages are rendered per session — a cached copy of a
+  signed-in page (or of the login redirect that replaces it once a session
+  expires) would outlive the session that produced it. Responses that arrive as
+  redirects are refused by the cache for the same reason.
+
+So an unreachable server gets you `public/offline.html` — the app's own styling,
+an explanation, and a page that reloads itself when the connection returns —
+rather than the browser's error page. When the server is back, everything is
+live data again.
+
+Signing out leaves nothing behind to purge: the worker holds no account data. In
+development the worker is *unregistered* rather than registered, so a production
+build cannot leave one sitting in front of `next dev` on the same origin.
+
+---
+
 ## 🔐 Authentication &amp; security
 
 The whole app is behind a login. A `proxy.ts` gate validates a signed,
@@ -593,6 +639,7 @@ is still bounded. Behind a real proxy, set `TRUST_PROXY=true` **and**
 | Country flags | `src/lib/flags.ts` |
 | REST API | `src/app/api/**` |
 | UI (Dracula theme, dark/light/system) | `src/app/**`, `src/components/**`, `src/app/globals.css` |
+| PWA: manifest, service worker, offline fallback | `public/{manifest.webmanifest,sw.js,offline.html}`, `src/components/ServiceWorkerRegistrar.tsx` |
 | DB schema | `prisma/schema.prisma` |
 
 </details>
@@ -649,6 +696,10 @@ mockable: `planItem`'s full decision matrix, session tokens, the auth guards,
 password hashing, rate limiting, provider matching, credential encryption, the
 SSRF guard, sweep scheduling, the concurrency pool, and the Sonarr/Radarr
 clients' wire format (fetch-mocked). Fast, and runnable with nothing installed.
+
+`src/test/sw.test.ts` is the odd one out: it loads the shipped `public/sw.js`
+and drives its event handlers against a stand-in service worker scope, because
+the rules that matter there are about what must *never* end up in the cache.
 
 Component tests use React Testing Library and opt into a DOM per file with a
 `// @vitest-environment jsdom` docblock — the default environment stays `node`
