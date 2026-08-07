@@ -83,7 +83,10 @@ describe("encryptSecret / decryptSecret", () => {
     const cipher = encryptSecret("wm_live_abc123")!;
     // Flip a character in the payload; GCM's tag must reject it.
     const body = cipher.slice("enc:v1:".length);
-    const flipped = (body[10] === "A" ? "B" : "A") + body.slice(1);
+    // Read and replace the *same* character: keyed off body[10] this flipped
+    // body[0] to a letter it already was roughly one run in four, leaving the
+    // payload intact and the test failing because decryption rightly succeeded.
+    const flipped = (body[0] === "A" ? "B" : "A") + body.slice(1);
     expect(withQuietFailure(() => decryptSecret("enc:v1:" + flipped))).toBeNull();
   });
 
