@@ -401,18 +401,37 @@ a:hover {
 }
 
 /* --------------------------- Media grids --------------------------- */
-/* Tiles want to be ~170px, but never at the cost of dropping to a single
-   column: on a phone the content column is narrower than two ideal tiles, so
-   the minimum is capped at half the row (less the gap) and two always fit. */
+/* Tiles want to be ~170px, but never at the cost of dropping below --tile-cols
+   per row: on a phone the content column is narrower than two ideal tiles, so
+   the track minimum is capped at the row split --tile-cols ways (gaps taken
+   out) and that many always fit. Where the ideal tile is the smaller of the
+   two the cap does nothing, so wider screens keep filling in extra columns. */
 .grid {
   --tile-gap: 18px;
   --tile-min: 170px;
+  --tile-cols: 2;
   display: grid;
   grid-template-columns: repeat(
     auto-fill,
-    minmax(min(var(--tile-min), (100% - var(--tile-gap)) / 2), 1fr)
+    minmax(
+      min(
+        var(--tile-min),
+        calc(
+          (100% - (var(--tile-cols) - 1) * var(--tile-gap)) / var(--tile-cols)
+        )
+      ),
+      1fr
+    )
   );
   gap: var(--tile-gap);
+}
+
+/* Landscape has the width for a third tile even on a phone, and the height to
+   spare — the same row of posters is that much shallower turned sideways. */
+@media (orientation: landscape) {
+  .grid {
+    --tile-cols: 3;
+  }
 }
 
 .poster-card {
