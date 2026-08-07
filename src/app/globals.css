@@ -540,25 +540,27 @@ a.provider-link:hover {
 }
 
 /* Rail metrics live on :root so the shell can reserve a gutter the same width
-   without having to know how the rail itself is built. The letter size tracks
-   the window height — 27 buckets always have to fit between top and bottom —
-   and is capped so a tall screen gets a rail, not a column of headings. */
+   without having to know how the rail itself is built. Both alphabets share one
+   column, so the letter size is sized against *54* buckets plus their labels
+   fitting between the top and the bottom of the window, and capped so a tall
+   screen gets a rail rather than a column of headings. */
 :root {
-  --rail-w: 26px;
-  --rail-letter: clamp(9px, 1.9vh, 13px);
+  --rail-w: 28px;
+  --rail-letter: clamp(7px, 1.5vh, 11px);
 }
 @media (max-width: 640px) {
   :root {
-    --rail-w: 21px;
-    --rail-letter: clamp(9px, 1.8vh, 12px);
+    --rail-w: 24px;
+    --rail-letter: clamp(7px, 1.45vh, 11px);
   }
 }
 
-/* The rails are pinned to the right edge of the *window* and run its full
-   height: one per media section, side by side, so TV shows and movies each keep
-   their own alphabet. They're fixed rather than sticky so they don't scroll with
-   the page, and they stay on phones — an index down the edge of the screen is
-   how a long list is navigated by thumb, not just by pointer. */
+/* One column pinned to the right edge of the *window*, running its full height:
+   the TV alphabet above the movie one, each labelled, so TV shows and movies
+   keep their own letters without costing a second column of screen width.
+   They're fixed rather than sticky so they don't scroll with the page, and they
+   stay on phones — an index down the edge of the screen is how a long list is
+   navigated by thumb, not just by pointer. */
 .alpha-rails {
   position: fixed;
   top: 0;
@@ -566,30 +568,36 @@ a.provider-link:hover {
   bottom: 0;
   z-index: 30;
   display: flex;
-  align-items: stretch;
-  padding: 4px 2px max(4px, env(safe-area-inset-bottom));
-  gap: 2px;
+  flex-direction: column;
+  align-items: center;
+  padding: 2px 2px max(2px, env(safe-area-inset-bottom));
   border-left: 1px solid var(--border);
   background: color-mix(in srgb, var(--bg) 88%, transparent);
   backdrop-filter: blur(6px);
 }
 
 .alpha-rail {
+  /* Each alphabet takes an equal share of the window height. */
+  flex: 1 1 0;
   display: flex;
   flex-direction: column;
   min-height: 0;
   min-width: 0;
 }
+/* Hairline where one alphabet ends and the next begins. */
+.alpha-rail + .alpha-rail {
+  border-top: 1px solid var(--border);
+}
 .alpha-rail-label {
   width: var(--rail-w);
   overflow: hidden;
-  font-size: 9px;
+  font-size: 8px;
   font-weight: 800;
   line-height: 1;
   letter-spacing: 0.02em;
   text-align: center;
   color: var(--text-dim);
-  padding: 2px 0 4px;
+  padding: 3px 0 2px;
 }
 .alpha-rail-letters {
   /* Fill whatever height is left, and share it out between the 27 buckets. */
@@ -633,28 +641,25 @@ a.provider-link:hover {
   cursor: default;
 }
 
-/* Phones: narrower rails, but still full height and still there. */
+/* Phones: a narrower column, but still full height and still there. */
 @media (max-width: 640px) {
   .alpha-rails {
     padding-left: 1px;
     padding-right: 1px;
   }
   .alpha-rail-label {
-    font-size: 8px;
+    font-size: 7px;
   }
 }
 
-/* Keep the page clear of the rails: they're fixed, so nothing else reserves the
-   space. The gutter tracks how many rails are actually on screen, and covers the
-   topbar too — the rails run over that as well.
-   Above ~1340px the shell's own centring already leaves more margin than the
+/* Keep the page clear of the column: it's fixed, so nothing else reserves the
+   space, and it covers the topbar too — the rails run over that as well. One
+   column means one gutter, however many alphabets are stacked in it.
+   Above ~1280px the shell's own centring already leaves more margin than the
    rails need, so the dashboard keeps the same width as every other page. */
-@media (max-width: 1340px) {
+@media (max-width: 1280px) {
   .app:has(.alpha-rails) {
     padding-right: calc(20px + var(--rail-w) + 10px);
-  }
-  .app:has(.alpha-rails[data-rails="2"]) {
-    padding-right: calc(20px + 2 * var(--rail-w) + 12px);
   }
 }
 
