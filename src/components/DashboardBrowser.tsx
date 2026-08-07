@@ -3,6 +3,7 @@
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { Poster } from "./Poster";
 import {
+  OTHER_LETTER,
   RAIL_LETTERS,
   letterAnchors,
   matchesSearch,
@@ -84,8 +85,64 @@ function countLabel(shown: number, total: number, noun: string): string {
 }
 
 /**
+ * One A–Z rail, pinned to the right edge of the window and covering its full
+ * height. Each media section gets its own, so a letter always means "that
+ * letter, in this section" — TV and movies each have their own alphabet, and
+ * neither jumps you into the other.
+ *
+ * `anchors` is built from the *filtered* list, so letters the search has emptied
+ * are dead here too rather than jumping to a card that is no longer rendered.
+ */
+function AlphaRail({
+  label,
+  sectionName,
+  anchors,
+  activeLetter,
+  onJump,
+}: {
+  /** Two or three characters at the head of the rail — it is only that wide. */
+  label: string;
+  /** How the section is named to screen readers, e.g. "TV shows". */
+  sectionName: string;
+  anchors: Map<string, number>;
+  activeLetter: string | null;
+  onJump: (letter: string) => void;
+}) {
+  return (
+    <nav className="alpha-rail" aria-label={`Jump to letter in ${sectionName}`}>
+      <span className="alpha-rail-label" aria-hidden="true">
+        {label}
+      </span>
+      <div className="alpha-rail-letters">
+        {RAIL_LETTERS.map((letter) => {
+          const has = anchors.has(letter);
+          const isActive = has && activeLetter === letter;
+          const named =
+            letter === OTHER_LETTER ? "titles starting with a number or symbol" : letter;
+          return (
+            <button
+              key={letter}
+              type="button"
+              className={isActive ? "active" : undefined}
+              disabled={!has}
+              aria-current={isActive ? "true" : undefined}
+              aria-label={
+                has ? `Jump to ${named} in ${sectionName}` : `No ${sectionName} under ${letter}`
+              }
+              onClick={() => onJump(letter)}
+            >
+              {letter}
+            </button>
+          );
+        })}
+      </div>
+    </nav>
+  );
+}
+
+/**
  * The searchable, jumpable half of the dashboard: the search box, both media
- * grids, and the A–Z rail beside them.
+ * grids, and an A–Z rail per section down the right edge of the window.
  *
  * Filtering is client-side on purpose. The page already ships every on-streaming
  * title to the browser to render the grids, so searching them is instant and
@@ -100,6 +157,10 @@ export function DashboardBrowser({
   movies: DashboardMovie[];
 }) {
   const [query, setQuery] = useState("");
+  // A section gets a rail when it has titles at all — a rail that appears and
+  // disappears as you type would move the other one out from under your thumb.
+  const hasTv = tvShows.length > 0;
+  const hasMovies = movies.length > 0;
   // Typing stays responsive on big libraries: the grids re-filter at their own
   // pace while the input updates immediately.
   const deferredQuery = useDeferredValue(query);
@@ -122,18 +183,6 @@ export function DashboardBrowser({
 
   const tvAnchors = useMemo(() => letterAnchors(shownTv), [shownTv]);
   const movieAnchors = useMemo(() => letterAnchors(shownMovies), [shownMovies]);
-
-  // Which section a letter jumps into: the one you're reading, if it has that
-  // letter — otherwise the other one, so a letter is never a dead button.
-  const sectionForLetter = useCallback(
-    (letter: string): Section | null => {
-      const inTv = tvAnchors.has(letter);
-      const inMovies = movieAnchors.has(letter);
-      if (activeSection === "movie") return inMovies ? "movie" : inTv ? "tv" : null;
-      return inTv ? "tv" : inMovies ? "movie" : null;
-    },
-    [activeSection, tvAnchors, movieAnchors]
-  );
 
   // Track what's on screen: the section, and the last letter heading to have
   // scrolled past the active line.
@@ -187,17 +236,16 @@ export function DashboardBrowser({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 
-  const jumpTo = (letter: string) => {
-    const section = sectionForLetter(letter);
+  const jumpTo = useCallback((section: Section, letter: string) => {
     const root = containerRef.current;
-    if (!section || !root) return;
+    if (!root) return;
     const target = root.querySelector<HTMLElement>(
       `[data-section="${section}"][data-letter="${letter}"]`
     );
     if (!target) return;
     const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
     target.scrollIntoView({ behavior: reduced ? "auto" : "smooth", block: "start" });
-  };
+  }, []);
 
   const filtering = terms.length > 0;
   const totalShown = shownTv.length + shownMovies.length;
@@ -235,7 +283,9 @@ export function DashboardBrowser({
                 ? `Nothing on this page matches “${deferredQuery.trim()}”.`
                 : `${countLabel(shownTv.length, tvShows.length, "show")} · ` +
                   `${countLabel(shownMovies.length, movies.length, "movie")}`
-              : "Press / to search. Use the A–Z rail to jump through the list."}
+              : hasTv && hasMovies
+                ? "Press / to search. The A–Z rails jump through TV shows and movies separately."
+                : "Press / to search. Use the A–Z rail to jump through the list."}
           </p>
         </div>
 
@@ -330,29 +380,33 @@ export function DashboardBrowser({
         )}
       </div>
 
-      <nav className="alpha-rail" aria-label="Jump to letter">
-        {RAIL_LETTERS.map((letter) => {
-          const target = sectionForLetter(letter);
-          const isActive = activeLetter === letter && !!target;
-          return (
-            <button
-              key={letter}
-              type="button"
-              className={isActive ? "active" : undefined}
-              disabled={!target}
-              aria-current={isActive ? "true" : undefined}
-              aria-label={
-                target
-                  ? `Jump to ${letter === "#" ? "titles starting with a number or symbol" : letter}`
-                  : `No titles under ${letter}`
-              }
-              onClick={() => jumpTo(letter)}
-            >
-              {letter}
-            </button>
-          );
-        })}
-      </nav>
+      {/* Fixed to the right edge of the window, so it stays under your thumb
+          whatever the page is scrolled to. `data-rails` lets the shell reserve
+          exactly as much gutter as there are rails. */}
+      {(hasTv || hasMovies) && (
+        <div className="alpha-rails" data-rails={(hasTv ? 1 : 0) + (hasMovies ? 1 : 0)}>
+          {hasTv && (
+            <AlphaRail
+              label="TV"
+              sectionName="TV shows"
+              anchors={tvAnchors}
+              // Only the section you're reading highlights a letter; a rail for
+              // the section off-screen would otherwise claim you were at "Z".
+              activeLetter={activeSection === "tv" ? activeLetter : null}
+              onJump={(letter) => jumpTo("tv", letter)}
+            />
+          )}
+          {hasMovies && (
+            <AlphaRail
+              label="MOV"
+              sectionName="movies"
+              anchors={movieAnchors}
+              activeLetter={activeSection === "movie" ? activeLetter : null}
+              onJump={(letter) => jumpTo("movie", letter)}
+            />
+          )}
+        </div>
+      )}
     </div>
   );
 }

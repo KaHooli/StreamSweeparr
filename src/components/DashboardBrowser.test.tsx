@@ -60,8 +60,11 @@ const titlesIn = (headingId: string): string[] => {
   return [];
 };
 
-const railButton = (letter: string) =>
-  within(screen.getByRole("navigation", { name: /jump to letter/i })).getByText(letter);
+/** A letter button in one of the two rails — TV's or the movies' own. */
+const railButton = (rail: "TV shows" | "movies", letter: string) =>
+  within(screen.getByRole("navigation", { name: `Jump to letter in ${rail}` })).getByText(letter);
+
+const rails = () => screen.queryAllByRole("navigation", { name: /jump to letter/i });
 
 const search = () => screen.getByRole("searchbox");
 
@@ -177,35 +180,61 @@ describe("DashboardBrowser search", () => {
   });
 });
 
-describe("DashboardBrowser A–Z rail", () => {
+describe("DashboardBrowser A–Z rails", () => {
+  it("gives TV shows and movies a rail each", () => {
+    render(<DashboardBrowser tvShows={shows} movies={movies} />);
+    expect(rails().map((r) => r.getAttribute("aria-label"))).toEqual([
+      "Jump to letter in TV shows",
+      "Jump to letter in movies",
+    ]);
+  });
+
+  it("drops the rail for a section with nothing in it", () => {
+    render(<DashboardBrowser tvShows={[]} movies={movies} />);
+    expect(rails().map((r) => r.getAttribute("aria-label"))).toEqual([
+      "Jump to letter in movies",
+    ]);
+  });
+
+  it("renders no rails at all when nothing has synced yet", () => {
+    render(<DashboardBrowser tvShows={[]} movies={[]} />);
+    expect(rails()).toEqual([]);
+  });
+
   it("offers '#' plus every letter, disabling the ones nothing starts with", () => {
     render(<DashboardBrowser tvShows={shows} movies={movies} />);
-    expect(railButton("#")).toHaveProperty("disabled", true);
-    expect(railButton("A")).toHaveProperty("disabled", false);
-    expect(railButton("Q")).toHaveProperty("disabled", true);
+    expect(railButton("TV shows", "#")).toHaveProperty("disabled", true);
+    expect(railButton("TV shows", "A")).toHaveProperty("disabled", false);
+    expect(railButton("TV shows", "Q")).toHaveProperty("disabled", true);
   });
 
-  it("jumps to the first card under the letter in the section being read", async () => {
+  it("jumps to the first card under the letter in its own section", async () => {
     render(<DashboardBrowser tvShows={shows} movies={movies} />);
     await scrollToTop();
-    fireEvent.click(railButton("A"));
+    fireEvent.click(railButton("TV shows", "A"));
     expect(scrolledTo).toHaveLength(1);
     expect(scrolledTo[0].textContent).toContain("A Christmas Carol");
+
+    // The same letter in the movies rail lands on the movie, not the show —
+    // whichever section happens to be on screen.
+    fireEvent.click(railButton("movies", "A"));
+    expect(scrolledTo[1].textContent).toContain("Arrival");
   });
 
-  it("falls through to the other section rather than being a dead button", async () => {
+  it("reflects each section's own alphabet", () => {
     render(<DashboardBrowser tvShows={shows} movies={movies} />);
-    await scrollToTop();
-    // D is a movie-only letter while the TV section is the one on screen.
-    fireEvent.click(railButton("D"));
-    expect(scrolledTo[0].textContent).toContain("Dune");
+    // D is a movie-only letter, F a TV-only one.
+    expect(railButton("TV shows", "D")).toHaveProperty("disabled", true);
+    expect(railButton("movies", "D")).toHaveProperty("disabled", false);
+    expect(railButton("TV shows", "F")).toHaveProperty("disabled", false);
+    expect(railButton("movies", "F")).toHaveProperty("disabled", true);
   });
 
   it("re-targets a letter at what the search left visible", async () => {
     render(<DashboardBrowser tvShows={shows} movies={movies} />);
     fireEvent.change(search(), { target: { value: "andor" } });
     await scrollToTop();
-    fireEvent.click(railButton("A"));
+    fireEvent.click(railButton("TV shows", "A"));
     // "A Christmas Carol" is filtered out, so A must land on Andor.
     expect(scrolledTo[0].textContent).toContain("Andor");
   });
@@ -213,15 +242,33 @@ describe("DashboardBrowser A–Z rail", () => {
   it("disables the letters the search filtered away", () => {
     render(<DashboardBrowser tvShows={shows} movies={movies} />);
     fireEvent.change(search(), { target: { value: "bluey" } });
-    expect(railButton("A")).toHaveProperty("disabled", true);
-    expect(railButton("B")).toHaveProperty("disabled", false);
+    expect(railButton("TV shows", "A")).toHaveProperty("disabled", true);
+    expect(railButton("TV shows", "B")).toHaveProperty("disabled", false);
+  });
+
+  it("keeps the rails up while a search empties one of them", () => {
+    render(<DashboardBrowser tvShows={shows} movies={movies} />);
+    fireEvent.change(search(), { target: { value: "bluey" } });
+    // Every movie is filtered out, but its rail stays put rather than shifting
+    // the TV rail out from under the pointer.
+    expect(rails()).toHaveLength(2);
+    expect(railButton("movies", "A")).toHaveProperty("disabled", true);
   });
 
   it("keeps titles starting with a digit reachable under '#'", async () => {
     render(<DashboardBrowser tvShows={[tvShow("9-1-1"), ...shows]} movies={movies} />);
     await scrollToTop();
-    expect(railButton("#")).toHaveProperty("disabled", false);
-    fireEvent.click(railButton("#"));
+    expect(railButton("TV shows", "#")).toHaveProperty("disabled", false);
+    fireEvent.click(railButton("TV shows", "#"));
     expect(scrolledTo[0].textContent).toContain("9-1-1");
+  });
+
+  it("highlights a letter only in the section being read", async () => {
+    render(<DashboardBrowser tvShows={shows} movies={movies} />);
+    await scrollToTop();
+    // Every TV anchor sits above the active line here, so the last one wins;
+    // the movies rail highlights nothing, because that section is below the fold.
+    expect(railButton("TV shows", "F").className).toContain("active");
+    expect(rails()[1].querySelectorAll("button.active")).toHaveLength(0);
   });
 });
