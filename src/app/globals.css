@@ -318,6 +318,13 @@ a:hover {
 .err-text {
   color: var(--danger);
 }
+.info-footer {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 4px 16px;
+  margin-top: 12px;
+}
 @media (max-width: 640px) {
   .kv {
     grid-template-columns: 1fr;
