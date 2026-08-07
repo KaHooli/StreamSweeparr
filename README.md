@@ -4,12 +4,22 @@
 
 # StreamSweeparr
 
-**A Seerr-style companion for Sonarr &amp; Radarr that cleans up media you can already stream.**
+**Stop hoarding what you can already stream.**
+
+StreamSweeparr compares your Sonarr &amp; Radarr library against the streaming
+services you actually pay for, then unmonitors (and optionally deletes) what's
+available there — and puts it back the moment it leaves.
 
 [![CI](https://github.com/KaHooli/StreamSweeparr/actions/workflows/ci.yml/badge.svg)](https://github.com/KaHooli/StreamSweeparr/actions/workflows/ci.yml)
 [![Docker image](https://img.shields.io/badge/ghcr.io-streamsweeparr-2496ed?logo=docker&logoColor=white)](https://github.com/KaHooli/StreamSweeparr/pkgs/container/streamsweeparr)
 [![Next.js 16](https://img.shields.io/badge/Next.js-16-black?logo=nextdotjs)](https://nextjs.org)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-13%2B-336791?logo=postgresql&logoColor=white)](https://www.postgresql.org)
+
+[Quick start](#-quick-start) ·
+[First run](#-first-run-in-five-steps) ·
+[Run options](#-every-run-option-in-plain-english) ·
+[Troubleshooting](#-troubleshooting) ·
+[FAQ](#-faq)
 
 </div>
 
@@ -17,582 +27,807 @@
 
 ## What it does
 
-StreamSweeparr checks your Sonarr/Radarr library against the streaming services
-you actually subscribe to — **Watchmode** for TV (per-episode data) and
-**TheMovieDB / JustWatch** for movies — and then keeps your library tidy:
+You pay for Netflix. Sonarr keeps grabbing shows that are *on* Netflix. Your
+disk fills up with things you could have just pressed play on.
 
-| | Action | What happens |
+StreamSweeparr runs three jobs against your library:
+
+| | | |
 |---|---|---|
-| 🧹 | **Sweep** | Unmonitors (and optionally deletes) movies / episodes that are already on a selected streaming service |
-| 🔁 | **Re-monitor** | Re-monitors anything that has **left** all of your selected services |
-| 🔍 | **Search** | Triggers a Sonarr/Radarr search for every monitored movie / episode at the end of a run |
+| 🧹 | **Sweep** | Unmonitors — and optionally deletes — movies and episodes that are already on a streaming service you selected |
+| 🔁 | **Re-monitor** | Puts a title back on the list the moment it **leaves** all of your services |
+| 🔍 | **Search** | Kicks off a Sonarr/Radarr search for everything still monitored at the end of a run |
+
+It checks availability with **Watchmode** for TV (per-episode data) and
+**TheMovieDB / JustWatch** for movies, and gives you a dashboard, a full log of
+every run, and an optional timer to do it all automatically.
 
 > [!IMPORTANT]
-> Runs are **dry-run by default** — nothing is changed until you enable LIVE mode.
-> Tag anything `ss-skip` in Sonarr/Radarr to exclude it entirely
-> ([details](#-excluding-titles-the-ss-skip-tag)).
+> **Nothing is changed until you say so.** Every run is a **dry-run by default**
+> — it only writes down what it *would* do. You turn on LIVE mode when you're
+> happy with what you see. And any title tagged **`ss-skip`** in Sonarr/Radarr is
+> ignored completely ([details](#-keeping-titles-out-of-the-sweep)).
 
 ---
 
-## Table of contents
+## Contents
 
-- [Requirements](#-requirements)
-- [Quick start](#-quick-start)
-- [First-time setup](#-first-time-setup-in-the-ui)
-- [Running a sweep](#-running-a-sweep)
-- [The dashboard](#-the-dashboard)
-- [Behaviour &amp; options](#-behaviour--options)
-  - [Scheduled sweeps](#-scheduled-sweeps)
-  - [Excluding titles: the `ss-skip` tag](#-excluding-titles-the-ss-skip-tag)
-  - [Clearing files for unmonitored titles](#-clearing-files-for-unmonitored-titles)
-  - [Movies deleted from TMDB](#-movies-deleted-from-tmdb)
-  - [How availability is decided](#-how-availability-is-decided)
-  - [Minimising Watchmode credit usage](#-minimising-watchmode-credit-usage-tv)
-- [Install it as an app (PWA)](#-install-it-as-an-app-pwa)
-- [Authentication &amp; security](#-authentication--security)
-  - [Encrypted credentials](#-encrypted-credentials)
-- [Environment variables](#-environment-variables)
-- [Safety notes](#-safety-notes)
-- [Architecture](#-architecture)
-- [Development, testing &amp; CI](#-development-testing--ci)
+**Getting going**
+[Before you start](#-before-you-start) ·
+[Quick start](#-quick-start) ·
+[First run](#-first-run-in-five-steps)
+
+**Using it**
+[Day to day](#-using-it-day-to-day) ·
+[Run options](#-every-run-option-in-plain-english) ·
+[Scheduled sweeps](#-scheduled-sweeps) ·
+[Skipping titles](#-keeping-titles-out-of-the-sweep) ·
+[Install as an app](#-install-it-as-an-app)
+
+**When something's wrong**
+[Troubleshooting](#-troubleshooting) ·
+[FAQ](#-faq) ·
+[Safety notes](#-safety-notes)
+
+**Configuring &amp; running it properly**
+[Accounts &amp; login](#-accounts-login--security) ·
+[Environment variables](#-environment-variables) ·
+[Behind a reverse proxy](#behind-a-reverse-proxy)
+
+**For the curious**
+[How it decides what's "on streaming"](#-how-it-decides-whats-on-streaming) ·
+[Keeping API usage low](#-keeping-api-usage-low) ·
+[Architecture](#-architecture) ·
+[Developing &amp; testing](#-developing--testing)
 
 ---
 
-## 📋 Requirements
+## 📋 Before you start
 
-- **Node.js 24** (the version in `.nvmrc`, what CI tests and the image ships) — or just Docker
-- An **external PostgreSQL** server (v13+)
-- A **[Watchmode](https://api.watchmode.com)** API key — for TV
-- A **[TheMovieDB](https://www.themoviedb.org)** API key — for movies
-- One or more **Sonarr v3/v4** and/or **Radarr v3/v4** instances
-  (optionally a **Seerr** server to auto-discover them)
+Gather these first — the setup wizard asks for them in this order:
+
+| | What | Where to get it |
+|---|---|---|
+| ✅ | **Somewhere to run it** | Docker (easiest), or Node.js 24 |
+| ✅ | **A PostgreSQL server, v13+** | Comes with the Docker Compose file below |
+| ✅ | **Sonarr and/or Radarr** | v3 or v4 — you need the base URL and API key for each |
+| 📺 | **A Watchmode API key** | [api.watchmode.com](https://api.watchmode.com) — *only if you use Sonarr* |
+| 🎬 | **A TheMovieDB API key** | [themoviedb.org](https://www.themoviedb.org) — *only if you use Radarr* |
+| ⭐ | **A Seerr server** | Optional — lets the app auto-discover your Sonarr/Radarr instances |
 
 > [!TIP]
-> You only need the API key for the media types you use: Watchmode if you have a
-> Sonarr connection, TMDB if you have a Radarr connection.
+> You only need the API key for the media types you actually use. TV only?
+> Watchmode is enough. Movies only? Just TMDB. Both free tiers are fine —
+> see [Keeping API usage low](#-keeping-api-usage-low) for how little the app
+> spends.
 
 ---
 
 ## 🚀 Quick start
 
-### Option A — Docker Compose (app + Postgres) &nbsp;·&nbsp; *recommended*
+### The five-minute version (Docker Compose)
 
-```bash
-# Provide secrets first — compose refuses to start without AUTH_SECRET:
-echo "AUTH_SECRET=$(openssl rand -hex 32)"     >> .env
-echo "POSTGRES_PASSWORD=$(openssl rand -hex 16)" >> .env
+No clone required. Make a folder, drop in these two files, and start it.
 
-docker compose up --build
-# → http://localhost:3000
+**`docker-compose.yml`**
+
+```yaml
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: streamsweeparr
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: streamsweeparr
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U streamsweeparr"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  app:
+    image: ghcr.io/kahooli/streamsweeparr:latest
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: postgresql://streamsweeparr:${POSTGRES_PASSWORD}@db:5432/streamsweeparr?schema=public
+      AUTH_SECRET: ${AUTH_SECRET:?set AUTH_SECRET in .env}
+      # Plain HTTP on port 3000 — see the note below.
+      AUTH_COOKIE_INSECURE: "true"
+      # "true" if your Sonarr/Radarr are on a private LAN (10.x / 172.16.x / 192.168.x)
+      SSRF_ALLOW_PRIVATE: "false"
+
+volumes:
+  pgdata:
 ```
 
-The container entrypoint runs `prisma migrate deploy` on start, so the schema is
-created and updated automatically from the committed migrations.
+**`.env`** — generate the secrets, don't invent them:
+
+```bash
+echo "AUTH_SECRET=$(openssl rand -hex 32)"        >> .env
+echo "POSTGRES_PASSWORD=$(openssl rand -hex 16)"  >> .env
+```
+
+Then:
+
+```bash
+docker compose up -d
+# → http://localhost:3000   (log in as  admin / 0pen0pen&*)
+```
+
+The database schema is created and kept up to date automatically on every
+start, so upgrading is just `docker compose pull && docker compose up -d`.
+
+> [!WARNING]
+> **`AUTH_COOKIE_INSECURE: "true"` is only for plain HTTP.** Login cookies are
+> normally marked `Secure`, and browsers throw those away over `http://` — you'd
+> sign in and bounce straight back to the login page. If you put the app behind
+> HTTPS (please do), delete that line and see
+> [Behind a reverse proxy](#behind-a-reverse-proxy).
 
 <details>
-<summary>Using your own external Postgres?</summary>
+<summary><b>Other ways to run it</b> — build from source, or bare Node</summary>
 
-Remove the `db` service from `docker-compose.yml` and point `DATABASE_URL` on
-the `app` service at your own server.
+**Build the image yourself** (the repo's own `docker-compose.yml` does this):
+
+```bash
+git clone https://github.com/KaHooli/StreamSweeparr.git
+cd StreamSweeparr
+echo "AUTH_SECRET=$(openssl rand -hex 32)"        >> .env
+echo "POSTGRES_PASSWORD=$(openssl rand -hex 16)"  >> .env
+docker compose up --build -d
+```
+
+That file also publishes Postgres on `127.0.0.1:5432` for local poking, and
+binds it to localhost only so it isn't exposed on every interface.
+
+**Already have a Postgres you like?** Remove the `db` service and point
+`DATABASE_URL` at your own server.
+
+**No Docker at all** (Node 24 + your own Postgres):
+
+```bash
+npm install
+cp .env.example .env          # then edit: DATABASE_URL, AUTH_SECRET
+npm run prisma:migrate        # create/update the schema
+npm run build && npm start    # → http://localhost:3000
+```
+
+For development, `npm run dev` instead of the last line.
 
 </details>
 
-### Option B — Local (Node + external Postgres)
+<details>
+<summary><b>Running on a NAS, Unraid, or a 1–2 vCPU box?</b></summary>
 
-```bash
-# 1. Install
-npm install
+Prisma sizes its database connection pool from the CPU count — a 1-CPU
+container gets a pool of just 3, and a page that fires several requests at once
+can exhaust it and time out. Append this to your `DATABASE_URL`:
 
-# 2. Configure env
-cp .env.example .env
-#   • DATABASE_URL   → your PostgreSQL server
-#   • AUTH_SECRET    → openssl rand -hex 32   (required in production)
-#   • SSRF_ALLOW_PRIVATE=true if Sonarr/Radarr live on a private LAN
-
-# 3. Apply database migrations
-npm run prisma:migrate      # runs `prisma migrate deploy`
-
-# 4a. Development
-npm run dev                 # → http://localhost:3000
-
-# 4b. Production
-npm run build && npm run start
+```
+?schema=public&connection_limit=10&pool_timeout=20
 ```
 
----
-
-## 🛠 First-time setup (in the UI)
-
-1. **Log in** with the default admin — username **`admin`**, password
-   **`0pen0pen&*`** (or whatever you set via `ADMIN_USERNAME` / `ADMIN_PASSWORD`).
-   You'll be required to set a new password, and can rename the account, under
-   **Settings → Users &amp; security**. OIDC, login options and user roles live on
-   that tab too.
-2. **Settings → Watchmode (TV)** — paste your Watchmode key → *Test &amp; save*.
-   Then pick your **countries** (alphabetical, with flags) and **streaming
-   services** (alphabetical, with logos), choosing which source types count.
-3. **Settings → TheMovieDB (Movies)** — paste your TMDB key → *Test &amp; save*.
-   Then pick your **watch provider regions** and, per region, the **movie
-   providers** you subscribe to, plus which categories count (Subscription /
-   Free / Rent / Buy…).
-4. **Settings → Connections** — either configure **Seerr** and click *Discover
-   instances*, or add Sonarr/Radarr manually (URL + API key; the app verifies
-   before saving).
-5. **Settings → Run options** — leave **Apply changes** *off* for a safe dry-run
-   first. Toggle **Delete files** and **Search at end** to taste. **Remove files
-   for all unmonitored items** is off by default — see
-   [Clearing files for unmonitored titles](#-clearing-files-for-unmonitored-titles).
-   Once you're happy with a manual run, **Scheduled sweeps** can repeat it every
-   few hours — see [Scheduled sweeps](#-scheduled-sweeps).
+</details>
 
 ---
 
-## ▶️ Running a sweep
+## 🛠 First run, in five steps
 
-From the **Dashboard**:
+Everything below happens in the web UI at `http://localhost:3000`.
+
+### 1. Log in and secure the account
+
+Sign in as **`admin`** / **`0pen0pen&*`**. You'll be forced to set a new
+password immediately — that's deliberate, and it's enforced server-side.
+
+Afterwards you can rename the account (or set it from the environment with
+`ADMIN_USERNAME` / `ADMIN_PASSWORD`) under **Settings → Users &amp; security**.
+Single sign-on and extra user accounts live on that tab too — see
+[Accounts, login &amp; security](#-accounts-login--security).
+
+### 2. Add your Watchmode key — *TV only*
+
+**Settings → Watchmode (TV)** → paste the key → **Test &amp; save**.
+
+Then pick:
+- **Countries** you stream in (alphabetical, with flags), and
+- **Streaming services** you subscribe to (alphabetical, with logos), including
+  which source types count — subscription, free, rent, buy, TV Everywhere.
+
+### 3. Add your TMDB key — *movies only*
+
+**Settings → TheMovieDB (Movies)** → paste the key → **Test &amp; save**.
+
+Then pick your **watch provider regions**, and per region the **movie
+providers** you subscribe to, plus which categories count (Subscription / Free /
+Ads / Rent / Buy).
+
+### 4. Connect Sonarr &amp; Radarr
+
+**Settings → Connections**. Either:
+
+- configure **Seerr** and hit **Discover instances** to pull them in
+  automatically, or
+- add each instance by hand — base URL + API key. The app verifies the
+  connection before it saves anything.
+
+> On a private LAN? Set `SSRF_ALLOW_PRIVATE=true` or the app will refuse to
+> connect. That's the [SSRF guard](#ssrf-protection) doing its job.
+
+### 5. Do a dry run, then go live
+
+**Settings → Run options** — leave **Apply changes (LIVE mode)** **off** for
+now. Head to the **Dashboard**, press **Run sweep**, and read the log on the
+**Runs** page. It will tell you exactly what it *would* have done, file by file.
+
+Happy with it? Go back over
+[the options](#-every-run-option-in-plain-english) — particularly
+**Delete files when unmonitoring**, which is **on by default** — then turn on
+**Apply changes** and run it again for real. After that, a
+[schedule](#-scheduled-sweeps) means you never have to think about it again.
+
+---
+
+## ▶️ Using it day to day
+
+Two buttons on the **Dashboard**:
 
 | Button | What it does |
 |---|---|
-| **Sync now** | Refreshes the library + streaming availability snapshot |
+| **Sync now** | Just refreshes the picture: your library, plus what's currently on streaming |
 | **Run sweep** | Syncs, then unmonitors/deletes, re-monitors, and searches |
 
-In dry-run mode a sweep only records what *would* happen — check the **Runs**
-page for the full step-by-step log and counts.
+Both run **in the background** — the page comes straight back and shows live
+progress, so a big library never leaves you staring at a spinner. Only one run
+happens at a time; if a run dies unexpectedly its lock is reclaimed
+automatically.
 
-Sync and sweep run **in the background** behind a single concurrency lock (only
-one run at a time; stale runs are auto-reclaimed). The action bar returns
-immediately and polls the run for **live progress**, so long runs never block
-the request or the browser (`src/lib/jobs.ts`).
+The **Runs** page keeps the full step-by-step log and the counts for every run
+you've ever done, dry-run or live.
 
-To run sweeps automatically instead — e.g. every 12 hours — see
-[Scheduled sweeps](#-scheduled-sweeps).
+### What the dashboard shows you
 
----
-
-## 📊 The dashboard
-
-- **TV shows on streaming** — each card shows a progress bar of how many
-  episodes are **unmonitored** (with `x/total on streaming`).
-- **Movies on streaming** — each card shows a **Monitored / Unmonitored** badge.
-- **Provider logos** under each card link straight to the title on that service,
-  using Watchmode's `web_url` (never `ios_url`/`android_url`, which are
-  app-scheme links a browser can't open).
+- **TV shows on streaming** — a progress bar per show, counting how many
+  episodes are unmonitored out of the total that are on streaming.
+- **Movies on streaming** — a **Monitored / Unmonitored** badge per film.
+- **Provider logos** under each card link straight to that title on that
+  service.
 
 <details>
-<summary>Why some TV logos aren't clickable</summary>
+<summary>Why are some TV logos not clickable?</summary>
 
-Watchmode only returns *per-episode* links on paid plans — free plans get the
-placeholder `"Episode links available for paid plans only."`, which is
-discarded — so for TV the **show-level** `/title/{id}/sources/` links are
-fetched instead. That lookup is on its own schedule
-(`MediaItem.providerLinksSyncedAt`, same 7-day TTL) rather than the episode one,
-so a show doesn't sit on unlinked logos for a week just because its availability
-is still fresh, and it only runs for shows that are actually missing a link.
-Results are stored in `streamingInfo` and reused from then on.
+Watchmode only returns *per-episode* deep links on paid plans; free plans get a
+placeholder string, which the app discards. So for TV it fetches **show-level**
+links instead, on their own 7-day schedule and only for shows that are actually
+missing one — a show doesn't sit on unlinked logos for a week just because its
+availability is still fresh.
 
-If Watchmode has no link for a source at all, that logo is rendered without a
-link — a TV logo never points anywhere but the service itself — and the run log
-says how many shows that affected. Movies always use the TMDB page, since TMDB
-gives availability but no per-provider link.
+If Watchmode has no link at all for a source, the logo renders unlinked rather
+than pointing somewhere wrong, and the run log tells you how many shows that
+affected. Movies always link to the TMDB page, because TMDB gives availability
+but no per-provider link.
 
 </details>
 
 ---
 
-## ⚙️ Behaviour &amp; options
+## ⚙️ Every run option, in plain English
+
+All of these live under **Settings → Run options**.
+
+| Option | Default | What it means |
+|---|---|---|
+| **Apply changes (LIVE mode)** | ❌ off | The master switch. Off = dry-run: nothing in Sonarr/Radarr is touched, the run just logs what it would do. |
+| **Delete files when unmonitoring** | ✅ on | When the sweep unmonitors a title *because it's on streaming*, delete its file too. |
+| **Remove files for all unmonitored items** | ❌ off | Wider: at the end of a sweep, delete the file for **every** unmonitored movie/episode, including a back-catalogue you unmonitored by hand years ago. See below. |
+| **Remove movies deleted from TMDB** | ✅ on | If TMDB says a movie's id no longer exists, remove it from Radarr. **Files are kept.** |
+| **Search monitored items at end of run** | ✅ on | Trigger a Sonarr/Radarr search for everything still monitored once the sweep finishes. |
+| **Scheduled sweeps** | ❌ off | Run the sweep on a timer — see [below](#-scheduled-sweeps). |
+
+Every destructive option above is **LIVE-mode only**. In a dry-run they just
+print `Would delete …` / `Would remove …`.
+
+> [!NOTE]
+> **Delete files when unmonitoring is on out of the box** — which is safe only
+> because LIVE mode is off. Before you flip the master switch, decide whether
+> you actually want files deleted, or just unmonitored. A dry-run tells you
+> exactly which files are in scope.
+
+<details>
+<summary><b>"Remove files for all unmonitored items" — read before enabling</b></summary>
+
+**Delete files when unmonitoring** only covers titles the sweep unmonitors *on
+that run*. Anything already unmonitored — a back-catalogue you unmonitored by
+hand, or titles swept before you turned file deletion on — keeps its files
+forever.
+
+This option closes that gap: at the end of a sweep, every movie and episode
+still unmonitored has its file deleted. Monitoring itself is never changed,
+since those titles are already unmonitored.
+
+It's **off by default** so upgrading can never retroactively wipe your library.
+Two things stay out of scope even when it's on:
+
+- titles being **re-monitored** this run — they left streaming, so they end the
+  sweep monitored and keep their files, and
+- **`ss-skip`** tagged titles, which are never touched.
+
+Note it's a superset of the narrower toggle: with this on, files are removed
+from unmonitored titles even if **Delete files when unmonitoring** is off.
+
+</details>
+
+<details>
+<summary><b>"Remove movies deleted from TMDB" — what that actually is</b></summary>
+
+TMDB sometimes deletes or merges entries — usually cancelled or never-produced
+films — leaving Radarr holding an id that no longer resolves. Those lookups come
+back `404 / status_code 34`.
+
+The app treats that as definitive (transient problems show up as 5xx, 429s or
+timeouts, never a 404): the movie is flagged during sync and the sweep removes
+it from Radarr. **Media files are kept** and no import exclusion is added, so if
+it was wrong you can simply re-add the title. Removals are counted on the
+**Runs** page.
+
+</details>
 
 ### ⏱ Scheduled sweeps
 
-**Settings → Run options → Scheduled sweeps** runs a sweep on a timer, so you
-don't have to press **Run sweep** yourself. Turn on **Run sweep at regular
-intervals** and pick how often — every **1, 2, 3, 4, 6, 8 or 12 hours**, or
+**Settings → Run options → Scheduled sweeps** turns **Run sweep** into
+something that happens on its own — every **1, 2, 3, 4, 6, 8 or 12 hours**, or
 every **1, 2, 3 or 7 days**. The card shows when the next run is due and when
-the last scheduled one started.
+the last one started.
 
-A scheduled sweep is exactly the sweep the button runs, so it obeys every other
-run option — most importantly **Apply changes**: with LIVE mode off the schedule
-is a recurring *dry-run* that only logs what it would do. Each run appears on
-the **Runs** page like any other, and its log opens with
-`Starting scheduled … sweep (every 12 hours).`
+A scheduled sweep *is* the sweep the button runs, so it obeys every other option
+— including **Apply changes**. With LIVE mode off, a schedule is simply a
+recurring dry-run. Each one shows up on the **Runs** page like any other, opening
+with `Starting scheduled … sweep (every 12 hours).`
 
-Details worth knowing:
+Things worth knowing:
 
-- **The countdown survives restarts.** The next due time is stored in the
-  database, not in the process, so restarting the container doesn't reset it.
-- **Turning the schedule on never fires immediately** — the first run is one
-  full interval away. Changing the interval re-anchors on the last scheduled run
-  (never in the past), so shortening it takes effect straight away.
-- **Missed slots are skipped, not replayed.** If the app was down for a day, it
-  runs once when it comes back, not once per missed slot.
+- **The countdown survives restarts** — the next due time lives in the database,
+  not in the process.
+- **Turning it on never fires immediately.** The first run is one full interval
+  away. Changing the interval re-anchors on the last scheduled run, so
+  *shortening* it takes effect straight away.
+- **Missed slots are skipped, not replayed.** Down for a day? It runs once when
+  it comes back, not once per missed slot.
 - **Overlaps are skipped, not queued.** If a sync or sweep is already running,
-  the scheduled one is dropped and picks up at the next interval — the run lock
-  in `src/lib/jobs.ts` is the single source of truth.
-- **Multiple replicas are safe.** A slot is claimed with a conditional update on
-  the settings row, so exactly one instance fires it. Set `SWEEP_SCHEDULER=off`
-  to opt an instance out entirely.
-
-### 🏷 Excluding titles: the `ss-skip` tag
-
-Add the tag **`ss-skip`** (case-insensitive) to any series in Sonarr or movie in
-Radarr and StreamSweeparr will leave it completely alone:
-
-- its streaming availability is **never looked up** (so it costs no API quota),
-- its monitored/unmonitored state is **never changed**,
-- its files are **never deleted**, and
-- it is **excluded from the end-of-run search**.
-
-Tagged titles are marked `skipped` in the database and don't appear in the
-"on streaming" lists, since the tool deliberately has no availability data for
-them. Remove the tag and the next sync picks the title back up. The run log
-reports how many titles were ignored this way.
-
-### 🗑 Clearing files for unmonitored titles
-
-**Delete files when unmonitoring** only covers titles the sweep unmonitors *that
-run*. Anything already unmonitored — a back-catalogue you unmonitored by hand,
-or titles swept before you turned file deletion on — keeps its files forever.
-
-**Settings → Run options → Remove files for all unmonitored items** closes that
-gap: at the end of a sweep, every movie and episode still unmonitored has its
-file deleted. Monitoring is never changed, since those titles are already
-unmonitored.
-
-It is **off by default** so upgrading never retroactively wipes an existing
-library, and like every destructive action it is LIVE-mode only — a dry-run
-reports `Would delete file for … (unmonitored)`. Two things are deliberately out
-of scope:
-
-- titles being **re-monitored** this run (they left streaming, so they end the
-  sweep monitored and their files are kept), and
-- `ss-skip` tagged titles, which are never touched.
-
-Note this is a superset of **Delete files when unmonitoring**: with it enabled,
-files are removed from unmonitored titles even if that narrower toggle is off.
-
-### 🎬 Movies deleted from TMDB
-
-TMDB sometimes deletes or merges entries — typically cancelled or never-produced
-films — leaving Radarr holding an id that no longer resolves. Those lookups fail
-with `404 / status_code 34`.
-
-StreamSweeparr treats that as definitive (transient problems surface as
-5xx/429/timeouts, never 404): the movie is flagged during sync, and the **sweep**
-removes it from Radarr. **Media files are kept** and no import exclusion is
-added, so the title can simply be re-added if it was removed in error.
-
-Like every destructive action this only happens in **LIVE mode** — a dry-run
-just reports `Would remove …`. Turn it off with **Settings → Run options →
-Remove movies deleted from TMDB**. Removals are counted on the **Runs** page.
-
-### 🧮 How availability is decided
-
-Two providers, split by media type:
-
-- **TV (Watchmode):** `matchSources()` in `watchmode.ts` keeps a title's
-  Watchmode sources only if the `source_id` is one of your **selected services**
-  *and* the source `type` (`sub`, `free`, `purchase`, `rent`, `tv_everywhere`)
-  is a **counted type**. A series is "on streaming" if ≥1 episode matches.
-- **Movies (TMDB):** `matchTmdbProviders()` in `tmdb.ts` keeps a movie's
-  per-region providers only if the `provider_id` is one of your **selected
-  providers** *and* the category (`flatrate`, `free`, `ads`, `rent`, `buy`) is a
-  **counted type**. A movie is "on streaming" if it has ≥1 match.
-
-Both drive the dashboard and the sweep decisions. Watchmode and TMDB are
-configured on **separate tabs** under Settings.
-
-### 💳 Minimising Watchmode credit usage (TV)
-
-TV availability is the only per-title Watchmode cost. Three layers keep it low:
-
-1. **Local Title ID map** resolves TMDB/IMDB → Watchmode id for free, so the
-   metered `/search` endpoint is essentially never used
-   ([how it works](#title-id-map-tmdbimdb--watchmode-id)).
-2. **Change detection (paid plans).** Each sync asks
-   `/changes/titles_episodes_changed` which title ids changed since the last
-   sync (a few paginated calls total, independent of library size). Series that
-   have **not** changed skip the per-series `/title/{id}/episodes/` call and
-   reuse their cached availability. On a steady-state library this drops ongoing
-   usage from *one call per series* to *near zero*.
-   - The Changes API is a **premium (paid-plan) endpoint**. StreamSweeparr
-     **auto-detects your plan** by probing it once (result cached, re-checked
-     weekly): a paid key enables change-detection automatically; a free key
-     falls back to layer 3 without ever making a failing call. The detected plan
-     is shown under **Settings → Watchmode**.
-3. **7-day freshness TTL.** Independent of the changes feed, a series whose
-   availability was pulled within the last 7 days is not re-pulled. This is the
-   safety net when the changes feed is unavailable or incomplete.
-
-Additionally, a **LIVE sweep no longer re-syncs afterwards** — the DB snapshot
-is updated in place as changes are applied, so it never doubles the Watchmode
-pull. The run log reports how many episode fetches were made vs. skipped.
-
-The first sync after setup still pulls every series once (nothing is cached
-yet); every sync after that is cheap. To force a full re-pull, clear
-`watchmodeChangesCursor` (and `providerSyncedAt`) — e.g. after changing your
-selected countries/services.
-
-**Movies (TMDB)** get the same treatment on a shorter clock. TMDB has no
-changes feed, so freshness is purely time-based: a movie looked up successfully
-within the last **24 hours** is served from the cached answer instead of being
-re-fetched. On a 12-hourly schedule that halves TMDB traffic; a title whose
-lookup failed, or that has just had its `ss-skip` tag removed, is always
-re-checked. The run log reports calls made vs. served from cache.
-
-Sync also looks titles up **in parallel** (`SYNC_CONCURRENCY`, default 4).
-Sync is almost entirely waiting on HTTP, so this is what turns a large library's
-sync from minutes of latency into something much shorter.
-
-#### Title ID map (TMDB/IMDB → Watchmode id)
-
-The Watchmode API is keyed on **Watchmode ids**, so every title from
-Sonarr/Radarr must be converted from its TMDB/IMDB id first. Instead of spending
-Watchmode **search** quota on every title, StreamSweeparr imports Watchmode's
-daily [`title_id_map.csv`](https://api.watchmode.com/datasets/title_id_map.csv)
-into the `TitleIdMap` table and resolves ids locally.
-
-Refresh flow (`src/lib/titlemap.ts`), run at the start of every sync and on a
-12-hour timer (`src/instrumentation.ts`):
-
-1. **First run** → skip the ETag check.
-2. Otherwise `HEAD` the CSV; if its **ETag** matches the last import, stop.
-3. Download the CSV, recording **Last-Modified** + **ETag** for next time.
-4. `TRUNCATE "TitleIdMap"` then stream-import the CSV via the Postgres `COPY`
-   protocol (`pg` + `pg-copy-streams`) — works against any external Postgres.
-5. Repeat at most every 12 hours.
-
-`findTitleId()` tries this local map first and only falls back to the Watchmode
-`/search` endpoint when a title is missing from the CSV. You can view status and
-force a refresh under **Settings → Title ID map**, or via `POST /api/titlemap`
-(`{ "force": true }` to bypass the window/ETag). Set `TITLE_MAP_SCHEDULER=off`
-to disable the timer (e.g. on secondary replicas).
+  the scheduled one steps aside until the next interval.
+- **Multiple replicas are safe** — exactly one instance claims each slot. Set
+  `SWEEP_SCHEDULER=off` to opt an instance out entirely.
 
 ---
 
-## 📱 Install it as an app (PWA)
+## 🏷 Keeping titles out of the sweep
 
-StreamSweeparr is a progressive web app, so it can be installed from the browser
-and run in its own window with no address bar — handy on a phone, and it gets
-the sweep controls onto a home screen next to the rest of your *arr stack.
+Tag a series in Sonarr or a movie in Radarr with **`ss-skip`** (case doesn't
+matter) and StreamSweeparr leaves it completely alone:
 
-- **Desktop Chrome / Edge:** the install icon in the address bar, or ⋮ →
-  *Cast, save and share* → *Install page as app*.
-- **Android Chrome:** ⋮ → *Add to Home screen*.
-- **iOS Safari:** Share → *Add to Home Screen*.
+- its streaming availability is **never looked up** — so it costs you no API quota
+- its monitored state is **never changed**
+- its files are **never deleted**
+- it's **excluded from the end-of-run search**
 
-Installed, it opens standalone with the Dracula theme colours in the system
-chrome, and long-pressing the icon offers shortcuts straight to **Dashboard**,
-**Runs** and **Settings**.
+Tagged titles don't appear in the "on streaming" lists either, because the app
+deliberately has no availability data for them. Remove the tag and the next sync
+picks the title straight back up. The run log reports how many titles were
+ignored this way.
 
-**Serve it over HTTPS.** Browsers only register service workers — and only offer
-installation — in a secure context. `http://localhost` counts, so a local test
-works, but a LAN address over plain HTTP does not: put it behind a reverse proxy
-with TLS (and set `PUBLIC_URL` and `TRUST_PROXY=true` while you are there).
+This is the right tool for the film you rewatch every Christmas, the show your
+streaming service keeps rotating in and out, or anything you simply want to own.
 
-### What works offline, and what deliberately does not
+---
 
-Everything StreamSweeparr does needs its server, its database, and a third-party
+## 📱 Install it as an app
+
+StreamSweeparr is a progressive web app, so it can be installed from your
+browser and run in its own window with no address bar — handy on a phone, and it
+puts the sweep controls on your home screen next to the rest of your *arr stack.
+
+| Platform | How |
+|---|---|
+| **Desktop Chrome / Edge** | The install icon in the address bar, or ⋮ → *Cast, save and share* → *Install page as app* |
+| **Android Chrome** | ⋮ → *Add to Home screen* |
+| **iOS Safari** | Share → *Add to Home Screen* |
+
+Installed, it opens standalone in the app's own colours, and long-pressing the
+icon offers shortcuts straight to **Dashboard**, **Runs** and **Settings**.
+
+> [!IMPORTANT]
+> **Installing requires HTTPS.** Browsers only allow it in a secure context.
+> `http://localhost` counts, so testing locally works — but a LAN address over
+> plain HTTP does not. Put it behind [a reverse proxy with
+> TLS](#behind-a-reverse-proxy).
+
+<details>
+<summary><b>What works offline (and what deliberately doesn't)</b></summary>
+
+Everything StreamSweeparr does needs its server, its database and a third-party
 API, so an offline mode that "works" would be a lie. What the service worker
-(`public/sw.js`) does instead is narrow and boring on purpose:
+does instead is narrow on purpose:
 
-- **Cached:** Next's content-hashed build assets, the icons, the manifest and a
-  static offline page. Those bytes are identical for every user.
-- **Never cached:** anything under `/api/*`, and every HTML document. This app
-  is multi-user and the pages are rendered per session — a cached copy of a
-  signed-in page (or of the login redirect that replaces it once a session
-  expires) would outlive the session that produced it. Responses that arrive as
-  redirects are refused by the cache for the same reason.
+- **Cached:** the app's static build assets, icons, manifest and a small offline
+  page. Those bytes are identical for every user.
+- **Never cached:** anything under `/api/*`, and every HTML page. This app is
+  multi-user and pages are rendered per session — a cached copy of a signed-in
+  page (or of the login redirect that replaces it once a session expires) would
+  outlive the session that produced it. Redirects are refused by the cache for
+  the same reason.
 
-So an unreachable server gets you `public/offline.html` — the app's own styling,
-an explanation, and a page that reloads itself when the connection returns —
-rather than the browser's error page. When the server is back, everything is
-live data again.
+So an unreachable server gets you a proper offline page that reloads itself when
+the connection returns, rather than the browser's error page. Signing out leaves
+nothing to purge — the worker holds no account data.
 
-Signing out leaves nothing behind to purge: the worker holds no account data. In
-development the worker is *unregistered* rather than registered, so a production
-build cannot leave one sitting in front of `next dev` on the same origin.
+</details>
 
 ---
 
-## 🔐 Authentication &amp; security
+## 🔧 Troubleshooting
 
-The whole app is behind a login. A `proxy.ts` gate validates a signed,
-edge-safe session cookie on every route except `/login` and `/api/auth/*`;
-unauthenticated pages redirect to `/login`, unauthenticated API calls get `401`.
-
-**Roles.** Every account is either **admin** (full access: settings,
-connections, sync/sweep, user management) or **user** (read-only dashboard and
-run history). Admin-only API routes are guarded server-side (`src/lib/auth.ts`)
-in addition to the middleware.
-
-### Username / password (always an admin)
-
-There is exactly one local account and it always has the **admin** role. It's
-seeded on first login as **`admin` / `0pen0pen&*`** and flagged *must change
-password*, which is **enforced**: the middleware blocks every route except the
-change-password flow until a new password is set.
-
-- **Rename it** any time under **Settings → Users &amp; security → Your account**.
-- **Set it from the environment** with `ADMIN_USERNAME` / `ADMIN_PASSWORD`.
-  While set, these stay authoritative (so the credentials in your compose file
-  always work, and you have a password-recovery path); supplying
-  `ADMIN_PASSWORD` also skips the forced password change, since you chose it.
-- Passwords are hashed with Node `scrypt`; sessions are HMAC-signed cookies
-  (`src/lib/session.ts`) signed with `AUTH_SECRET`. Login is **rate-limited**
-  per IP and per IP+username with progressive lockout (`src/lib/ratelimit.ts`).
-
-### OIDC single sign-on (optional)
-
-Configure it under **Settings → Single sign-on (OIDC)** (issuer, client
-id/secret; endpoints auto-discovered from `/.well-known/openid-configuration`).
-When enabled, a **Sign in with SSO** button appears on the login page. Flow is
-Authorization Code + PKCE with `state` validation (`src/lib/oidc.ts`); users are
-provisioned on first login and can be restricted with an allow-list. **New SSO
-users get the `user` role** — an admin promotes them under **Settings → Users &amp;
-security → Users**, which lists every account with its provider and role.
-
-> [!WARNING]
-> **Redirect URI:** register the exact value shown on the OIDC settings card
-> with your provider. Behind a reverse proxy, set **`PUBLIC_URL`** (e.g.
-> `https://sweep.example.com`) so the `redirect_uri` matches your public URL
-> rather than the internal container address. A mismatch here is the usual cause
-> of *"invalid or mismatching redirect_uri"* errors. The app otherwise derives
-> the origin from `X-Forwarded-Proto`/`X-Forwarded-Host`, then `Host`.
-
-### Hiding the password form (SSO-only)
-
-Under **Settings → Users &amp; security → Login options** you can turn off
-username/password login so only SSO is offered (also settable with
-`LOCAL_LOGIN_DISABLED=true`). This is only permitted while OIDC is enabled *and*
-fully configured — otherwise the toggle is greyed out and the form stays on, so
-you can't lock yourself out. It's enforced server-side, not just hidden in the
-UI. If SSO ever breaks while this is off, set `LOCAL_LOGIN_DISABLED=false` to
-force the password form back on.
-
-Safety rails: the instance can never be left without an admin, the local
-password account can't be demoted or deleted, and you can't delete your own
-account.
-
-**`AUTH_SECRET` is required in production** — the app refuses to start without a
-value of at least 16 characters (`openssl rand -hex 32`).
-
-> [!CAUTION]
-> **Running over plain HTTP?** In production the login cookie is marked `Secure`,
-> which browsers only keep over HTTPS. If you access the app at
-> `http://host:3000` (e.g. the default Docker Compose setup) the cookie is
-> dropped and login appears to fail — you sign in but bounce back to the login
-> screen. Set **`AUTH_COOKIE_INSECURE=true`** for HTTP deployments (the bundled
-> `docker-compose.yml` already does this). Prefer putting the app behind HTTPS.
-
-### 🔒 Encrypted credentials
-
-Everything StreamSweeparr stores that can be used as a credential — the
-Watchmode, TMDB and Seerr API keys, the OIDC client secret, and the API key for
-each Sonarr/Radarr instance — is encrypted before it reaches the database.
-
-An *arr API key can delete media, so a database dump, an old backup, or a
-`SELECT * FROM "Settings"` over a shared connection should not hand that over in
-the clear.
-
-- **Cipher:** AES-256-GCM, fresh IV per value, stored as
-  `enc:v1:<base64url(iv‖tag‖ciphertext)>`.
-- **Key:** derived from `AUTH_SECRET` with HKDF-SHA256, under an `info` string
-  specific to this use so it is separate from the session-signing key.
-- **Scope:** this protects data *at rest*. The running process must be able to
-  decrypt, so anyone who can read the app's environment can derive the key.
-  Without a key-management service that is the honest limit of what a
-  self-hosted app can offer — worth knowing rather than assuming more.
-
-Password hashes are deliberately **not** encrypted: they are already one-way,
-and encrypting them would add a failure mode without adding protection.
-
-**Upgrading.** Existing plaintext credentials are converted on the first boot
-after upgrading — a SQL migration cannot do it, because the key lives in the
-app's environment rather than the database. Reads accept both forms throughout,
-so a partial conversion is harmless and the step is idempotent.
-
-**Rotating `AUTH_SECRET` makes stored credentials unrecoverable.** GCM
-authenticates, so a changed secret means the values fail to decrypt rather than
-decrypting to nonsense. When that happens:
-
-- Affected keys read as *not configured*, and Settings shows a banner
-  explaining why rather than letting them appear to vanish.
-- A sync **refuses to run** without an API key, so nothing destructive happens
-  on the strength of a missing credential.
-- If OIDC was your only login method, its client secret becoming unreadable
-  makes OIDC "not configured", which **automatically re-enables the password
-  form** — rotating the secret cannot lock you out of your own instance.
-
-To recover, restore the previous `AUTH_SECRET`, or re-enter the affected keys in
-Settings to save them under the new one.
-
----
-
-### SSRF protection
-
-Any URL you supply (Sonarr/Radarr/Seerr base URLs, OIDC endpoints) is fetched
-through `src/lib/safeFetch.ts`, which DNS-resolves the host and **always blocks**
-loopback, link-local and the `169.254.169.254` cloud-metadata address, with a
-request timeout and redirects disabled. Private LAN ranges are blocked unless
-you set `SSRF_ALLOW_PRIVATE=true` (needed when your *arr apps run on a LAN).
-
----
-
-## 🔧 Environment variables
-
-Everything else is configured in the UI — see [`.env.example`](.env.example) for
-the fully commented version.
-
-| Variable | Required | Description |
+| Symptom | Cause | Fix |
 |---|---|---|
-| `DATABASE_URL` | ✅ | PostgreSQL connection string. On 1–2 vCPU hosts append `&connection_limit=10&pool_timeout=20` |
-| `AUTH_SECRET` | ✅ (prod) | Signs session cookies **and** derives the key that encrypts stored credentials. ≥16 chars — `openssl rand -hex 32`. Changing it makes saved API keys unreadable — see [Encrypted credentials](#-encrypted-credentials) |
-| `ADMIN_USERNAME` / `ADMIN_PASSWORD` | — | Seed **and** keep authoritative the local admin account |
-| `LOCAL_LOGIN_DISABLED` | — | `true` hides the password form (SSO-only); `false` forces it back on |
-| `AUTH_COOKIE_INSECURE` | — | `true` when serving over plain HTTP, or login silently fails |
-| `PUBLIC_URL` | — | Public origin behind a reverse proxy; fixes the OIDC `redirect_uri` |
-| `TRUST_PROXY` | — | `true` to believe `X-Forwarded-For/Proto/Host`. Only with a proxy that overwrites them — see below |
-| `OIDC_REDIRECT_URI` | — | Override the OIDC callback outright (rarely needed) |
-| `SSRF_ALLOW_PRIVATE` | — | `true` to allow private LAN ranges (needed for LAN *arr apps) |
-| `SYNC_CONCURRENCY` | — | Titles looked up in parallel during a sync (default `4`, max `32`) |
-| `LOG_LEVEL` | — | `debug` / `info` / `warn` / `error` for background work (default `info`) |
-| `TITLE_MAP_SCHEDULER` | — | `off` disables the 12h Title ID map refresh on this instance |
-| `SWEEP_SCHEDULER` | — | `off` stops this instance running [scheduled sweeps](#-scheduled-sweeps) (the schedule itself stays configured) |
-| `PORT` | — | Port for `next start` (default `3000`) |
+| **I sign in and get bounced straight back to the login page** | You're on plain HTTP, and browsers drop `Secure` cookies there | Set `AUTH_COOKIE_INSECURE=true`, or serve the app over HTTPS |
+| **"Connection failed" when adding Sonarr/Radarr** | They're on a private LAN, which the SSRF guard blocks by default | Set `SSRF_ALLOW_PRIVATE=true` |
+| **The app refuses to start** | `AUTH_SECRET` missing or under 16 characters in production | `openssl rand -hex 32` and set it |
+| **SSO fails with *"invalid or mismatching redirect_uri"*** | The app is guessing its own address from behind a proxy | Set `PUBLIC_URL` to your real public URL, and register the exact redirect URI shown on the OIDC card |
+| **My API keys suddenly read as "not configured"** | `AUTH_SECRET` changed — it's also the encryption key | Restore the old secret, or re-enter the keys. [Details](#-encrypted-credentials) |
+| **Pages time out on a small NAS / VM** | Prisma's connection pool is sized from CPU count | Append `&connection_limit=10&pool_timeout=20` to `DATABASE_URL` |
+| **No install option in my browser** | Service workers need a secure context | Serve over HTTPS (or test on `localhost`) |
+| **Some TV provider logos aren't clickable** | Free Watchmode plans don't include per-episode deep links | Working as intended — [why](#what-the-dashboard-shows-you) |
+| **A title I want to keep keeps getting swept** | It's genuinely on one of your selected services | Tag it **`ss-skip`** — [how](#-keeping-titles-out-of-the-sweep) |
+| **The first sync is slow** | Nothing is cached yet, so every title gets looked up once | Normal. Every sync after that is far cheaper — [why](#-keeping-api-usage-low) |
 
-### Running behind a reverse proxy
+Still stuck? Turn up the detail with `LOG_LEVEL=debug`, and check the run log on
+the **Runs** page — it records every decision the sweep made and why.
 
-`X-Forwarded-*` headers are only meaningful when something you control
-overwrites them. If the app is reachable directly, any client can forge them —
-and since the login rate limiter buckets by client IP, a forged header would let
-an attacker pick a fresh bucket for every attempt. So they are ignored unless
-you set `TRUST_PROXY=true`.
+---
 
-With `TRUST_PROXY` off, per-IP login throttling effectively collapses into one
-bucket; the per-username and instance-wide limiters still apply, so brute force
-is still bounded. Behind a real proxy, set `TRUST_PROXY=true` **and**
-`PUBLIC_URL`.
+## ❓ FAQ
+
+<details>
+<summary><b>Will it delete my files the moment I install it?</b></summary>
+
+No. Every run is a dry-run until you enable **Apply changes (LIVE mode)**, and
+that switch is off out of the box — so a fresh install can only ever tell you
+what it *would* do.
+
+Do check the run options before you flip it, though: **Delete files when
+unmonitoring** is on by default, so LIVE mode will delete files for titles it
+sweeps unless you turn it off. Read the dry-run log first — it names every file
+in scope.
+
+</details>
+
+<details>
+<summary><b>What happens when a show leaves Netflix?</b></summary>
+
+The next sweep notices it's no longer on any of your selected services and
+**re-monitors** it. If **Search monitored items at end of run** is on, Sonarr or
+Radarr goes and gets it again in the same run.
+
+</details>
+
+<details>
+<summary><b>Do I need both API keys?</b></summary>
+
+Only for the media types you use — Watchmode for TV (Sonarr), TMDB for movies
+(Radarr). If you only run Radarr, you never need a Watchmode key.
+
+</details>
+
+<details>
+<summary><b>Will this burn through my free Watchmode credits?</b></summary>
+
+It's built not to. The metered search endpoint is essentially never used (ids
+are resolved from a locally imported map), availability is cached for 7 days,
+and on paid plans a changes feed means unchanged shows aren't re-fetched at all.
+Full detail in [Keeping API usage low](#-keeping-api-usage-low).
+
+</details>
+
+<details>
+<summary><b>Can I run more than one instance?</b></summary>
+
+Yes. Scheduled sweeps use a database claim so exactly one instance fires each
+slot, and only one sync/sweep can run at a time across all of them. Use
+`SWEEP_SCHEDULER=off` and `TITLE_MAP_SCHEDULER=off` to make an instance
+UI-only.
+
+</details>
+
+<details>
+<summary><b>What if Watchmode is down?</b></summary>
+
+Nothing churns. A title whose status can't be determined is flagged *unknown*,
+and the sweep will **not** re-monitor it — so an outage can't trigger a mass
+re-download.
+
+</details>
+
+<details>
+<summary><b>Can other people use it without changing my settings?</b></summary>
+
+Yes — every account is either **admin** (everything) or **user** (read-only
+dashboard and run history). SSO users get the `user` role by default.
+
+</details>
+
+<details>
+<summary><b>How do I upgrade?</b></summary>
+
+`docker compose pull && docker compose up -d`. Database migrations are applied
+automatically on start.
+
+</details>
 
 ---
 
 ## 🛡 Safety notes
 
-- **Dry-run is the default.** No changes are made until **Apply changes (LIVE
-  mode)** is enabled in Settings.
-- **File deletion is destructive** and permanent. It only happens in LIVE mode.
-  With **Delete files when unmonitoring** it is limited to titles found on your
-  selected streaming services; **Remove files for all unmonitored items** widens
-  it to every unmonitored title, so enable that one deliberately.
-- **Transient Watchmode failures never cause churn.** When a title's streaming
-  status can't be determined (lookup error or unmapped title), it is flagged
-  *unknown* and the sweep will **not** re-monitor it — avoiding a mass
-  re-monitor during a Watchmode outage.
-- API keys are **encrypted at rest** and are never returned to the browser (only
-  a "configured" flag is exposed). See
+- **Dry-run is the default.** Nothing changes until **Apply changes (LIVE
+  mode)** is on.
+- **File deletion is permanent.** **Delete files when unmonitoring** is limited
+  to titles found on your selected services; **Remove files for all unmonitored
+  items** widens that to your whole unmonitored back-catalogue — enable that one
+  deliberately.
+- **Transient failures never cause churn.** If a title's status can't be
+  determined, it's flagged *unknown* and never re-monitored on that basis.
+- **API keys are encrypted at rest** and never sent back to the browser — the UI
+  only ever sees a "configured" flag. See
   [Encrypted credentials](#-encrypted-credentials).
-- **Sessions are revocable.** Changing a user's role, changing a password, or
-  deleting an account bumps that account's `tokenVersion`, and every
-  server-side guard re-reads the account on each request. A demoted admin loses
-  admin rights on their *next* request rather than when their cookie expires.
+- **Sessions are revocable.** Changing a role, changing a password or deleting
+  an account ends that account's sessions on its *next* request — not whenever
+  the cookie happens to expire.
+
+---
+
+## 🔐 Accounts, login &amp; security
+
+The whole app is behind a login. Unauthenticated page requests are redirected to
+`/login`; unauthenticated API calls get a `401`.
+
+**Roles.** Every account is either **admin** (settings, connections,
+sync/sweep, user management) or **user** (read-only dashboard and run history).
+Admin-only routes are enforced on the server, not just hidden in the UI.
+
+### Username &amp; password
+
+There's exactly one local account and it's always an **admin**. It's seeded on
+first login as **`admin` / `0pen0pen&*`** and flagged *must change password*,
+which is enforced — every route is blocked until you set a new one.
+
+- **Rename it** under **Settings → Users &amp; security → Your account**.
+- **Set it from the environment** with `ADMIN_USERNAME` / `ADMIN_PASSWORD`.
+  While set, these stay authoritative — so the credentials in your compose file
+  always work and you always have a way back in. Supplying `ADMIN_PASSWORD`
+  also skips the forced password change, since you chose it.
+- Passwords are hashed with `scrypt`, sessions are HMAC-signed cookies, and
+  login is rate-limited per IP and per IP+username with progressive lockout.
+
+> [!IMPORTANT]
+> **`AUTH_SECRET` is required in production.** The app refuses to start without
+> at least 16 characters. Generate one with `openssl rand -hex 32` and keep it —
+> it also encrypts your stored API keys.
+
+<details>
+<summary><b>Single sign-on (OIDC)</b></summary>
+
+Configure it under **Settings → Users &amp; security → Single sign-on (OIDC)** —
+issuer plus client id/secret; the endpoints are discovered automatically from
+`/.well-known/openid-configuration`. A **Sign in with SSO** button then appears
+on the login page.
+
+The flow is Authorization Code + PKCE with `state` validation. Users are
+provisioned on first login and can be restricted with an allow-list. **New SSO
+users get the `user` role** — an admin promotes them under **Settings → Users
+&amp; security → Users**.
+
+> [!WARNING]
+> **Redirect URI:** register the *exact* value shown on the OIDC card with your
+> provider. Behind a reverse proxy, set **`PUBLIC_URL`** (e.g.
+> `https://sweep.example.com`) so the `redirect_uri` matches your public address
+> rather than an internal container name. A mismatch here is the usual cause of
+> *"invalid or mismatching redirect_uri"*.
+
+**SSO-only mode.** Under **Login options** you can hide the password form
+entirely (or set `LOCAL_LOGIN_DISABLED=true`). This is only allowed while OIDC
+is enabled *and* fully configured, so you can't lock yourself out — and if SSO
+later breaks, `LOCAL_LOGIN_DISABLED=false` forces the password form back on.
+
+Other rails: the instance can never be left without an admin, the local password
+account can't be demoted or deleted, and you can't delete your own account.
+
+</details>
+
+### 🔒 Encrypted credentials
+
+Everything that could be used as a credential — the Watchmode, TMDB and Seerr
+keys, the OIDC client secret, and every Sonarr/Radarr API key — is encrypted
+before it reaches the database. An *arr API key can delete media, so a database
+dump or an old backup shouldn't hand that over in the clear.
+
+- **Cipher:** AES-256-GCM, fresh IV per value.
+- **Key:** derived from `AUTH_SECRET` via HKDF-SHA256, under a separate `info`
+  string from the session-signing key.
+- **Scope:** this protects data *at rest*. The running process has to be able to
+  decrypt, so anyone who can read the app's environment can derive the key.
+  Without a key-management service, that's the honest limit of what a
+  self-hosted app can offer.
+
+Password hashes are deliberately **not** encrypted — they're already one-way.
+
+Existing plaintext credentials are converted automatically on the first boot
+after upgrading; the step is idempotent and reads accept both forms throughout.
+
+> [!CAUTION]
+> **Rotating `AUTH_SECRET` makes stored credentials unrecoverable.** They fail
+> to decrypt rather than decrypting to nonsense. When that happens: the affected
+> keys read as *not configured* with a banner explaining why, a sync **refuses to
+> run** without an API key so nothing destructive happens, and if OIDC was your
+> only login method the password form is **automatically re-enabled** so you
+> can't be locked out. Restore the old secret, or re-enter the keys in Settings.
+
+### SSRF protection
+
+Every URL you supply — Sonarr/Radarr/Seerr base URLs, OIDC endpoints — is
+fetched through a guard that resolves the host first and **always** blocks
+loopback, link-local and the `169.254.169.254` cloud-metadata address, with a
+request timeout and redirects disabled.
+
+Private LAN ranges are blocked too, unless you set **`SSRF_ALLOW_PRIVATE=true`**
+— which you'll need if your *arr apps live on your LAN, as they usually do.
+
+---
+
+## 🔧 Environment variables
+
+Everything else is configured in the UI. See
+[`.env.example`](.env.example) for the fully commented version.
+
+**You'll almost certainly set these:**
+
+| Variable | Required | What it's for |
+|---|---|---|
+| `DATABASE_URL` | ✅ | PostgreSQL connection string |
+| `AUTH_SECRET` | ✅ (prod) | Signs sessions **and** encrypts stored API keys. ≥16 chars — `openssl rand -hex 32` |
+| `SSRF_ALLOW_PRIVATE` | — | `true` to allow private LAN ranges — needed for LAN *arr apps |
+| `AUTH_COOKIE_INSECURE` | — | `true` when serving over plain HTTP, or login silently fails |
+
+**Behind a proxy or using SSO:**
+
+| Variable | What it's for |
+|---|---|
+| `PUBLIC_URL` | Your public origin — fixes the OIDC `redirect_uri` |
+| `TRUST_PROXY` | `true` to believe `X-Forwarded-For/Proto/Host` — only behind a proxy you control |
+| `OIDC_REDIRECT_URI` | Override the OIDC callback outright (rarely needed) |
+| `LOCAL_LOGIN_DISABLED` | `true` hides the password form (SSO-only); `false` forces it back on |
+
+**Accounts and tuning:**
+
+| Variable | What it's for |
+|---|---|
+| `ADMIN_USERNAME` / `ADMIN_PASSWORD` | Seed **and** keep authoritative the local admin account |
+| `SYNC_CONCURRENCY` | Titles looked up in parallel during a sync (default `4`, max `32`) |
+| `LOG_LEVEL` | `debug` / `info` / `warn` / `error` for background work (default `info`) |
+| `SWEEP_SCHEDULER` | `off` stops *this instance* running scheduled sweeps |
+| `TITLE_MAP_SCHEDULER` | `off` disables the 12h Title ID map refresh on this instance |
+| `PORT` | Port for `next start` (default `3000`) |
+
+### Behind a reverse proxy
+
+Put the app behind TLS and set **both**:
+
+```
+PUBLIC_URL=https://sweep.example.com
+TRUST_PROXY=true
+```
+
+…and remove `AUTH_COOKIE_INSECURE`, since you're on HTTPS now.
+
+<details>
+<summary>Why <code>TRUST_PROXY</code> is off by default</summary>
+
+`X-Forwarded-*` headers only mean anything when something you control
+overwrites them. If the app is reachable directly, any client can forge them —
+and since the login rate limiter buckets by client IP, a forged header would let
+an attacker pick a fresh bucket for every attempt.
+
+With it off, per-IP throttling collapses into one bucket, but the per-username
+and instance-wide limiters still apply, so brute force is still bounded.
+
+</details>
+
+---
+
+## 🧮 How it decides what's "on streaming"
+
+Two providers, split by media type. Both are configured on their own Settings
+tab, and both work the same way: a title counts as *on streaming* only if the
+service is one **you selected** *and* the way it's offered is a **type you
+count**.
+
+| | Provider | Counts if… | "On streaming" means |
+|---|---|---|---|
+| 📺 | **TV — Watchmode** | the source is one of your selected services, and its type (`sub`, `free`, `purchase`, `rent`, `tv_everywhere`) is one you count | **≥1 episode** matches |
+| 🎬 | **Movies — TMDB** | the provider is one of your selected ones for that region, and the category (`flatrate`, `free`, `ads`, `rent`, `buy`) is one you count | **≥1 match** |
+
+This is why the source-type checkboxes matter: leave *Rent* and *Buy*
+unchecked and a film that's only purchasable won't be treated as something you
+can already stream.
+
+---
+
+## 💳 Keeping API usage low
+
+TV availability is the only per-title Watchmode cost, and three layers keep it
+small:
+
+1. **A local Title ID map** resolves TMDB/IMDB → Watchmode ids for free, so the
+   metered `/search` endpoint is essentially never used.
+2. **Change detection (paid plans).** Each sync asks which titles changed since
+   last time — a few calls total, regardless of library size — and everything
+   unchanged reuses its cached availability. On a settled library that takes
+   ongoing usage from *one call per series* to *near zero*. The app **detects
+   your plan automatically** (cached, re-checked weekly), so a free key never
+   makes a failing call; the result is shown under **Settings → Watchmode**.
+3. **A 7-day freshness window.** Independent of the above, a series pulled
+   within the last 7 days isn't pulled again — the safety net when the changes
+   feed isn't available.
+
+A LIVE sweep also **doesn't re-sync afterwards** — the snapshot is updated in
+place as changes are applied. The run log reports how many episode fetches were
+made versus skipped.
+
+The first sync after setup still pulls every series once, because nothing is
+cached yet. Every sync after that is cheap.
+
+**Movies (TMDB)** get the same treatment on a shorter clock: TMDB has no changes
+feed, so a movie looked up successfully in the last **24 hours** is served from
+cache. On a 12-hourly schedule that halves TMDB traffic. Anything whose lookup
+failed — or that just had its `ss-skip` tag removed — is always re-checked.
+
+Sync also looks titles up **in parallel** (`SYNC_CONCURRENCY`, default 4), which
+is what turns a large library's sync from minutes of waiting into something much
+shorter.
+
+<details>
+<summary><b>The Title ID map, in detail</b></summary>
+
+The Watchmode API is keyed on **Watchmode ids**, so every title from
+Sonarr/Radarr has to be converted from its TMDB/IMDB id first. Rather than spend
+Watchmode *search* quota on every title, the app imports Watchmode's daily
+[`title_id_map.csv`](https://api.watchmode.com/datasets/title_id_map.csv) and
+resolves ids locally.
+
+The refresh runs at the start of every sync and on a 12-hour timer:
+
+1. **First run** → skip the ETag check.
+2. Otherwise `HEAD` the CSV; if the **ETag** matches the last import, stop.
+3. Download it, recording **Last-Modified** + **ETag** for next time.
+4. `TRUNCATE` the table, then stream-import via the Postgres `COPY` protocol —
+   which works against any external Postgres.
+5. Repeat at most every 12 hours.
+
+Lookups try this map first and only fall back to Watchmode's `/search` when a
+title is missing from the CSV. You can check status and force a refresh under
+**Settings → Watchmode (TV) → Title ID map**, or via `POST /api/titlemap`
+(`{ "force": true }` to bypass the window and ETag). `TITLE_MAP_SCHEDULER=off`
+disables the timer on an instance.
+
+To force a full re-pull of availability — e.g. after changing your selected
+countries or services — clear `watchmodeChangesCursor` and `providerSyncedAt`.
+
+</details>
 
 ---
 
@@ -608,11 +843,11 @@ is still bounded. Behind a real proxy, set `TRUST_PROXY=true` **and**
                     ┌─────────────▼───┐   ┌───────▼────────────┐
                     │ Business logic  │   │ External APIs      │
                     │  lib/sync.ts    │   │  Watchmode         │
-                    │  lib/sweep.ts   │◄──┤  Sonarr v3         │
-                    │  lib/watchmode  │   │  Radarr v3         │
-                    │  lib/arr        │   │  Seerr (discovery) │
-                    └────────┬────────┘   └────────────────────┘
-                             │ Prisma
+                    │  lib/sweep.ts   │◄──┤  TheMovieDB        │
+                    │  lib/watchmode  │   │  Sonarr v3         │
+                    │  lib/arr        │   │  Radarr v3         │
+                    └────────┬────────┘   │  Seerr (discovery) │
+                             │ Prisma     └────────────────────┘
                     ┌────────▼─────────┐
                     │  PostgreSQL      │  settings, connections,
                     │  (external)      │  media snapshot, run logs
@@ -630,12 +865,16 @@ is still bounded. Behind a real proxy, set `TRUST_PROXY=true` **and**
 | Auth API (login, logout, session, change-password, OIDC) | `src/app/api/auth/**` |
 | Login page | `src/app/login/page.tsx` |
 | Watchmode client (regions, sources, title lookup, availability) | `src/lib/watchmode.ts` |
+| TMDB client (regions, providers, availability) | `src/lib/tmdb.ts` |
 | Sonarr / Radarr / Seerr clients | `src/lib/arr.ts` |
 | **Title ID map** — TMDB/IMDB → Watchmode id, imported from Watchmode's daily CSV | `src/lib/titlemap.ts` |
 | 12h scheduler for the Title ID map | `src/instrumentation.ts` |
 | **Sync engine** — snapshot library + streaming availability into Postgres | `src/lib/sync.ts` |
 | **Sweep engine** — unmonitor/delete, re-monitor, search | `src/lib/sweep.ts` |
 | **Scheduled sweeps** — interval maths (pure) + the timer that claims a slot | `src/lib/{schedule,scheduler}.ts` |
+| Background run lock + live progress | `src/lib/jobs.ts` |
+| SSRF-guarded fetch | `src/lib/safeFetch.ts` |
+| Credential encryption at rest | `src/lib/secrets.ts` |
 | Country flags | `src/lib/flags.ts` |
 | REST API | `src/app/api/**` |
 | UI (Dracula theme, dark/light/system) | `src/app/**`, `src/components/**`, `src/app/globals.css` |
@@ -677,19 +916,20 @@ is still bounded. Behind a real proxy, set `TRUST_PROXY=true` **and**
 
 ---
 
-## 🧪 Development, testing &amp; CI
+## 🧪 Developing &amp; testing
 
 | Command | What it does |
 |---|---|
 | `npm run dev` | Next.js dev server on `:3000` |
-| `npm test` | Vitest unit suite — needs no database |
+| `npm test` | Unit suite — needs no database |
 | `npm run test:integration` | Integration suite against a real PostgreSQL (needs `DATABASE_URL`) |
 | `npm run test:all` | Both suites |
 | `npm run typecheck` | `tsc --noEmit` |
-| `npm run lint` | ESLint flat config (`eslint.config.mjs`: `eslint-config-next` + `no-console`) |
+| `npm run lint` | ESLint (`eslint-config-next` + `no-console`) |
 | `npm run prisma:migrate` | `prisma migrate deploy` |
 
-### The two suites
+<details>
+<summary><b>The two test suites</b></summary>
 
 **Unit** (`src/**/*.test.{ts,tsx}`) covers the pure decision logic and anything
 mockable: `planItem`'s full decision matrix, session tokens, the auth guards,
@@ -707,11 +947,10 @@ so the mostly-pure suite doesn't pay for a DOM it never touches.
 
 **Integration** (`src/**/*.itest.ts`) runs sync, sweep, the run lock and the
 admin user routes against a throwaway PostgreSQL, stubbing only the outbound
-HTTP. This is where the persistence behaviour is pinned: which titles get
-pruned, which lookups are skipped as fresh, that a failing instance does not
-abandon the rest of the library, that concurrent sweep requests cannot both
-acquire the lock, and that demoting or deleting an account really does end its
-sessions.
+HTTP. This is where persistence behaviour is pinned: which titles get pruned,
+which lookups are skipped as fresh, that a failing instance doesn't abandon the
+rest of the library, that concurrent sweep requests can't both acquire the lock,
+and that demoting or deleting an account really does end its sessions.
 
 ```bash
 createdb streamsweeparr_test
@@ -723,8 +962,9 @@ npm run test:integration
 The suite refuses to start without an explicit `DATABASE_URL` — it truncates
 tables, so pointing it at a real deployment should take deliberate effort.
 
-GitHub Actions (`.github/workflows/ci.yml`) gates every push/PR on
-audit + lint + typecheck + unit tests + integration tests (against a Postgres
-service container) + build. Dependency updates arrive via Dependabot
-(`.github/dependabot.yml`), grouped weekly. The Docker image is published
-(`docker-publish.yml`) only from `main` and version tags.
+</details>
+
+CI (`.github/workflows/ci.yml`) gates every push and PR on audit + lint +
+typecheck + unit tests + integration tests (against a Postgres service
+container) + build. Dependency updates arrive via Dependabot, grouped weekly.
+The Docker image is published from `main` and version tags only.
