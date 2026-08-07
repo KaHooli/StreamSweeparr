@@ -24,8 +24,9 @@ function unmonitoredLabel(s: TvShow): string {
 }
 
 /**
- * The streaming services a title was matched on, as logos linking straight to
- * the title on that service (TV: Watchmode deep link; movies: TMDB watch page).
+ * The streaming services a title was matched on, as logos linking to the title
+ * on that service: a deep link where we have one, otherwise that service's
+ * search page for the title (see `dedupeServices` for the full order).
  */
 function ProviderLogos({ services, title }: { services: ServiceRef[]; title: string }) {
   if (!services.length) return null;
