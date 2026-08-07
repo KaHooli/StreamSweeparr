@@ -85,10 +85,9 @@ function countLabel(shown: number, total: number, noun: string): string {
 }
 
 /**
- * One A–Z rail, pinned to the right edge of the window and covering its full
- * height. Each media section gets its own, so a letter always means "that
- * letter, in this section" — TV and movies each have their own alphabet, and
- * neither jumps you into the other.
+ * One A–Z rail. Each media section gets its own, stacked in a single column
+ * down the right edge of the window — TV above movies — so a letter always
+ * means "that letter, in this section" and neither jumps you into the other.
  *
  * `anchors` is built from the *filtered* list, so letters the search has emptied
  * are dead here too rather than jumping to a card that is no longer rendered.
@@ -142,7 +141,7 @@ function AlphaRail({
 
 /**
  * The searchable, jumpable half of the dashboard: the search box, both media
- * grids, and an A–Z rail per section down the right edge of the window.
+ * grids, and the A–Z rails stacked down the right edge of the window.
  *
  * Filtering is client-side on purpose. The page already ships every on-streaming
  * title to the browser to render the grids, so searching them is instant and
@@ -380,11 +379,11 @@ export function DashboardBrowser({
         )}
       </div>
 
-      {/* Fixed to the right edge of the window, so it stays under your thumb
-          whatever the page is scrolled to. `data-rails` lets the shell reserve
-          exactly as much gutter as there are rails. */}
+      {/* One fixed column at the right edge of the window, so it stays under
+          your thumb whatever the page is scrolled to. Both alphabets share it,
+          splitting the height between them. */}
       {(hasTv || hasMovies) && (
-        <div className="alpha-rails" data-rails={(hasTv ? 1 : 0) + (hasMovies ? 1 : 0)}>
+        <div className="alpha-rails">
           {hasTv && (
             <AlphaRail
               label="TV"
