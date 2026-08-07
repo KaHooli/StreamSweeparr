@@ -308,9 +308,12 @@ you've ever done, dry-run or live.
 - **The A–Z rails** run down the right edge of the window in a single column,
   top to bottom, on phones as well as desktops. TV shows and movies get an
   alphabet each — marked `TV` and `MOV`, TV above — so a letter always jumps
-  within the section you tapped it in. Letters nothing starts with are greyed
-  out, as are letters your search has filtered away, and the letter you're
-  currently reading is highlighted.
+  within the section you tapped it in. Only letters something starts with are
+  shown, and a search narrows the rail along with the grid. Each letter is given
+  space in proportion to how much of the page its titles take up, so the rail
+  doubles as a map of the scrollbar: where a letter sits in the rail is roughly
+  where the page sits when you're reading it. The letter you're currently on is
+  highlighted.
 
 <details>
 <summary>Where a provider logo takes you</summary>

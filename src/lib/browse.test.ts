@@ -3,6 +3,7 @@ import {
   RAIL_LETTERS,
   fold,
   letterAnchors,
+  letterSpans,
   matchesSearch,
   searchHaystack,
   searchTerms,
@@ -114,5 +115,35 @@ describe("letterAnchors", () => {
 
   it("has no entry for a letter nothing starts with", () => {
     expect(letterAnchors([{ title: "Bluey" }]).has("Q")).toBe(false);
+  });
+});
+
+describe("letterSpans", () => {
+  const anchors = [
+    { letter: "A", top: 0 },
+    { letter: "B", top: 300 },
+    { letter: "F", top: 400 },
+  ];
+
+  it("measures each bucket to the start of the next one", () => {
+    const spans = letterSpans(anchors, 600);
+    expect(spans.get("A")).toBe(300);
+    expect(spans.get("B")).toBe(100);
+  });
+
+  it("runs the last bucket to the bottom of the grid", () => {
+    expect(letterSpans(anchors, 600).get("F")).toBe(200);
+  });
+
+  it("keeps a bucket that measured nothing off zero, so it still gets a sliver", () => {
+    // Two letters sharing one grid row, and an unlaid-out grid: neither should
+    // end up with a flex-grow of 0 and vanish from the rail.
+    const spans = letterSpans([{ letter: "A", top: 40 }, { letter: "B", top: 40 }], 40);
+    expect(spans.get("A")).toBe(1);
+    expect(spans.get("B")).toBe(1);
+  });
+
+  it("has nothing to say about a section with no anchors", () => {
+    expect([...letterSpans([], 500)]).toEqual([]);
   });
 });

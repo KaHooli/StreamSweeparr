@@ -614,6 +614,10 @@ a.provider-link:hover {
   display: flex;
   flex-direction: column;
   align-items: center;
+  /* Letters have a minimum height, so a library with a full alphabet in both
+     sections can ask for more room than a short window has. Clip the tail
+     rather than let the column spill past the bottom of the screen. */
+  overflow: hidden;
   padding: 2px 2px max(2px, env(safe-area-inset-bottom));
   border-left: 1px solid var(--border);
   background: color-mix(in srgb, var(--bg) 88%, transparent);
@@ -621,7 +625,8 @@ a.provider-link:hover {
 }
 
 .alpha-rail {
-  /* Each alphabet takes an equal share of the window height. */
+  /* flex-grow is set per rail from the measured height of its section, so the
+     two alphabets divide the column the way they divide the page. */
   flex: 1 1 0;
   display: flex;
   flex-direction: column;
@@ -652,8 +657,12 @@ a.provider-link:hover {
 }
 .alpha-rail-letters button {
   appearance: none;
+  /* flex-grow is set per letter from how much page that letter covers. The
+     floor keeps a one-title letter legible instead of a 2px sliver; when the
+     floors add up to more than the column, the shrink factor shares the
+     shortfall out and the container clips rather than spills. */
   flex: 1 1 0;
-  min-height: 0;
+  min-height: var(--rail-letter);
   display: grid;
   place-items: center;
   overflow: hidden;
@@ -671,18 +680,13 @@ a.provider-link:hover {
   -webkit-tap-highlight-color: transparent;
   transition: color 0.12s ease, background 0.12s ease;
 }
-.alpha-rail-letters button:hover:not(:disabled) {
+.alpha-rail-letters button:hover {
   background: var(--surface-2);
   color: var(--text);
 }
 .alpha-rail-letters button.active {
   background: var(--accent);
   color: #fff;
-}
-.alpha-rail-letters button:disabled {
-  color: var(--text-dim);
-  opacity: 0.35;
-  cursor: default;
 }
 
 /* Phones: a narrower column, but still full height and still there. */
