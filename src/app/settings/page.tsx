@@ -19,22 +19,14 @@ import { AccountCard } from "@/components/settings/AccountCard";
 import { LoginOptionsCard } from "@/components/settings/LoginOptionsCard";
 import { UsersCard } from "@/components/settings/UsersCard";
 import { OidcCard } from "@/components/settings/OidcCard";
+import { InfoCard } from "@/components/settings/InfoCard";
+import { settingsTabs, resolveTab, type SettingsTabKey } from "@/lib/settingsTabs";
 
 /**
  * Settings shell: loads the settings payload once and renders the cards for
  * the active tab. Each card owns its own form state and saves independently —
  * they live in @/components/settings.
  */
-
-type TabKey = "watchmode" | "tmdb" | "connections" | "run" | "account";
-
-const TABS: { key: TabKey; label: string }[] = [
-  { key: "watchmode", label: "Watchmode (TV)" },
-  { key: "tmdb", label: "TheMovieDB (Movies)" },
-  { key: "connections", label: "Connections" },
-  { key: "run", label: "Run options" },
-  { key: "account", label: "Users & security" },
-];
 
 export default function SettingsPage() {
   const {
@@ -43,7 +35,17 @@ export default function SettingsPage() {
     isLoading,
     mutate,
   } = useSWR<SettingsDto>("/api/settings", fetcher);
-  const [tab, setTab] = useState<TabKey>("watchmode");
+  // Info is admin-only, so the strip is built from the session rather than
+  // being static. The API behind it is admin-guarded too — this only decides
+  // what to show.
+  const { data: session } = useSWR<{ user: { isAdmin?: boolean } | null }>(
+    "/api/auth/session",
+    fetcher
+  );
+  const tabs = settingsTabs({ isAdmin: !!session?.user?.isAdmin });
+  const [selected, setSelected] = useState<SettingsTabKey>("watchmode");
+  // Guards the gap before the session resolves, and a demotion mid-visit.
+  const tab = resolveTab(selected, tabs);
   const status = (error as { status?: number } | undefined)?.status;
   const refresh = () => {
     void mutate();
@@ -56,20 +58,25 @@ export default function SettingsPage() {
       </div>
 
       <div className="tabs" role="tablist">
-        {TABS.map((t) => (
+        {tabs.map((t) => (
           <button
             key={t.key}
             role="tab"
             aria-selected={tab === t.key}
             className={`tab ${tab === t.key ? "active" : ""}`}
-            onClick={() => setTab(t.key)}
+            onClick={() => setSelected(t.key)}
           >
             {t.label}
           </button>
         ))}
       </div>
 
-      {error ? (
+      {tab === "info" ? (
+        // Deliberately outside the settings fetch: Info is the tab you open
+        // *because* something is broken, so it must render even when
+        // /api/settings is the thing that's failing.
+        <InfoCard />
+      ) : error ? (
         // Never leave the page stuck on "Loading…" — surface what went wrong.
         <div className="card">
           <div className="banner err">

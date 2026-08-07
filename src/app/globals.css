@@ -272,6 +272,61 @@ a:hover {
   gap: 12px;
   margin: 32px 0 16px;
 }
+
+/* ---------------- Settings -> Info (diagnostics) ---------------- */
+.info-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.info-card {
+  margin-bottom: 16px;
+}
+.info-card h3 {
+  margin: 0 0 14px;
+  font-size: 15px;
+  letter-spacing: -0.01em;
+}
+/* Label/value pairs. Labels take a fixed column so values line up down the
+   card and stay scannable; on narrow screens the pair stacks instead. */
+.kv {
+  display: grid;
+  grid-template-columns: minmax(140px, 220px) 1fr;
+  gap: 8px 16px;
+  margin: 0;
+  font-size: 13px;
+}
+.kv dt {
+  color: var(--text-muted);
+  font-weight: 600;
+}
+.kv dd {
+  margin: 0;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.kv .mono {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+.kv .badge {
+  margin-top: 0;
+}
+.err-text {
+  color: var(--danger);
+}
+@media (max-width: 640px) {
+  .kv {
+    grid-template-columns: 1fr;
+    gap: 2px 0;
+  }
+  .kv dd {
+    margin-bottom: 8px;
+  }
+}
 .section-title h2 {
   margin: 0;
   font-size: 22px;

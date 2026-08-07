@@ -66,6 +66,7 @@ every run, and an optional timer to do it all automatically.
 
 **When something's wrong**
 [Troubleshooting](#-troubleshooting) ·
+[System info](#start-at-settings--info) ·
 [FAQ](#-faq) ·
 [Safety notes](#-safety-notes)
 
@@ -491,6 +492,32 @@ nothing to purge — the worker holds no account data.
 
 ## 🔧 Troubleshooting
 
+### Start at Settings → Info
+
+**Settings → Info** is a read-only snapshot of everything you'd otherwise need
+an SSH session to find out, and it's the first place to look when something is
+off:
+
+- **Application** — version, the commit and time the image was built, Node,
+  Next.js and Prisma versions, uptime and memory.
+- **Database** — whether PostgreSQL answers and how fast, its version, the host
+  and database name, size on disk, connections in use against the server's
+  limit, and which migrations have been applied.
+- **Library** — how many shows, movies, episodes and title-map rows are stored,
+  how many accounts exist, and how the last run finished.
+- **Configuration** — LIVE vs dry-run, every run option, which API keys are
+  *set* (never their values), how many countries/services/regions/providers are
+  selected, connection counts, and the sweep schedule.
+- **Environment** — `PUBLIC_URL`, `TRUST_PROXY`, `SSRF_ALLOW_PRIVATE`,
+  `SYNC_CONCURRENCY`, `LOG_LEVEL` and friends, as the app actually read them.
+
+**Copy diagnostics** puts the whole thing on your clipboard as plain text for a
+bug report. It contains no API keys, no passwords, and no database credentials —
+`DATABASE_URL` is reduced to host and database name before it ever reaches the
+page — so it's safe to paste in public.
+
+The tab is **administrators only**, and so is the endpoint behind it.
+
 | Symptom | Cause | Fix |
 |---|---|---|
 | **I sign in and get bounced straight back to the login page** | You're on plain HTTP, and browsers drop `Secure` cookies there | Set `AUTH_COOKIE_INSECURE=true`, or serve the app over HTTPS |
@@ -504,8 +531,9 @@ nothing to purge — the worker holds no account data.
 | **A title I want to keep keeps getting swept** | It's genuinely on one of your selected services | Tag it **`ss-skip`** — [how](#-keeping-titles-out-of-the-sweep) |
 | **The first sync is slow** | Nothing is cached yet, so every title gets looked up once | Normal. Every sync after that is far cheaper — [why](#-keeping-api-usage-low) |
 
-Still stuck? Turn up the detail with `LOG_LEVEL=debug`, and check the run log on
-the **Runs** page — it records every decision the sweep made and why.
+Still stuck? Turn up the detail with `LOG_LEVEL=debug`, check the run log on the
+**Runs** page — it records every decision the sweep made and why — and include
+the **Settings → Info** diagnostics when you report it.
 
 ---
 

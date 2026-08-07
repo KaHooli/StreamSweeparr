@@ -18,6 +18,13 @@ WORKDIR /app
 RUN apk add --no-cache openssl
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
+# Build stamps shown in Settings -> Info, so a bug report can name the exact
+# image it came from. Both are optional: a plain `docker build` just leaves
+# them empty and the tab shows the package version alone.
+ARG APP_COMMIT=""
+ARG APP_BUILT_AT=""
+ENV APP_COMMIT=$APP_COMMIT
+ENV APP_BUILT_AT=$APP_BUILT_AT
 # DATABASE_URL is not needed for `prisma generate` / `next build`.
 RUN npx prisma generate && npm run build
 
