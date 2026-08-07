@@ -146,6 +146,24 @@ describe("InfoCard", () => {
     expect(screen.getByText("84 MB")).toBeTruthy(); // database size
   });
 
+  it("names the running version in the footer", async () => {
+    respondWith(info);
+    renderCard();
+
+    const footer = (await screen.findByText(/Collected/)).closest("p");
+    expect(footer?.textContent).toContain("StreamSweeparr 1.0.0");
+    expect(footer?.textContent).toContain("abc1234");
+  });
+
+  it("omits the commit from the footer when the build didn't stamp one", async () => {
+    respondWith({ ...info, app: { ...info.app, commit: "" } });
+    renderCard();
+
+    const footer = (await screen.findByText(/Collected/)).closest("p");
+    expect(footer?.textContent).toContain("StreamSweeparr 1.0.0");
+    expect(footer?.textContent).not.toContain("·  ");
+  });
+
   it("reports an unreachable database instead of rendering nothing", async () => {
     respondWith({
       ...info,

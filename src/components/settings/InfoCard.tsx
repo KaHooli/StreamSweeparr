@@ -270,8 +270,14 @@ export function InfoCard() {
         />
       </InfoSection>
 
-      <p className="muted" style={{ marginTop: 12 }}>
-        Collected {formatWhen(data.collectedAt)}.
+      {/* The one line worth reading without scrolling up — "what version am I
+          on?" is the first question of most support threads. */}
+      <p className="muted info-footer">
+        <span>
+          StreamSweeparr <strong>{app.version}</strong>
+          {app.commit && <span className="mono"> · {app.commit}</span>}
+        </span>
+        <span>Collected {formatWhen(data.collectedAt)}</span>
       </p>
     </>
   );
