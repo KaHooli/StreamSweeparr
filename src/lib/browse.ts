@@ -81,3 +81,30 @@ export function letterAnchors(items: { title: string }[]): Map<string, number> {
   });
   return first;
 }
+
+/**
+ * How much of the page each letter's titles take up, keyed by letter.
+ *
+ * `anchors` is the first card of each bucket in render order with its vertical
+ * offset; `end` is the bottom of the grid. A bucket spans the distance to the
+ * next one, so a letter filling a third of the section measures a third of the
+ * section — which is what lets a rail sized by these weights track the
+ * scrollbar instead of giving 27 letters 27 equal slices.
+ *
+ * Measured rather than counted: with a wrapping grid, four titles and six
+ * titles can occupy the same single row, and a card's height varies with how
+ * far its title wraps. Pixels already know all of that.
+ */
+export function letterSpans(
+  anchors: { letter: string; top: number }[],
+  end: number
+): Map<string, number> {
+  const spans = new Map<string, number>();
+  anchors.forEach((a, i) => {
+    const next = i + 1 < anchors.length ? anchors[i + 1].top : end;
+    // Never zero or negative: these become flex-grow, and a bucket that
+    // measured nothing (an unlaid-out grid, say) should still get a sliver.
+    spans.set(a.letter, Math.max(next - a.top, 1));
+  });
+  return spans;
+}

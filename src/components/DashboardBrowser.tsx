@@ -6,6 +6,7 @@ import {
   OTHER_LETTER,
   RAIL_LETTERS,
   letterAnchors,
+  letterSpans,
   matchesSearch,
   searchTerms,
   sortLetter,
@@ -89,13 +90,19 @@ function countLabel(shown: number, total: number, noun: string): string {
  * down the right edge of the window — TV above movies — so a letter always
  * means "that letter, in this section" and neither jumps you into the other.
  *
- * `anchors` is built from the *filtered* list, so letters the search has emptied
- * are dead here too rather than jumping to a card that is no longer rendered.
+ * Only letters something starts with are rendered: the rail is a map of what is
+ * on the page, and a letter you cannot go to is not part of that map. `anchors`
+ * comes from the *filtered* list, so a search narrows the rail with the grid.
+ *
+ * Each letter is then sized by `spans` — how much of the page its titles take
+ * up — rather than getting an equal slice. That is what keeps a letter's
+ * position in the rail near the scrollbar's position when you are reading it.
  */
 function AlphaRail({
   label,
   sectionName,
   anchors,
+  spans,
   activeLetter,
   onJump,
 }: {
@@ -104,18 +111,31 @@ function AlphaRail({
   /** How the section is named to screen readers, e.g. "TV shows". */
   sectionName: string;
   anchors: Map<string, number>;
+  /** Measured page height per letter; absent until the grid has been laid out. */
+  spans: Map<string, number> | null;
   activeLetter: string | null;
   onJump: (letter: string) => void;
 }) {
+  const letters = RAIL_LETTERS.filter((letter) => anchors.has(letter));
+  if (!letters.length) return null;
+  const weight = (letter: string) => spans?.get(letter) ?? 1;
+  // The rail's own share of the column, so a section holding most of the page
+  // holds most of the rail. Before the first measurement every letter counts
+  // the same, which is also what the server renders.
+  const total = letters.reduce((sum, letter) => sum + weight(letter), 0);
+
   return (
-    <nav className="alpha-rail" aria-label={`Jump to letter in ${sectionName}`}>
+    <nav
+      className="alpha-rail"
+      aria-label={`Jump to letter in ${sectionName}`}
+      style={{ flexGrow: total }}
+    >
       <span className="alpha-rail-label" aria-hidden="true">
         {label}
       </span>
       <div className="alpha-rail-letters">
-        {RAIL_LETTERS.map((letter) => {
-          const has = anchors.has(letter);
-          const isActive = has && activeLetter === letter;
+        {letters.map((letter) => {
+          const isActive = activeLetter === letter;
           const named =
             letter === OTHER_LETTER ? "titles starting with a number or symbol" : letter;
           return (
@@ -123,11 +143,9 @@ function AlphaRail({
               key={letter}
               type="button"
               className={isActive ? "active" : undefined}
-              disabled={!has}
               aria-current={isActive ? "true" : undefined}
-              aria-label={
-                has ? `Jump to ${named} in ${sectionName}` : `No ${sectionName} under ${letter}`
-              }
+              aria-label={`Jump to ${named} in ${sectionName}`}
+              style={{ flexGrow: weight(letter) }}
               onClick={() => onJump(letter)}
             >
               {letter}
@@ -156,15 +174,14 @@ export function DashboardBrowser({
   movies: DashboardMovie[];
 }) {
   const [query, setQuery] = useState("");
-  // A section gets a rail when it has titles at all — a rail that appears and
-  // disappears as you type would move the other one out from under your thumb.
-  const hasTv = tvShows.length > 0;
-  const hasMovies = movies.length > 0;
   // Typing stays responsive on big libraries: the grids re-filter at their own
   // pace while the input updates immediately.
   const deferredQuery = useDeferredValue(query);
   const [activeSection, setActiveSection] = useState<Section>("tv");
   const [activeLetter, setActiveLetter] = useState<string | null>(null);
+  // Page height per letter, per section — null until the grids have been laid
+  // out and measured. See the measuring effect below.
+  const [spans, setSpans] = useState<Record<Section, Map<string, number>> | null>(null);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const moviesHeadingRef = useRef<HTMLDivElement>(null);
@@ -182,6 +199,50 @@ export function DashboardBrowser({
 
   const tvAnchors = useMemo(() => letterAnchors(shownTv), [shownTv]);
   const movieAnchors = useMemo(() => letterAnchors(shownMovies), [shownMovies]);
+
+  // Measure how much page each letter covers, so the rail can be sized like a
+  // scrollbar rather than an even 27 slices.
+  //
+  // It has to be measured from the laid-out grid: the number of columns comes
+  // from the viewport, and a wrapping grid gives four titles and six titles the
+  // same single row. Re-measured whenever the grids change size — filtering,
+  // window resize, a title wrapping onto a second line — via a ResizeObserver
+  // on the content column, which the rails sit outside of, so writing the
+  // result back can't feed another resize.
+  useEffect(() => {
+    const root = containerRef.current;
+    if (!root) return;
+    const measure = () => {
+      const read = (section: Section) => {
+        const anchors = [...root.querySelectorAll<HTMLElement>(
+          `[data-section="${section}"][data-letter]`
+        )];
+        if (!anchors.length) return new Map<string, number>();
+        const grid = anchors[0].closest(".grid") ?? anchors[anchors.length - 1];
+        return letterSpans(
+          anchors.map((el) => ({
+            letter: el.dataset.letter ?? "",
+            top: el.getBoundingClientRect().top,
+          })),
+          grid.getBoundingClientRect().bottom
+        );
+      };
+      setSpans({ tv: read("tv"), movie: read("movie") });
+    };
+    measure();
+    // A resize can re-flow the grid into a different number of columns. The
+    // observer catches that and more (a font finishing loading, an image box
+    // settling); the window listener is what keeps this working where
+    // ResizeObserver isn't available.
+    window.addEventListener("resize", measure);
+    const observer =
+      typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
+    observer?.observe(root);
+    return () => {
+      window.removeEventListener("resize", measure);
+      observer?.disconnect();
+    };
+  }, [shownTv, shownMovies]);
 
   // Track what's on screen: the section, and the last letter heading to have
   // scrolled past the active line.
@@ -282,7 +343,7 @@ export function DashboardBrowser({
                 ? `Nothing on this page matches “${deferredQuery.trim()}”.`
                 : `${countLabel(shownTv.length, tvShows.length, "show")} · ` +
                   `${countLabel(shownMovies.length, movies.length, "movie")}`
-              : hasTv && hasMovies
+              : tvShows.length > 0 && movies.length > 0
                 ? "Press / to search. The A–Z rails jump through TV shows and movies separately."
                 : "Press / to search. Use the A–Z rail to jump through the list."}
           </p>
@@ -381,29 +442,28 @@ export function DashboardBrowser({
 
       {/* One fixed column at the right edge of the window, so it stays under
           your thumb whatever the page is scrolled to. Both alphabets share it,
-          splitting the height between them. */}
-      {(hasTv || hasMovies) && (
+          each taking the share of the height its section takes of the page. A
+          rail with nothing to point at renders nothing at all. */}
+      {(tvAnchors.size > 0 || movieAnchors.size > 0) && (
         <div className="alpha-rails">
-          {hasTv && (
-            <AlphaRail
-              label="TV"
-              sectionName="TV shows"
-              anchors={tvAnchors}
-              // Only the section you're reading highlights a letter; a rail for
-              // the section off-screen would otherwise claim you were at "Z".
-              activeLetter={activeSection === "tv" ? activeLetter : null}
-              onJump={(letter) => jumpTo("tv", letter)}
-            />
-          )}
-          {hasMovies && (
-            <AlphaRail
-              label="MOV"
-              sectionName="movies"
-              anchors={movieAnchors}
-              activeLetter={activeSection === "movie" ? activeLetter : null}
-              onJump={(letter) => jumpTo("movie", letter)}
-            />
-          )}
+          <AlphaRail
+            label="TV"
+            sectionName="TV shows"
+            anchors={tvAnchors}
+            spans={spans?.tv ?? null}
+            // Only the section you're reading highlights a letter; a rail for
+            // the section off-screen would otherwise claim you were at "Z".
+            activeLetter={activeSection === "tv" ? activeLetter : null}
+            onJump={(letter) => jumpTo("tv", letter)}
+          />
+          <AlphaRail
+            label="MOV"
+            sectionName="movies"
+            anchors={movieAnchors}
+            spans={spans?.movie ?? null}
+            activeLetter={activeSection === "movie" ? activeLetter : null}
+            onJump={(letter) => jumpTo("movie", letter)}
+          />
         </div>
       )}
     </div>

@@ -60,9 +60,16 @@ const titlesIn = (headingId: string): string[] => {
   return [];
 };
 
+const railOf = (rail: "TV shows" | "movies") =>
+  screen.getByRole("navigation", { name: `Jump to letter in ${rail}` });
+
 /** A letter button in one of the two rails — TV's or the movies' own. */
 const railButton = (rail: "TV shows" | "movies", letter: string) =>
-  within(screen.getByRole("navigation", { name: `Jump to letter in ${rail}` })).getByText(letter);
+  within(railOf(rail)).getByText(letter);
+
+/** The letters a rail is currently offering, in order. */
+const railLetters = (rail: "TV shows" | "movies") =>
+  [...railOf(rail).querySelectorAll("button")].map((b) => b.textContent);
 
 const rails = () => screen.queryAllByRole("navigation", { name: /jump to letter/i });
 
@@ -71,17 +78,20 @@ const search = () => screen.getByRole("searchbox");
 let scrolledTo: HTMLElement[] = [];
 /** Viewport position per element; jsdom reports 0 for everything by default. */
 let tops: Map<Element, number>;
+/** Bottom edge per element, for the grid the letter spans are measured against. */
+let bottoms: Map<Element, number>;
 
 beforeEach(() => {
   scrolledTo = [];
   tops = new Map();
+  bottoms = new Map();
   Element.prototype.scrollIntoView = function scrollIntoView(this: Element) {
     scrolledTo.push(this as HTMLElement);
   };
   vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
     this: Element
   ) {
-    return { top: tops.get(this) ?? 0 } as DOMRect;
+    return { top: tops.get(this) ?? 0, bottom: bottoms.get(this) ?? 0 } as DOMRect;
   });
 });
 
@@ -201,11 +211,11 @@ describe("DashboardBrowser A–Z rails", () => {
     expect(rails()).toEqual([]);
   });
 
-  it("offers '#' plus every letter, disabling the ones nothing starts with", () => {
+  it("shows only the letters something starts with, in alphabetical order", () => {
     render(<DashboardBrowser tvShows={shows} movies={movies} />);
-    expect(railButton("TV shows", "#")).toHaveProperty("disabled", true);
-    expect(railButton("TV shows", "A")).toHaveProperty("disabled", false);
-    expect(railButton("TV shows", "Q")).toHaveProperty("disabled", true);
+    // No "#", no Q — nothing starts with either, so neither is in the rail.
+    expect(railLetters("TV shows")).toEqual(["A", "B", "F"]);
+    expect(railLetters("movies")).toEqual(["A", "B", "D"]);
   });
 
   it("jumps to the first card under the letter in its own section", async () => {
@@ -223,11 +233,11 @@ describe("DashboardBrowser A–Z rails", () => {
 
   it("reflects each section's own alphabet", () => {
     render(<DashboardBrowser tvShows={shows} movies={movies} />);
-    // D is a movie-only letter, F a TV-only one.
-    expect(railButton("TV shows", "D")).toHaveProperty("disabled", true);
-    expect(railButton("movies", "D")).toHaveProperty("disabled", false);
-    expect(railButton("TV shows", "F")).toHaveProperty("disabled", false);
-    expect(railButton("movies", "F")).toHaveProperty("disabled", true);
+    // D is a movie-only letter, F a TV-only one: each appears in one rail only.
+    expect(railLetters("TV shows")).toContain("F");
+    expect(railLetters("TV shows")).not.toContain("D");
+    expect(railLetters("movies")).toContain("D");
+    expect(railLetters("movies")).not.toContain("F");
   });
 
   it("re-targets a letter at what the search left visible", async () => {
@@ -239,26 +249,25 @@ describe("DashboardBrowser A–Z rails", () => {
     expect(scrolledTo[0].textContent).toContain("Andor");
   });
 
-  it("disables the letters the search filtered away", () => {
+  it("drops the letters the search filtered away", () => {
     render(<DashboardBrowser tvShows={shows} movies={movies} />);
     fireEvent.change(search(), { target: { value: "bluey" } });
-    expect(railButton("TV shows", "A")).toHaveProperty("disabled", true);
-    expect(railButton("TV shows", "B")).toHaveProperty("disabled", false);
+    expect(railLetters("TV shows")).toEqual(["B"]);
   });
 
-  it("keeps the rails up while a search empties one of them", () => {
+  it("drops a rail entirely when the search empties its section", () => {
     render(<DashboardBrowser tvShows={shows} movies={movies} />);
     fireEvent.change(search(), { target: { value: "bluey" } });
-    // Every movie is filtered out, but its rail stays put rather than shifting
-    // the TV rail out from under the pointer.
-    expect(rails()).toHaveLength(2);
-    expect(railButton("movies", "A")).toHaveProperty("disabled", true);
+    // No movie matches, so there is no movie letter worth pointing at.
+    expect(rails().map((r) => r.getAttribute("aria-label"))).toEqual([
+      "Jump to letter in TV shows",
+    ]);
   });
 
   it("keeps titles starting with a digit reachable under '#'", async () => {
     render(<DashboardBrowser tvShows={[tvShow("9-1-1"), ...shows]} movies={movies} />);
     await scrollToTop();
-    expect(railButton("TV shows", "#")).toHaveProperty("disabled", false);
+    expect(railLetters("TV shows")).toEqual(["#", "A", "B", "F"]);
     fireEvent.click(railButton("TV shows", "#"));
     expect(scrolledTo[0].textContent).toContain("9-1-1");
   });
@@ -270,5 +279,50 @@ describe("DashboardBrowser A–Z rails", () => {
     // the movies rail highlights nothing, because that section is below the fold.
     expect(railButton("TV shows", "F").className).toContain("active");
     expect(rails()[1].querySelectorAll("button.active")).toHaveLength(0);
+  });
+});
+
+describe("DashboardBrowser rail proportions", () => {
+  /**
+   * Lay the anchor cards out at known offsets and let the component measure
+   * them. A: 300px of page, B: 100px, F: 200px — so the rail should hand A
+   * three times the height of B, the way a scrollbar would.
+   */
+  async function layOutTv(offsets: Record<string, number>, gridBottom: number) {
+    const anchors = [...document.querySelectorAll<HTMLElement>('[data-section="tv"][data-letter]')];
+    for (const el of anchors) tops.set(el, offsets[el.dataset.letter ?? ""] ?? 0);
+    const grid = anchors[0]?.closest(".grid");
+    if (grid) bottoms.set(grid, gridBottom);
+    await act(async () => {
+      window.dispatchEvent(new Event("resize"));
+      await new Promise((resolve) => setTimeout(resolve, 32));
+    });
+  }
+
+  const grow = (rail: "TV shows" | "movies", letter: string) =>
+    Number(railButton(rail, letter).style.flexGrow);
+
+  it("sizes each letter by how much of the page it covers", async () => {
+    render(<DashboardBrowser tvShows={shows} movies={movies} />);
+    await layOutTv({ A: 0, B: 300, F: 400 }, 600);
+    expect(grow("TV shows", "A")).toBe(300);
+    expect(grow("TV shows", "B")).toBe(100);
+    expect(grow("TV shows", "F")).toBe(200);
+  });
+
+  it("gives each rail the share of the column its section takes of the page", async () => {
+    render(<DashboardBrowser tvShows={shows} movies={movies} />);
+    await layOutTv({ A: 0, B: 300, F: 400 }, 600);
+    // The TV section measured 600px; the movies grid is unlaid-out here, so its
+    // three letters fall back to a sliver each rather than to nothing.
+    expect(Number(railOf("TV shows").style.flexGrow)).toBe(600);
+    expect(Number(railOf("movies").style.flexGrow)).toBe(3);
+  });
+
+  it("falls back to equal letters before anything has been measured", () => {
+    // What the server renders, and the first client paint: no layout to read.
+    render(<DashboardBrowser tvShows={shows} movies={movies} />);
+    expect(grow("TV shows", "A")).toBe(1);
+    expect(grow("TV shows", "B")).toBe(1);
   });
 });
