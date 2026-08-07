@@ -300,6 +300,14 @@ you've ever done, dry-run or live.
 - **Movies on streaming** — a **Monitored / Unmonitored** badge per film.
 - **Provider logos** under each card link to that title on that service — a
   direct deep link where one exists, otherwise the service's own search for it.
+- **Search** narrows both grids as you type — by title, year, or streaming
+  service, so "netflix 2019" is a valid thing to ask for. Press <kbd>/</kbd> to
+  jump to the box from anywhere on the page, <kbd>Esc</kbd> to clear it. It
+  filters what the page already loaded, so there's no round trip and no waiting.
+- **The A–Z rail** down the right edge jumps to the first title under a letter
+  in whichever section you're reading, and falls through to the other one if
+  that letter is only there. Letters nothing starts with are greyed out — as are
+  letters your search has filtered away.
 
 <details>
 <summary>Where a provider logo takes you</summary>
