@@ -401,10 +401,37 @@ a:hover {
 }
 
 /* --------------------------- Media grids --------------------------- */
+/* Tiles want to be ~170px, but never at the cost of dropping below --tile-cols
+   per row: on a phone the content column is narrower than two ideal tiles, so
+   the track minimum is capped at the row split --tile-cols ways (gaps taken
+   out) and that many always fit. Where the ideal tile is the smaller of the
+   two the cap does nothing, so wider screens keep filling in extra columns. */
 .grid {
+  --tile-gap: 18px;
+  --tile-min: 170px;
+  --tile-cols: 2;
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
-  gap: 18px;
+  grid-template-columns: repeat(
+    auto-fill,
+    minmax(
+      min(
+        var(--tile-min),
+        calc(
+          (100% - (var(--tile-cols) - 1) * var(--tile-gap)) / var(--tile-cols)
+        )
+      ),
+      1fr
+    )
+  );
+  gap: var(--tile-gap);
+}
+
+/* Landscape has the width for a third tile even on a phone, and the height to
+   spare — the same row of posters is that much shallower turned sideways. */
+@media (orientation: landscape) {
+  .grid {
+    --tile-cols: 3;
+  }
 }
 
 .poster-card {
@@ -493,6 +520,23 @@ a.provider-link:hover {
   border-radius: 6px;
   object-fit: cover;
   background: var(--surface-2);
+}
+
+/* Phones: two tiles across, so the tile furniture is scaled to match. */
+@media (max-width: 640px) {
+  .grid {
+    --tile-gap: 12px;
+  }
+  .poster-body {
+    padding: 10px;
+  }
+  .poster-title {
+    font-size: 13px;
+  }
+  .provider-logo {
+    width: 24px;
+    height: 24px;
+  }
 }
 
 /* clickable stat labels that jump to the matching section */
@@ -709,10 +753,17 @@ a.provider-link:hover {
 .progress .row {
   display: flex;
   justify-content: space-between;
+  gap: 8px;
   font-size: 11px;
   color: var(--text-dim);
   font-weight: 600;
   margin-bottom: 4px;
+}
+/* The generic `.row` form layout gives children a 200px minimum, which is wider
+   than a tile at two across: the caption is clipped instead of wrapping. */
+.progress .row > * {
+  flex: 0 1 auto;
+  min-width: 0;
 }
 .progress .track {
   height: 8px;
