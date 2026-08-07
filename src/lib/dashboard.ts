@@ -9,6 +9,7 @@
  * that rewrites Host.
  */
 import { prisma } from "./db";
+import { providerSearchUrl } from "./providerSites";
 import { sanitizeExternalUrl, tmdbWatchUrl } from "./urls";
 
 export interface DashboardService {
@@ -30,6 +31,7 @@ export interface DashboardTvShow {
   unmonitoredEpisodes: number;
   streamingEpisodes: number;
   unmonitoredPct: number;
+  tmdbId: number | null;
   services: DashboardService[];
   lastSyncedAt: Date;
 }
@@ -77,6 +79,7 @@ export async function getDashboardData(): Promise<DashboardData> {
         totalEpisodes: true,
         monitoredEpisodes: true,
         streamingEpisodes: true,
+        tmdbId: true,
         streamingInfo: true,
         lastSyncedAt: true,
       },
@@ -120,11 +123,11 @@ export async function getDashboardData(): Promise<DashboardData> {
       unmonitoredEpisodes: unmonitored,
       streamingEpisodes: s.streamingEpisodes,
       unmonitoredPct,
-      // Link each logo to the show on that service using Watchmode's `web_url`
-      // and nothing else: `ios_url`/`android_url` are app-scheme links a browser
-      // can't open, and a TMDB "where to watch" page isn't the service. A source
-      // Watchmode gives us no link for renders as a plain (unlinked) logo.
-      services: dedupeServices(s.streamingInfo),
+      tmdbId: s.tmdbId,
+      // Link each logo to the show on that service, preferring Watchmode's
+      // `web_url` deep link. `ios_url`/`android_url` are deliberately ignored:
+      // they're app-scheme links a browser can't open.
+      services: dedupeServices(s.streamingInfo, tmdbWatchUrl("tv", s.tmdbId), s.title),
       lastSyncedAt: s.lastSyncedAt,
     };
   });
@@ -137,9 +140,9 @@ export async function getDashboardData(): Promise<DashboardData> {
     monitored: m.monitored,
     hasFile: m.hasFile,
     tmdbId: m.tmdbId,
-    // Movie availability comes from TMDB, so link each provider logo to TMDB's
-    // "where to watch" page for the title.
-    services: dedupeServices(m.streamingInfo, tmdbWatchUrl("movie", m.tmdbId)),
+    // Movie availability comes from TMDB, which gives no per-provider link, so
+    // every logo here resolves through the service search / TMDB fallbacks.
+    services: dedupeServices(m.streamingInfo, tmdbWatchUrl("movie", m.tmdbId), m.title),
     lastSyncedAt: m.lastSyncedAt,
   }));
 
@@ -156,12 +159,19 @@ export async function getDashboardData(): Promise<DashboardData> {
 
 /**
  * One entry per streaming service, with its logo and a link to the title.
- * `fallbackUrl` is used when the stored entry has no deep link of its own
- * (TMDB gives us availability but not per-provider links).
+ *
+ * The link is resolved in descending order of usefulness, so a logo is only
+ * left unlinked when we have nothing at all to point it at:
+ *  1. the stored deep link to the title on that service (Watchmode `web_url`);
+ *  2. that service's own search page for `title` — one click from the title,
+ *     and still on the service the badge claims it's streaming on;
+ *  3. `fallbackUrl` — the TMDB "where to watch" page, which at least lists the
+ *     providers — for services we have no known search URL for.
  */
 export function dedupeServices(
   info: unknown,
-  fallbackUrl: string | null = null
+  fallbackUrl: string | null = null,
+  title = ""
 ): DashboardService[] {
   if (!Array.isArray(info)) return [];
   const seen = new Set<string>();
@@ -169,6 +179,7 @@ export function dedupeServices(
   for (const s of info as {
     name: string;
     type: string;
+    region?: string | null;
     logo?: string | null;
     webUrl?: string | null;
   }[]) {
@@ -178,8 +189,11 @@ export function dedupeServices(
       name: s.name,
       type: s.type,
       logo: s.logo ?? null,
-      // Guard against non-URL values already persisted by earlier syncs.
-      url: sanitizeExternalUrl(s.webUrl) ?? fallbackUrl,
+      url:
+        // Guard against non-URL values already persisted by earlier syncs.
+        sanitizeExternalUrl(s.webUrl) ??
+        providerSearchUrl(s.name, title, s.region) ??
+        fallbackUrl,
     });
   }
   return out;

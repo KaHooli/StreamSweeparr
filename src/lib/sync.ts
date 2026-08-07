@@ -352,7 +352,7 @@ export async function runSync(progress: ProgressFn = noopProgress): Promise<Sync
     progress(
       "warn",
       `${result.tvMissingLinks} series have a streaming service Watchmode gives no web_url for — ` +
-        `those provider logos are shown without a link.`
+        `those provider logos fall back to a search on the service itself.`
     );
   }
 

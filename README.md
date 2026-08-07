@@ -298,22 +298,31 @@ you've ever done, dry-run or live.
 - **TV shows on streaming** — a progress bar per show, counting how many
   episodes are unmonitored out of the total that are on streaming.
 - **Movies on streaming** — a **Monitored / Unmonitored** badge per film.
-- **Provider logos** under each card link straight to that title on that
-  service.
+- **Provider logos** under each card link to that title on that service — a
+  direct deep link where one exists, otherwise the service's own search for it.
 
 <details>
-<summary>Why are some TV logos not clickable?</summary>
+<summary>Where a provider logo takes you</summary>
 
-Watchmode only returns *per-episode* deep links on paid plans; free plans get a
-placeholder string, which the app discards. So for TV it fetches **show-level**
-links instead, on their own 7-day schedule and only for shows that are actually
-missing one — a show doesn't sit on unlinked logos for a week just because its
-availability is still fresh.
+Every logo links somewhere. Which link you get depends on what's actually
+available for that title:
 
-If Watchmode has no link at all for a source, the logo renders unlinked rather
-than pointing somewhere wrong, and the run log tells you how many shows that
-affected. Movies always link to the TMDB page, because TMDB gives availability
-but no per-provider link.
+1. **A deep link to the title on that service**, when Watchmode has one.
+   Watchmode only returns *per-episode* deep links on paid plans; free plans get
+   a placeholder string, which the app discards. So for TV it fetches
+   **show-level** links instead, on their own 7-day schedule and only for shows
+   that are actually missing one — a show doesn't sit on second-best links for a
+   week just because its availability is still fresh.
+2. **That service's own search page for the title**, when there's no deep link.
+   One click further from the title, but still on the service the logo claims
+   it's streaming on. This is what movies and free-plan TV shows normally get,
+   and the run log tells you how many shows fell back to it.
+3. **The TMDB "where to watch" page**, for the handful of services whose search
+   URL the app doesn't know. Rather than invent a link into a service, it sends
+   you to the page that lists the providers.
+
+Only a title with no TMDB id on a service in that third group ends up with an
+unlinked logo.
 
 </details>
 
@@ -483,7 +492,7 @@ nothing to purge — the worker holds no account data.
 | **My API keys suddenly read as "not configured"** | `AUTH_SECRET` changed — it's also the encryption key | Restore the old secret, or re-enter the keys. [Details](#-encrypted-credentials) |
 | **Pages time out on a small NAS / VM** | Prisma's connection pool is sized from CPU count | Append `&connection_limit=10&pool_timeout=20` to `DATABASE_URL` |
 | **No install option in my browser** | Service workers need a secure context | Serve over HTTPS (or test on `localhost`) |
-| **Some TV provider logos aren't clickable** | Free Watchmode plans don't include per-episode deep links | Working as intended — [why](#what-the-dashboard-shows-you) |
+| **A provider logo opens a search page, not the title** | Free Watchmode plans don't include per-episode deep links, and TMDB has none for movies | Working as intended — [what each link is](#what-the-dashboard-shows-you) |
 | **A title I want to keep keeps getting swept** | It's genuinely on one of your selected services | Tag it **`ss-skip`** — [how](#-keeping-titles-out-of-the-sweep) |
 | **The first sync is slow** | Nothing is cached yet, so every title gets looked up once | Normal. Every sync after that is far cheaper — [why](#-keeping-api-usage-low) |
 
