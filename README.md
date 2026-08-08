@@ -92,7 +92,7 @@ Gather these first — the setup wizard asks for them in this order:
 | ✅ | **Somewhere to run it** | Docker (easiest), or Node.js 24 |
 | ✅ | **A PostgreSQL server, v13+** | Comes with the Docker Compose file below |
 | ✅ | **Sonarr and/or Radarr** | v3 or v4 — you need the base URL and API key for each |
-| 📺 | **A Watchmode API key** | [api.watchmode.com](https://api.watchmode.com) — *only if you use Sonarr* |
+| 📺 | **A Watchmode API key** | [api.watchmode.com](https://api.watchmode.com) — *only if you use Sonarr*. You can add several, and they're used in turn |
 | 🎬 | **A TheMovieDB API key** | [themoviedb.org](https://www.themoviedb.org) — *only if you use Radarr* |
 | ⭐ | **A Seerr server** | Optional — lets the app auto-discover your Sonarr/Radarr instances |
 
@@ -237,6 +237,14 @@ Single sign-on and extra user accounts live on that tab too — see
 ### 2. Add your Watchmode key — *TV only*
 
 **Settings → Watchmode (TV)** → paste the key → **Test &amp; save**.
+
+Once a key is saved, **+ Add another key** appears. Add as many as you have (up
+to 10): they're numbered, and **every request starts at key 1 and moves to the
+next one only when a key is rejected or out of credit**. That pools several free
+keys into one budget — useful for the first sync of a large TV library, which is
+the only expensive one. **Test &amp; save** reports each key's quota separately,
+so you can see which ones still have credit. A key that's already spent is still
+worth keeping: it comes back when Watchmode resets your monthly quota.
 
 Then pick:
 - **Countries** you stream in (alphabetical, with flags), and
@@ -581,7 +589,9 @@ Only for the media types you use — Watchmode for TV (Sonarr), TMDB for movies
 It's built not to. The metered search endpoint is essentially never used (ids
 are resolved from a locally imported map), availability is cached for 7 days,
 and on paid plans a changes feed means unchanged shows aren't re-fetched at all.
-Full detail in [Keeping API usage low](#-keeping-api-usage-low).
+And if one key isn't enough for the first pass over a big library, you can save
+several — they're used in order, each one taking over when the one before it
+runs out. Full detail in [Keeping API usage low](#-keeping-api-usage-low).
 
 </details>
 
@@ -839,7 +849,10 @@ place as changes are applied. The run log reports how many episode fetches were
 made versus skipped.
 
 The first sync after setup still pulls every series once, because nothing is
-cached yet. Every sync after that is cheap.
+cached yet. Every sync after that is cheap. If that first sync is bigger than a
+single free key's monthly credit, add more keys under **Settings → Watchmode
+(TV)** — a run that exhausts key 1 carries on with key 2 rather than stopping
+half way, and the run log says when it switched.
 
 **Movies (TMDB)** get the same treatment on a shorter clock: TMDB has no changes
 feed, so a movie looked up successfully in the last **24 hours** is served from

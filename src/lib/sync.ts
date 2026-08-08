@@ -216,7 +216,8 @@ export async function runSync(progress: ProgressFn = noopProgress): Promise<Sync
   // TV episodes use Watchmode; movies use TMDB. Validate only what's needed
   // for the connection types actually configured.
   if (hasSonarr) {
-    if (!settings.watchmodeApiKey) throw new Error("Watchmode API key is not configured (needed for TV).");
+    if (!settings.watchmodeApiKeys.length)
+      throw new Error("Watchmode API key is not configured (needed for TV).");
     if (!settings.countries.length) throw new Error("No Watchmode countries selected (needed for TV).");
     if (!settings.serviceIds.length) throw new Error("No Watchmode streaming services selected (needed for TV).");
   }
@@ -237,7 +238,7 @@ export async function runSync(progress: ProgressFn = noopProgress): Promise<Sync
   // Timestamp captured *before* work starts; becomes the next changes cursor.
   const syncStartedAt = new Date();
 
-  if (hasSonarr && settings.watchmodeApiKey) {
+  if (hasSonarr && settings.watchmodeApiKeys.length) {
     // Ensure the local Title ID map is fresh (self-throttles to a 12h window).
     // A failure here is non-fatal: findTitleId falls back to the search API.
     try {
@@ -245,7 +246,22 @@ export async function runSync(progress: ProgressFn = noopProgress): Promise<Sync
     } catch (e) {
       errors.push(`Title ID map refresh failed (using search fallback): ${(e as Error).message}`);
     }
-    wm = new WatchmodeClient(settings.watchmodeApiKey);
+    // The whole key ring, so a run that exhausts one key carries on with the
+    // next instead of failing halfway through the library.
+    wm = new WatchmodeClient(settings.watchmodeApiKeys, {
+      onKeyExhausted: ({ number, total, error }) => {
+        // Read after the key was retired, so this is the key that takes over.
+        const next = wm?.activeKeyNumber;
+        progress(
+          "info",
+          `Watchmode API key ${number}/${total} is spent (${error.message})` +
+            (next ? ` — switching to key ${next}.` : " — no keys left.")
+        );
+      },
+    });
+    if (wm.keyCount > 1) {
+      progress("info", `Using ${wm.keyCount} Watchmode API keys, starting with key 1.`);
+    }
 
     // Detect the account plan (cached). Only paid plans can use the premium
     // Changes API; free plans use the 7-day TTL fallback. Re-probe if we've

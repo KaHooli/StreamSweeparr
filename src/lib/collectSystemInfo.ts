@@ -195,6 +195,7 @@ async function configInfo(): Promise<ConfigInfo | null> {
       removeMissingTmdbMovies: s.removeMissingTmdbMovies,
       // Presence only — the decrypted values never leave this function.
       watchmodeApiKeySet: !!s.watchmodeApiKey,
+      watchmodeApiKeyCount: s.watchmodeApiKeys.length,
       watchmodePlan: s.watchmodePlan ?? null,
       countries: s.countries.length,
       serviceIds: s.serviceIds.length,

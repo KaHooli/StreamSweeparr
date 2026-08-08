@@ -9,7 +9,14 @@
  *   GET /v1/title/{id}/episodes/?regions= -> episodes incl. per-episode sources
  *
  * Auth is sent with the `X-API-Key` header (recommended over the query string).
+ *
+ * The client is constructed with a *ring* of keys (usually one). Every request
+ * starts at key 1; a key that is rejected or out of quota is retired for the
+ * lifetime of the client and the request is retried on the next key. See
+ * `lib/watchmodeKeys.ts` for the ring itself.
  */
+
+import { normalizeWatchmodeKeys } from "./watchmodeKeys";
 
 const BASE = "https://api.watchmode.com/v1";
 
@@ -94,34 +101,117 @@ function cacheSet(key: string, value: unknown, ttlMs: number) {
   cache.set(key, { value, expires: Date.now() + ttlMs });
 }
 
+/** Notified when a key is retired, so a sync can say so in its log. */
+export interface WatchmodeKeyExhaustedInfo {
+  /** 1-based number of the key that was retired. */
+  number: number;
+  /** How many keys are configured in total. */
+  total: number;
+  error: WatchmodeError;
+}
+
+export interface WatchmodeClientOptions {
+  onKeyExhausted?: (info: WatchmodeKeyExhaustedInfo) => void;
+}
+
+/**
+ * A status that means "this key is done": 401/403 are Watchmode's answer for an
+ * invalid key *and* for one that has spent its credits, 429 for a key that is
+ * being rate limited. All three are reasons to move to the next key rather than
+ * to fail the request.
+ */
+function isKeyExhausted(e: unknown): e is WatchmodeError {
+  const status = e instanceof WatchmodeError ? e.status : undefined;
+  return status === 401 || status === 403 || status === 429;
+}
+
 export class WatchmodeClient {
-  constructor(private apiKey: string) {
-    if (!apiKey) throw new WatchmodeError("Watchmode API key is not configured.");
+  private readonly keys: string[];
+  private readonly onKeyExhausted?: (info: WatchmodeKeyExhaustedInfo) => void;
+  /** Indices of keys retired during this client's lifetime. */
+  private readonly exhausted = new Set<number>();
+  /** Why the last key was retired — the error reported once all keys are gone. */
+  private lastExhaustedError: WatchmodeError | null = null;
+
+  constructor(apiKey: string | readonly string[], opts: WatchmodeClientOptions = {}) {
+    this.keys = normalizeWatchmodeKeys(Array.isArray(apiKey) ? apiKey : [apiKey as string]);
+    if (!this.keys.length) throw new WatchmodeError("Watchmode API key is not configured.");
+    this.onKeyExhausted = opts.onKeyExhausted;
+  }
+
+  /** How many keys this client can draw on. */
+  get keyCount(): number {
+    return this.keys.length;
+  }
+
+  /** 1-based number of the key the next request will use, or null if all are spent. */
+  get activeKeyNumber(): number | null {
+    const index = this.keys.findIndex((_, i) => !this.exhausted.has(i));
+    return index === -1 ? null : index + 1;
+  }
+
+  /** Indices still worth trying, in ring order (always starting at key 1). */
+  private *liveKeys(): Generator<number> {
+    for (let i = 0; i < this.keys.length; i++) {
+      if (!this.exhausted.has(i)) yield i;
+    }
   }
 
   private async get<T>(
     path: string,
     params: Record<string, string | number | undefined> = {},
     ttlMs = 0,
-    timeoutMs = 20_000
+    timeoutMs = 20_000,
+    opts: { rotate?: boolean } = {}
   ): Promise<T> {
     const url = new URL(`${BASE}${path}`);
     for (const [k, v] of Object.entries(params)) {
       if (v !== undefined && v !== null && v !== "") url.searchParams.set(k, String(v));
     }
-    const cacheKey = url.toString();
+    // A response says nothing about which key fetched it, so the cache is keyed
+    // on the URL alone and is shared across the whole ring.
+    const href = url.toString();
     if (ttlMs > 0) {
-      const cached = cacheGet<T>(cacheKey);
+      const cached = cacheGet<T>(href);
       if (cached !== undefined) return cached;
     }
 
+    const rotate = opts.rotate !== false;
+    for (const index of this.liveKeys()) {
+      try {
+        const data = await this.fetchWith<T>(this.keys[index], index, href, timeoutMs);
+        if (ttlMs > 0) cacheSet(href, data, ttlMs);
+        return data;
+      } catch (e) {
+        // Anything that isn't "this key is spent" is a real failure: retrying it
+        // on another key would burn credits to get the same answer.
+        if (!rotate || !isKeyExhausted(e)) throw e;
+        this.exhausted.add(index);
+        this.lastExhaustedError = e;
+        this.onKeyExhausted?.({ number: index + 1, total: this.keys.length, error: e });
+      }
+    }
+
+    throw (
+      this.lastExhaustedError ??
+      new WatchmodeError("Watchmode API key is not configured.", 401)
+    );
+  }
+
+  /** A single attempt against one key. */
+  private async fetchWith<T>(
+    apiKey: string,
+    index: number,
+    url: string,
+    timeoutMs: number
+  ): Promise<T> {
     // Hard timeout so a hung Watchmode endpoint can't stall a whole sync.
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     let res: Response;
     try {
-      res = await fetch(url.toString(), {
-        headers: { "X-API-Key": this.apiKey, Accept: "application/json" },
+      res = await fetch(url, {
+        headers: { "X-API-Key": apiKey, Accept: "application/json" },
         // Watchmode data is not real-time; avoid Next.js caching surprises.
         cache: "no-store",
         signal: controller.signal,
@@ -135,20 +225,23 @@ export class WatchmodeClient {
       clearTimeout(timer);
     }
 
+    // Which key failed only matters when there is more than one.
+    const which = this.keys.length > 1 ? ` ${index + 1}` : "";
     if (res.status === 401 || res.status === 403) {
-      throw new WatchmodeError("Watchmode rejected the API key (invalid or over quota).", res.status);
+      throw new WatchmodeError(
+        `Watchmode rejected API key${which} (invalid or over quota).`,
+        res.status
+      );
     }
     if (res.status === 429) {
-      throw new WatchmodeError("Watchmode rate limit / quota exceeded.", 429);
+      throw new WatchmodeError(`Watchmode rate limit / quota exceeded on API key${which}.`, 429);
     }
     if (!res.ok) {
       const body = await res.text().catch(() => "");
       throw new WatchmodeError(`Watchmode request failed (${res.status}): ${body.slice(0, 200)}`, res.status);
     }
 
-    const data = (await res.json()) as T;
-    if (ttlMs > 0) cacheSet(cacheKey, data, ttlMs);
-    return data;
+    return (await res.json()) as T;
   }
 
   // Reference-data lookups are only used by the interactive Settings UI, so
@@ -180,9 +273,21 @@ export class WatchmodeClient {
     );
   }
 
-  /** Verify the key + return quota status. */
+  /**
+   * Verify the key + return quota status.
+   *
+   * No failover: this reports on the key the ring is currently on, and a caller
+   * checking a key wants to hear that it was rejected, not to be handed another
+   * key's numbers. Settings tests each key with its own client.
+   */
   async status(): Promise<{ quota: number; quotaUsed: number }> {
-    return this.get<{ quota: number; quotaUsed: number }>("/status/");
+    return this.get<{ quota: number; quotaUsed: number }>(
+      "/status/",
+      {},
+      0,
+      20_000,
+      { rotate: false }
+    );
   }
 
   /**
@@ -193,16 +298,21 @@ export class WatchmodeClient {
    *   - 401/403  -> "free"  (premium endpoints not permitted → TTL fallback)
    *   - other errors are treated as "unknown" (caller keeps prior state).
    * Costs a single API request; the result is cached on Settings.
+   *
+   * Failover is deliberately off here: on a free plan every key answers 403, so
+   * rotating would spend a request on each one only to reach the same verdict.
+   * The probe uses the key the ring is currently on.
    */
   async detectPlan(): Promise<"paid" | "free" | "unknown"> {
     const today = toYyyymmdd(new Date());
     try {
-      await this.get<{ titles?: number[] }>("/changes/titles_episodes_changed/", {
-        start_date: today,
-        end_date: today,
-        page: 1,
-        limit: 1,
-      });
+      await this.get<{ titles?: number[] }>(
+        "/changes/titles_episodes_changed/",
+        { start_date: today, end_date: today, page: 1, limit: 1 },
+        0,
+        20_000,
+        { rotate: false }
+      );
       return "paid";
     } catch (e) {
       const status = (e as WatchmodeError).status;

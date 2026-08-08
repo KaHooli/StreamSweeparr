@@ -16,6 +16,13 @@ export interface SettingsDto {
    */
   secretsUnreadable: boolean;
   watchmodeApiKeySet: boolean;
+  /**
+   * How many Watchmode keys are stored. The keys themselves never reach the
+   * browser, so the card renders one masked, numbered field per key and refers
+   * to an untouched key by its position when saving.
+   */
+  watchmodeApiKeyCount: number;
+  watchmodeApiKeyMax: number;
   watchmodePlan: "paid" | "free" | "unknown" | null;
   seerrUrl: string;
   seerrApiKeySet: boolean;

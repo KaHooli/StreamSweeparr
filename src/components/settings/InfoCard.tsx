@@ -8,6 +8,7 @@ import {
   formatBytes,
   formatUptime,
   formatWhen,
+  watchmodeKeySummary,
   yesNo,
   type SystemInfo,
 } from "@/lib/systemInfo";
@@ -211,7 +212,7 @@ export function InfoCard() {
             <Row label="Remove missing TMDB movies" value={yesNo(cfg.removeMissingTmdbMovies)} />
             <Row
               label="Watchmode"
-              value={`key ${cfg.watchmodeApiKeySet ? "set" : "not set"} · plan ${
+              value={`${watchmodeKeySummary(cfg)} · plan ${
                 cfg.watchmodePlan ?? "unknown"
               } · ${cfg.countries} country/ies · ${cfg.serviceIds} service(s)`}
             />

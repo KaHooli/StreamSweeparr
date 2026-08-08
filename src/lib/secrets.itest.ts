@@ -10,7 +10,12 @@ import { describe, it, expect, beforeEach, afterAll, vi } from "vitest";
  */
 
 import { prisma, getSettings, getRawSettings } from "@/lib/db";
-import { encryptSecret, encryptStoredSecrets, isEncrypted } from "@/lib/secrets";
+import {
+  encryptSecret,
+  encryptStoredSecrets,
+  hasUnreadableSecret,
+  isEncrypted,
+} from "@/lib/secrets";
 import { effectiveLocalLoginEnabled, isOidcConfigured } from "@/lib/loginOptions";
 import { resetDatabase, makeSettings } from "@/test/dbHelpers";
 
@@ -29,8 +34,12 @@ afterAll(async () => {
 /** Read the columns exactly as stored, bypassing every helper. */
 async function rawRow() {
   const rows = await prisma.$queryRaw<
-    { watchmodeApiKey: string | null; tmdbApiKey: string | null }[]
-  >`SELECT "watchmodeApiKey", "tmdbApiKey" FROM "Settings" WHERE id = 1`;
+    {
+      watchmodeApiKey: string | null;
+      watchmodeApiKeys: string[];
+      tmdbApiKey: string | null;
+    }[]
+  >`SELECT "watchmodeApiKey", "watchmodeApiKeys", "tmdbApiKey" FROM "Settings" WHERE id = 1`;
   return rows[0];
 }
 
@@ -75,6 +84,47 @@ describe("credentials at rest", () => {
     const settings = await getSettings();
     // sync/sweep build their *arr clients straight from this.
     expect(settings.connections[0].apiKey).toBe(ARR_KEY);
+  });
+
+  it("encrypts every key in the Watchmode ring, and hands the ring back in order", async () => {
+    const keys = [WATCHMODE_KEY, "wm_live_second_key", "wm_live_third_key"];
+    await makeSettings({
+      watchmodeApiKeys: keys.map((k) => encryptSecret(k)!),
+      watchmodeApiKey: encryptSecret(WATCHMODE_KEY),
+    });
+
+    const stored = await rawRow();
+    expect(stored.watchmodeApiKeys).toHaveLength(3);
+    expect(stored.watchmodeApiKeys.every(isEncrypted)).toBe(true);
+    for (const key of keys) expect(stored.watchmodeApiKeys.join("|")).not.toContain(key);
+
+    const settings = await getSettings();
+    // Order is the failover order, so it has to survive the round trip exactly.
+    expect(settings.watchmodeApiKeys).toEqual(keys);
+    expect(settings.watchmodeApiKey).toBe(WATCHMODE_KEY);
+  });
+
+  it("folds a legacy single key into a one-key ring", async () => {
+    // A row written before the ring existed, whose data migration has not run.
+    await makeSettings({ watchmodeApiKeys: [], watchmodeApiKey: encryptSecret(WATCHMODE_KEY) });
+
+    const settings = await getSettings();
+    expect(settings.watchmodeApiKeys).toEqual([WATCHMODE_KEY]);
+  });
+
+  it("drops ring entries it cannot decrypt instead of returning ciphertext", async () => {
+    await makeSettings({
+      watchmodeApiKeys: [encryptSecret(WATCHMODE_KEY)!, "wm_live_plaintext_second"],
+    });
+    process.env.AUTH_SECRET = "a-completely-different-secret-value-here";
+    vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const settings = await getSettings();
+    // The unreadable key is gone; the plaintext one (from before encryption)
+    // still works, so the ring is degraded rather than dead.
+    expect(settings.watchmodeApiKeys).toEqual(["wm_live_plaintext_second"]);
+    expect(hasUnreadableSecret((await getRawSettings())!)).toBe(true);
+    vi.restoreAllMocks();
   });
 
   it("blanks a credential it cannot decrypt instead of returning ciphertext", async () => {
@@ -146,6 +196,28 @@ describe("encryptStoredSecrets — upgrade from plaintext", () => {
     expect(settings.watchmodeApiKey).toBe(WATCHMODE_KEY);
     expect(settings.tmdbApiKey).toBe(TMDB_KEY);
     expect(settings.connections[0].apiKey).toBe(ARR_KEY);
+  });
+
+  it("rewrites a plaintext Watchmode ring, keeping its order", async () => {
+    // What the SQL migration leaves behind on an install that never encrypted:
+    // the old plaintext key copied verbatim into the array, plus keys added
+    // since. A SQL migration cannot encrypt them — the key lives in the app's
+    // environment — so the boot pass has to.
+    const second = "wm_live_second_key";
+    await makeSettings({
+      watchmodeApiKey: WATCHMODE_KEY,
+      watchmodeApiKeys: [WATCHMODE_KEY, second],
+    });
+
+    // The column and the array each count once.
+    expect((await encryptStoredSecrets()).settingsFields).toBe(2);
+
+    const stored = await rawRow();
+    expect(stored.watchmodeApiKeys.every(isEncrypted)).toBe(true);
+    expect((await getSettings()).watchmodeApiKeys).toEqual([WATCHMODE_KEY, second]);
+
+    // Second pass finds nothing left to convert.
+    expect((await encryptStoredSecrets()).settingsFields).toBe(0);
   });
 
   it("is idempotent — a second pass has nothing to do", async () => {

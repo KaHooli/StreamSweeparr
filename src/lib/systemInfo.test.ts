@@ -160,6 +160,7 @@ const info: SystemInfo = {
     searchAtEnd: true,
     removeMissingTmdbMovies: false,
     watchmodeApiKeySet: true,
+    watchmodeApiKeyCount: 2,
     watchmodePlan: "free",
     countries: 1,
     serviceIds: 4,

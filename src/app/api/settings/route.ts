@@ -9,6 +9,13 @@ import {
   DEFAULT_SSO_BUTTON_LABEL,
 } from "@/lib/loginOptions";
 import {
+  watchmodeKeyEntriesSchema,
+  resolveWatchmodeKeyEntries,
+  normalizeWatchmodeKeys,
+  WatchmodeKeyEntryError,
+  MAX_WATCHMODE_KEYS,
+} from "@/lib/watchmodeKeys";
+import {
   MIN_SWEEP_INTERVAL_HOURS,
   MAX_SWEEP_INTERVAL_HOURS,
   SWEEP_INTERVAL_CHOICES,
@@ -32,7 +39,11 @@ const COUNTED_TYPES = ["sub", "free", "purchase", "rent", "tv_everywhere"] as co
 const TMDB_COUNTED_TYPES = ["flatrate", "free", "ads", "rent", "buy"] as const;
 
 const settingsSchema = z.object({
+  // Legacy single-key form: sets (or replaces) key 1 and leaves the rest alone.
   watchmodeApiKey: z.string().nullable().optional(),
+  // The Watchmode key ring in full — see lib/watchmodeKeys.ts for why an entry
+  // can refer to a stored key by position instead of carrying its value.
+  watchmodeApiKeys: watchmodeKeyEntriesSchema.optional(),
   seerrUrl: urlOrEmpty,
   seerrApiKey: z.string().nullable().optional(),
   countries: z.array(z.string().regex(/^[A-Za-z]{2}$/, "Invalid country code.")).optional(),
@@ -84,6 +95,10 @@ function serialize(
   return {
     secretsUnreadable,
     watchmodeApiKeySet: !!s.watchmodeApiKey,
+    // How many keys are in the ring. The values never leave the server; the
+    // Settings card renders one numbered (masked) field per stored key.
+    watchmodeApiKeyCount: s.watchmodeApiKeys.length,
+    watchmodeApiKeyMax: MAX_WATCHMODE_KEYS,
     watchmodePlan: s.watchmodePlan ?? null,
     seerrUrl: s.seerrUrl ?? "",
     seerrApiKeySet: !!s.seerrApiKey,
@@ -152,9 +167,26 @@ export const PATCH = withGuard(requireAdmin, async (_session, req: NextRequest) 
 
   const data: Record<string, unknown> = {};
   const p = parsed.data;
-  // Only overwrite secrets when a non-empty value is provided.
-  if (p.watchmodeApiKey !== undefined && p.watchmodeApiKey !== null && p.watchmodeApiKey !== "")
-    data.watchmodeApiKey = p.watchmodeApiKey;
+  // Watchmode keys are an ordered ring; `watchmodeApiKey` mirrors the first one
+  // for older readers. The ring form wins when both are sent.
+  if (p.watchmodeApiKeys !== undefined) {
+    let keys: string[];
+    try {
+      keys = resolveWatchmodeKeyEntries(p.watchmodeApiKeys, prev.watchmodeApiKeys);
+    } catch (e) {
+      if (e instanceof WatchmodeKeyEntryError) {
+        return NextResponse.json({ error: e.message }, { status: 409 });
+      }
+      throw e;
+    }
+    data.watchmodeApiKeys = keys;
+    data.watchmodeApiKey = keys[0] ?? null;
+  } else if (p.watchmodeApiKey !== undefined && p.watchmodeApiKey !== null && p.watchmodeApiKey !== "") {
+    // Only overwrite secrets when a non-empty value is provided.
+    const keys = normalizeWatchmodeKeys([p.watchmodeApiKey, ...prev.watchmodeApiKeys.slice(1)]);
+    data.watchmodeApiKeys = keys;
+    data.watchmodeApiKey = keys[0];
+  }
   if (p.seerrUrl !== undefined) data.seerrUrl = p.seerrUrl || null;
   if (p.seerrApiKey !== undefined && p.seerrApiKey !== null && p.seerrApiKey !== "")
     data.seerrApiKey = p.seerrApiKey;
