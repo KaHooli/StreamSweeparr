@@ -158,7 +158,17 @@ export const SETTINGS_SECRET_FIELDS = [
 
 export type SettingsSecretField = (typeof SETTINGS_SECRET_FIELDS)[number];
 
-type SettingsSecrets = Partial<Record<SettingsSecretField, string | null>>;
+/**
+ * Settings columns holding a *list* of credentials. Each element is encrypted
+ * on its own, so the list keeps its order and a key can be added or removed
+ * without touching the others.
+ */
+export const SETTINGS_SECRET_ARRAY_FIELDS = ["watchmodeApiKeys"] as const;
+
+export type SettingsSecretArrayField = (typeof SETTINGS_SECRET_ARRAY_FIELDS)[number];
+
+type SettingsSecrets = Partial<Record<SettingsSecretField, string | null>> &
+  Partial<Record<SettingsSecretArrayField, string[] | null>>;
 
 /**
  * True when a row holds a credential that is present but unreadable, i.e.
@@ -166,16 +176,34 @@ type SettingsSecrets = Partial<Record<SettingsSecretField, string | null>>;
  * "never configured" so the UI can say why the key disappeared.
  */
 export function hasUnreadableSecret<T extends SettingsSecrets>(row: T): boolean {
-  return SETTINGS_SECRET_FIELDS.some(
+  const single = SETTINGS_SECRET_FIELDS.some(
     (f) => isEncrypted(row[f]) && decryptSecret(row[f], f) === null
+  );
+  if (single) return true;
+  return SETTINGS_SECRET_ARRAY_FIELDS.some((f) =>
+    (row[f] ?? []).some((v) => isEncrypted(v) && decryptSecret(v, f) === null)
   );
 }
 
-/** Return a copy of a settings row with its credential columns decrypted. */
+/**
+ * Return a copy of a settings row with its credential columns decrypted.
+ *
+ * Elements of a list that cannot be decrypted are dropped rather than left as
+ * ciphertext — sending a base64 blob to a provider as if it were an API key is
+ * the one outcome worse than the key being missing. `hasUnreadableSecret` is
+ * what tells the UI that this happened.
+ */
 export function decryptSettingsRow<T extends SettingsSecrets>(row: T): T {
   const out = { ...row };
   for (const field of SETTINGS_SECRET_FIELDS) {
     if (field in out) out[field] = decryptSecret(out[field], field) as T[typeof field];
+  }
+  for (const field of SETTINGS_SECRET_ARRAY_FIELDS) {
+    const values = out[field];
+    if (!Array.isArray(values)) continue;
+    out[field] = values
+      .map((v) => decryptSecret(v, field))
+      .filter((v): v is string => !!v) as T[typeof field];
   }
   return out;
 }
@@ -187,6 +215,14 @@ export function encryptSettingsData<T extends Record<string, unknown>>(data: T):
     const value = out[field];
     if (typeof value === "string") {
       (out as Record<string, unknown>)[field] = encryptSecret(value);
+    }
+  }
+  for (const field of SETTINGS_SECRET_ARRAY_FIELDS) {
+    const value = out[field];
+    if (Array.isArray(value)) {
+      (out as Record<string, unknown>)[field] = value
+        .map((v) => (typeof v === "string" ? encryptSecret(v) : null))
+        .filter((v): v is string => !!v);
     }
   }
   return out;
@@ -223,7 +259,7 @@ export async function encryptStoredSecrets(): Promise<SecretMigrationResult> {
 
   const settings = await getRawSettings();
   if (settings) {
-    const data: Record<string, string> = {};
+    const data: Record<string, string | string[]> = {};
     for (const field of SETTINGS_SECRET_FIELDS) {
       const stored = settings[field];
       if (stored && !isEncrypted(stored)) {
@@ -233,6 +269,15 @@ export async function encryptStoredSecrets(): Promise<SecretMigrationResult> {
           result.settingsFields++;
         }
       }
+    }
+    for (const field of SETTINGS_SECRET_ARRAY_FIELDS) {
+      const stored = settings[field] ?? [];
+      if (!stored.some((v) => v && !isEncrypted(v))) continue;
+      const encrypted = stored
+        .map((v) => encryptSecret(v))
+        .filter((v): v is string => !!v);
+      data[field] = encrypted;
+      result.settingsFields++;
     }
     if (result.settingsFields) {
       await prisma.settings.update({ where: { id: 1 }, data });

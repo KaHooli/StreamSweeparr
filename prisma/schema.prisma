@@ -18,6 +18,14 @@ datasource db {
 // Single-row application settings (id is always 1).
 model Settings {
   id                Int      @id @default(1)
+  // Watchmode API keys, in the order they are used. Requests always start at
+  // the first key and move to the next one when a key is rejected or has run
+  // out of quota, so several free-tier keys can be pooled into one budget.
+  // Each element is encrypted individually (see lib/secrets.ts).
+  watchmodeApiKeys  String[] @default([])
+  // The first key, mirrored for older code paths and for the boot-time
+  // plaintext-to-ciphertext migration. `watchmodeApiKeys` is the source of
+  // truth; getSettings() derives this from it.
   watchmodeApiKey   String?
   // Seerr (optional) — used to auto-discover Sonarr/Radarr instances.
   seerrUrl          String?

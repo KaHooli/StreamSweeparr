@@ -1,5 +1,6 @@
 import { PrismaClient } from "@prisma/client";
 import { decryptSettingsRow, decryptConnection } from "./secrets";
+import { watchmodeKeys } from "./watchmodeKeys";
 
 // Reuse the Prisma client across hot reloads / lambda invocations.
 const globalForPrisma = globalThis as unknown as {
@@ -31,10 +32,19 @@ function findSettingsRow() {
  * Every read of a stored credential goes through `getSettings`, so decrypting
  * here is what keeps the rest of the app unaware that encryption exists — it
  * asks for `settings.watchmodeApiKey` and gets a usable key.
+ *
+ * `watchmodeApiKeys` is normalised here too: it is the source of truth for the
+ * Watchmode key ring, and `watchmodeApiKey` is derived from its first element
+ * so the many callers that only ask "is Watchmode configured?" keep working.
+ * An install still carrying only the legacy column folds into a one-key ring.
  */
 function decryptSettings(row: SettingsWithConnections): SettingsWithConnections {
+  const decrypted = decryptSettingsRow(row);
+  const keys = watchmodeKeys(decrypted);
   return {
-    ...decryptSettingsRow(row),
+    ...decrypted,
+    watchmodeApiKeys: keys,
+    watchmodeApiKey: keys[0] ?? null,
     connections: row.connections.map(decryptConnection),
   };
 }

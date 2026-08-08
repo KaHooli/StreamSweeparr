@@ -11,7 +11,7 @@ export const dynamic = "force-dynamic";
  */
 export const GET = withGuard(requireAdmin, async (_session, req: NextRequest) => {
   const s = await getSettings();
-  if (!s.watchmodeApiKey) {
+  if (!s.watchmodeApiKeys.length) {
     return NextResponse.json({ error: "Watchmode API key not configured." }, { status: 400 });
   }
   const param = req.nextUrl.searchParams.get("countries");
@@ -21,7 +21,7 @@ export const GET = withGuard(requireAdmin, async (_session, req: NextRequest) =>
   }
 
   try {
-    const wm = new WatchmodeClient(s.watchmodeApiKey);
+    const wm = new WatchmodeClient(s.watchmodeApiKeys);
     const all = await wm.sources(countries);
 
     // Build per-country groups. A source appears in a country if its `regions`

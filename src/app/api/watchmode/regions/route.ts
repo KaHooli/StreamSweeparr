@@ -9,11 +9,11 @@ export const dynamic = "force-dynamic";
 // All countries supported by Watchmode, alphabetical, with flags.
 export const GET = withGuard(requireAdmin, async () => {
   const s = await getSettings();
-  if (!s.watchmodeApiKey) {
+  if (!s.watchmodeApiKeys.length) {
     return NextResponse.json({ error: "Watchmode API key not configured." }, { status: 400 });
   }
   try {
-    const wm = new WatchmodeClient(s.watchmodeApiKey);
+    const wm = new WatchmodeClient(s.watchmodeApiKeys);
     const regions = await wm.regions();
     const list = regions
       .map((r) => ({ code: r.country, name: r.name, flag: flagEmoji(r.country) }))

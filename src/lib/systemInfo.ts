@@ -74,6 +74,8 @@ export interface ConfigInfo {
   searchAtEnd: boolean;
   removeMissingTmdbMovies: boolean;
   watchmodeApiKeySet: boolean;
+  /** How many Watchmode keys are in the failover ring (0 when none are set). */
+  watchmodeApiKeyCount: number;
   watchmodePlan: string | null;
   countries: number;
   serviceIds: number;
@@ -201,6 +203,19 @@ export function formatWhen(iso: string | null | undefined): string {
 export const yesNo = (v: boolean): string => (v ? "Yes" : "No");
 
 /**
+ * "key not set" / "key set" / "3 keys set" — Watchmode can hold a ring of keys
+ * that requests fail over through, and how many there are is worth knowing in a
+ * bug report. Values are never included; this is a count.
+ */
+export function watchmodeKeySummary(cfg: {
+  watchmodeApiKeySet: boolean;
+  watchmodeApiKeyCount: number;
+}): string {
+  if (!cfg.watchmodeApiKeySet) return "key not set";
+  return cfg.watchmodeApiKeyCount > 1 ? `${cfg.watchmodeApiKeyCount} keys set` : "key set";
+}
+
+/**
  * The whole payload as plain text, for the "Copy diagnostics" button.
  *
  * Built from the DTO and nothing else, so it inherits the no-secrets guarantee:
@@ -273,7 +288,7 @@ export function buildDiagnosticsText(info: SystemInfo): string {
     row("Remove missing TMDB movies", yesNo(cfg.removeMissingTmdbMovies));
     row(
       "Watchmode",
-      `key ${cfg.watchmodeApiKeySet ? "set" : "not set"}, plan ${cfg.watchmodePlan ?? "unknown"}, ` +
+      `${watchmodeKeySummary(cfg)}, plan ${cfg.watchmodePlan ?? "unknown"}, ` +
         `${cfg.countries} country/ies, ${cfg.serviceIds} service(s)`
     );
     row(
