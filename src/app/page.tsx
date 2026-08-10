@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { getSettings } from "@/lib/db";
 import { getDashboardData } from "@/lib/dashboard";
+import { setupStatus } from "@/lib/setupState";
 import { DashboardBrowser } from "@/components/DashboardBrowser";
 import { RunControls } from "@/components/RunControls";
 
@@ -8,18 +9,22 @@ export const dynamic = "force-dynamic";
 
 export default async function DashboardPage() {
   const settings = await getSettings();
-  const configured =
-    !!settings.watchmodeApiKey &&
-    settings.countries.length > 0 &&
-    settings.serviceIds.length > 0 &&
-    settings.connections.some((c) => c.enabled);
+  // Per media type, mirroring what runSync actually validates — a Radarr-only
+  // install needs TMDB and nothing from Watchmode. See lib/setupState.ts.
+  const setup = setupStatus(settings);
 
-  if (!configured) {
+  if (!setup.ready) {
     return (
       <main>
         <div className="banner warn">
-          Finish setup to start sweeping. You need a Watchmode API key, at least one country and
-          streaming service, and one Sonarr/Radarr connection.
+          Finish setup to start sweeping. You still need{" "}
+          {setup.missing.map((item, i) => (
+            <span key={item}>
+              {i > 0 ? (i === setup.missing.length - 1 ? " and " : ", ") : ""}
+              {item}
+            </span>
+          ))}
+          .
         </div>
         <div className="empty card">
           <div className="big">≋</div>

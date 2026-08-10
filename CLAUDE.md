@@ -136,6 +136,7 @@ src/
 | SSRF-guarded fetch | `lib/safeFetch.ts` |
 | Users, passwords, OIDC | `lib/users.ts`, `lib/password.ts`, `lib/oidc.ts` |
 | Dashboard query + shapes | `lib/dashboard.ts` |
+| "Is this install configured yet?" (per media type) | `lib/setupState.ts` |
 | Client fetch helpers + `ApiError` | `lib/fetcher.ts` |
 
 Import with the `@/` alias (`@/lib/db`), which maps to `src/`. Modules *within*
