@@ -14,7 +14,7 @@ const log = logger("run");
 
 // A run whose heartbeat is older than this is considered dead and no longer
 // holds the lock.
-const STALE_MS = 5 * 60 * 1000;
+export const STALE_MS = 5 * 60 * 1000;
 
 /**
  * Advisory-lock key guarding lock *acquisition* (not the run itself).
@@ -262,4 +262,23 @@ export async function startRun(
   })();
 
   return run.id;
+}
+
+/**
+ * Is a run currently alive — RUNNING, and heartbeating recently enough to
+ * believe it?
+ *
+ * Only one run may be active at a time, so this doubles as "might some run
+ * still be holding work in flight?". The webhook queue asks before reclaiming
+ * a claim it thinks is stale: a claim's real lifetime is the sweep it is
+ * waiting on, and a sweep has no maximum duration, so a fixed timeout is the
+ * wrong instrument. A dead process self-heals here because `startRun` reaps
+ * RUNNING rows whose heartbeat has gone quiet, which is the same threshold.
+ */
+export async function hasLiveRun(now: Date = new Date()): Promise<boolean> {
+  const active = await prisma.runLog.findFirst({
+    where: { status: "RUNNING", heartbeatAt: { gte: new Date(now.getTime() - STALE_MS) } },
+    select: { id: true },
+  });
+  return active !== null;
 }

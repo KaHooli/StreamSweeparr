@@ -19,7 +19,7 @@
     "prisma:push": "prisma db push",
     "prisma:migrate": "prisma migrate deploy",
     "postinstall": "prisma generate",
-    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "test:integration": "vitest run --config vitest.integration.config.mts",
     "test:all": "npm run test && npm run test:integration"
   },
   "dependencies": {
@@ -44,6 +44,6 @@
     "jsdom": "^29.1.1",
     "prisma": "^5.18.0",
     "typescript": "^5.5.3",
-    "vitest": "^2.0.5"
+    "vitest": "^4.1.10"
   }
 }
