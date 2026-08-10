@@ -27,7 +27,9 @@ export function CountriesCard({ settings, onChange }: CardProps) {
   return (
     <div className="card" style={{ marginBottom: 20 }}>
       <div className="section-title" style={{ marginTop: 0 }}>
-        <h2 style={{ fontSize: 18 }}>Countries (TV)</h2>
+        <h2 style={{ fontSize: 18 }}>
+          Countries ({settings.movieProvider === "WATCHMODE" ? "TV & movies" : "TV"})
+        </h2>
         <span className="count">{selected.length} selected</span>
       </div>
       {!settings.watchmodeApiKeySet && <div className="muted">Add a Watchmode API key first.</div>}

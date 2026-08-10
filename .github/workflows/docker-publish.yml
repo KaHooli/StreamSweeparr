@@ -3,6 +3,15 @@ name: Publish Docker image
 # Build and publish the container image to GitHub Container Registry (GHCR).
 # Publishing is limited to the default branch and version tags (feature
 # branches are validated by the CI workflow but not published).
+#
+# Each architecture is built on a runner of that architecture and the results
+# are stitched into one multi-arch tag at the end. The alternative — one runner
+# building both under QEMU — is what this replaced, and it was not merely slow:
+# `npm ci` for the arm64 leg hung for 43 minutes under emulation and took the
+# publish down with it, on a commit whose only sin was changing the lockfile.
+# That layer is normally a cache hit, so the emulated install almost never
+# actually ran, which is why the problem stayed hidden until a dependency
+# changed. Native runners remove the emulation rather than working around it.
 on:
   push:
     branches:
@@ -13,25 +22,54 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  # Image name = ghcr.io/<owner>/<repo>, lowercased below.
+  # Image name = ghcr.io/<owner>/<repo>, lowercased in `prepare`.
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  build-and-push:
+  # Values that must be identical across the per-architecture builds. Computing
+  # the timestamp inside each build job would stamp the two images with times
+  # that disagree, and Settings -> Info reports it as the build time of *the*
+  # image — one number, so it has to be decided once.
+  prepare:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      image: ${{ steps.image.outputs.name }}
+      built_at: ${{ steps.build.outputs.at }}
+    steps:
+      # GHCR requires a lowercase image path; the repo owner may contain
+      # uppercase letters, so normalise it here.
+      - name: Compute lowercase image name
+        id: image
+        run: echo "name=${IMAGE_NAME,,}" >> "$GITHUB_OUTPUT"
 
+      - name: Record build time
+        id: build
+        run: echo "at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: prepare
+    runs-on: ${{ matrix.runner }}
+
+    # Native builds land in 4-6 minutes. 30 is generous headroom for a cold
+    # cache or a slow registry while still failing loudly within the hour.
+    #
     # A hung publish is silent: no failure, no notification, just a run that
-    # never ends. One wedged on `Build and push` for over three hours and was
-    # only noticed by chance — GitHub's default would have let it sit for six.
-    #
-    # That matters more than a wasted runner, because this workflow tags
-    # `latest`. A stale run finishing after newer commits have published would
-    # move `latest` *backwards* onto an older image.
-    #
-    # Successful runs take 6-12 minutes (the slowest being a cold cache after
-    # a base-image change), so 45 is generous headroom for a legitimately slow
-    # arm64-under-QEMU build while still failing loudly the same hour.
-    timeout-minutes: 45
+    # never ends. That matters more than a wasted runner, because this workflow
+    # tags `latest` — a stale run finishing after newer commits have published
+    # would move `latest` *backwards* onto an older image.
+    timeout-minutes: 30
+
+    strategy:
+      # One architecture failing should not cancel the other: knowing whether a
+      # break is arch-specific is most of the diagnosis.
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
 
     permissions:
       contents: read
@@ -41,19 +79,79 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
-      # GHCR requires a lowercase image path; the repo owner may contain
-      # uppercase letters, so normalise it here.
-      - name: Compute lowercase image name
-        id: image
-        run: echo "name=${IMAGE_NAME,,}" >> "$GITHUB_OUTPUT"
+      # `linux/amd64` is not usable as a filename or an artifact name.
+      - name: Compute platform slug
+        id: slug
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: echo "value=${PLATFORM//\//-}" >> "$GITHUB_OUTPUT"
 
-      # Stamped into the image so Settings -> Info can name the build.
-      - name: Record build time
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Pushed by digest, without tags: a tag naming one architecture is a tag
+      # someone can pull by accident. The `merge` job is what publishes the
+      # names, and it publishes them once, pointing at both.
+      - name: Build and push by digest
         id: build
-        run: echo "at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          # Stamped into the image and shown in Settings -> Info, so a bug
+          # report can name the exact build it came from.
+          build-args: |
+            APP_COMMIT=${{ github.sha }}
+            APP_BUILT_AT=${{ needs.prepare.outputs.built_at }}
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ needs.prepare.outputs.image }},push-by-digest=true,name-canonical=true,push=true
+          # Scoped per architecture. A shared scope has the two builds evicting
+          # each other's layers, so neither ever gets a warm cache.
+          cache-from: type=gha,scope=${{ matrix.platform }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.platform }}
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v4
+      - name: Export the digest
+        run: |
+          mkdir -p /tmp/digests
+          # The manifest list is assembled from these filenames, so the file
+          # only has to exist and be named after the digest.
+          touch "/tmp/digests/${DIGEST#sha256:}"
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+
+      - name: Upload the digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ steps.slug.outputs.value }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # Publish the tags, pointing them at a manifest list covering both builds.
+  # Nothing is tagged until every architecture has been pushed, so `latest`
+  # never names a half-published image.
+  merge:
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Download the digests
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digest-*
+          merge-multiple: true
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -69,7 +167,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v6
         with:
-          images: ${{ env.REGISTRY }}/${{ steps.image.outputs.name }}
+          images: ${{ env.REGISTRY }}/${{ needs.prepare.outputs.image }}
           tags: |
             # Branch pushes -> branch name (e.g. "main")
             type=ref,event=branch
@@ -83,18 +181,21 @@ jobs:
             # Default branch also gets the "latest" tag
             type=raw,value=latest,enable={{is_default_branch}}
 
-      - name: Build and push
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          platforms: linux/amd64,linux/arm64
-          push: true
-          # Stamped into the image and shown in Settings -> Info, so a bug
-          # report can name the exact build it came from.
-          build-args: |
-            APP_COMMIT=${{ github.sha }}
-            APP_BUILT_AT=${{ steps.build.outputs.at }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+      - name: Create the manifest list and push
+        working-directory: /tmp/digests
+        # REGISTRY comes from the workflow-level `env`, which is already in the
+        # shell; only the image name has to be threaded through from `prepare`.
+        run: |
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf "${REGISTRY}/${IMAGE}@sha256:%s " *)
+        env:
+          IMAGE: ${{ needs.prepare.outputs.image }}
+
+      # Proves the published tag really does cover both architectures, rather
+      # than trusting that the merge above did what it was told.
+      - name: Inspect the published image
+        env:
+          IMAGE: ${{ needs.prepare.outputs.image }}
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: docker buildx imagetools inspect "${REGISTRY}/${IMAGE}:${VERSION}"

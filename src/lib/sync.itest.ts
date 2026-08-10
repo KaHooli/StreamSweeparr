@@ -17,6 +17,14 @@ let tmdbAvailability: Record<number, unknown> = {};
 let tmdbCalls: number[] = [];
 /** How often the whole Radarr library was listed — a scoped sync must not. */
 let radarrListCalls = 0;
+/** tmdbId -> the Watchmode id a search resolves to (absent = unmapped title). */
+let watchmodeIds: Record<number, number> = {};
+/** Watchmode id -> title sources, or the string "error" to fail the lookup. */
+let watchmodeSources: Record<number, unknown> = {};
+let watchmodeSourceCalls: number[] = [];
+let watchmodeSearchCalls = 0;
+/** Plan probes — a movies-only install has no changes feed to earn one. */
+let watchmodePlanProbes = 0;
 
 class TmdbNotFound extends Error {
   status = 404;
@@ -83,6 +91,39 @@ vi.mock("./tmdb", async (importOriginal) => {
   };
 });
 
+/**
+ * Watchmode, stubbed at the client. Only the movie-facing calls are modelled:
+ * the TV path has its own coverage, and what is being pinned here is that a
+ * movie asks the title-level sources endpoint and nothing else.
+ */
+vi.mock("./watchmode", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./watchmode")>();
+  return {
+    ...actual,
+    WatchmodeClient: class {
+      keyCount = 1;
+      activeKeyNumber = 1;
+      async sources() {
+        return [{ id: WM_NETFLIX, name: "Netflix", type: "sub", logo_100px: WM_LOGO }];
+      }
+      async detectPlan() {
+        watchmodePlanProbes++;
+        return "free" as const;
+      }
+      async findTitleId(opts: { tmdbId?: number | null }) {
+        watchmodeSearchCalls++;
+        return (opts.tmdbId && watchmodeIds[opts.tmdbId]) ?? null;
+      }
+      async titleSources(id: number) {
+        watchmodeSourceCalls.push(id);
+        const entry = watchmodeSources[id];
+        if (entry === "error") throw new Error("watchmode unreachable");
+        return entry ?? [];
+      }
+    },
+  };
+});
+
 // The Watchmode title-map import downloads ~78MB; never in a test.
 vi.mock("./titlemap", () => ({
   refreshTitleMap: async () => ({ status: "skipped_recent", rowCount: 0 }),
@@ -91,10 +132,14 @@ vi.mock("./titlemap", () => ({
 }));
 
 import { prisma } from "@/lib/db";
-import { runSync, MOVIE_TTL_MS } from "@/lib/sync";
+import { runSync, MOVIE_TTL_MS, WATCHMODE_MOVIE_TTL_MS } from "@/lib/sync";
 import { resetDatabase, makeSettings, makeConnection, makeMediaItem } from "@/test/dbHelpers";
 
 const NETFLIX = 8;
+/** Watchmode numbers its sources differently from TMDB — deliberately not 8. */
+const WM_NETFLIX = 203;
+const WM_LOGO = "https://cdn.watchmode.test/netflix.png";
+const WM_DEEP_LINK = "https://www.netflix.com/title/123";
 
 /** TMDB availability payload placing a title on Netflix in the US. */
 const onNetflix = {
@@ -123,6 +168,37 @@ async function radarrSettings() {
   });
 }
 
+/**
+ * The same Radarr install with movies switched to Watchmode. The TMDB values
+ * are left in place on purpose: a switch must not need them cleared, and their
+ * presence must not make TMDB the thing that answers.
+ */
+async function watchmodeMovieSettings() {
+  return makeSettings({
+    movieProvider: "WATCHMODE",
+    watchmodeApiKeys: ["wm-key"],
+    watchmodeApiKey: "wm-key",
+    countries: ["US"],
+    serviceIds: [WM_NETFLIX],
+    countedTypes: ["sub"],
+    tmdbApiKey: "tmdb-key",
+    tmdbRegions: ["US"],
+    tmdbProviderIds: [NETFLIX],
+    tmdbCountedTypes: ["flatrate"],
+  });
+}
+
+/** Watchmode title-sources payload placing a title on Netflix in the US. */
+const wmOnNetflix = [
+  {
+    source_id: WM_NETFLIX,
+    name: "Netflix",
+    type: "sub",
+    region: "US",
+    web_url: WM_DEEP_LINK,
+  },
+];
+
 beforeEach(async () => {
   await resetDatabase();
   radarrMovies = [];
@@ -131,6 +207,11 @@ beforeEach(async () => {
   tmdbAvailability = {};
   tmdbCalls = [];
   radarrListCalls = 0;
+  watchmodeIds = {};
+  watchmodeSources = {};
+  watchmodeSourceCalls = [];
+  watchmodeSearchCalls = 0;
+  watchmodePlanProbes = 0;
 });
 afterAll(async () => {
   await prisma.$disconnect();
@@ -315,11 +396,200 @@ describe("syncRadarr — pruning", () => {
   });
 });
 
+describe("syncRadarr — Watchmode as the movie provider", () => {
+  it("answers from Watchmode, with deep links, and never asks TMDB", async () => {
+    await watchmodeMovieSettings();
+    await makeConnection();
+    radarrMovies = [movie(1), movie(2)];
+    watchmodeIds = { 1001: 55501, 1002: 55502 };
+    watchmodeSources = { 55501: wmOnNetflix };
+
+    const result = await runSync();
+
+    expect(result.movies).toBe(2);
+    expect(result.onStreamingMovies).toBe(1);
+    expect(result.movieProviderCalls).toBe(2);
+    // The TMDB key is still stored; it must not be what answered.
+    expect(tmdbCalls).toEqual([]);
+    expect(watchmodeSourceCalls).toEqual([55501, 55502]);
+
+    const rows = await prisma.mediaItem.findMany({ orderBy: { arrId: "asc" } });
+    expect(rows.map((r) => r.onStreaming)).toEqual([true, false]);
+    // The resolved id is kept so the next sync skips the metered search.
+    expect(rows.map((r) => r.watchmodeId)).toEqual([55501, 55502]);
+    expect(rows[0].providerSyncedAt).not.toBeNull();
+    // Unlike a TMDB answer, this one carries a link straight to the film.
+    expect(rows[0].streamingInfo).toMatchObject([
+      { sourceId: WM_NETFLIX, name: "Netflix", type: "sub", webUrl: WM_DEEP_LINK, logo: WM_LOGO },
+    ]);
+  });
+
+  it("counts only the services and types the user selected", async () => {
+    await watchmodeMovieSettings();
+    await makeConnection();
+    radarrMovies = [movie(1)];
+    watchmodeIds = { 1001: 55501 };
+    // Right service, but rentable only — and "rent" is not a counted type here.
+    watchmodeSources = {
+      55501: [{ source_id: WM_NETFLIX, name: "Netflix", type: "rent", region: "US" }],
+    };
+
+    const result = await runSync();
+    expect(result.onStreamingMovies).toBe(0);
+    const row = await prisma.mediaItem.findFirstOrThrow();
+    expect(row.onStreaming).toBe(false);
+    expect(row.streamingUnknown).toBe(false);
+  });
+
+  it("leaves an unmapped title unknown rather than 'not on streaming'", async () => {
+    await watchmodeMovieSettings();
+    await makeConnection();
+    radarrMovies = [movie(1)];
+    // No entry in the id map and no search hit.
+
+    const result = await runSync();
+    expect(result.onStreamingMovies).toBe(0);
+    expect(watchmodeSourceCalls).toEqual([]);
+
+    const row = await prisma.mediaItem.findFirstOrThrow();
+    expect(row.streamingUnknown).toBe(true);
+    expect(row.onStreaming).toBe(false);
+    // Nothing was learned, so the freshness clock must not start.
+    expect(row.providerSyncedAt).toBeNull();
+  });
+
+  it("keeps the resolved id when the lookup itself fails", async () => {
+    await watchmodeMovieSettings();
+    await makeConnection();
+    radarrMovies = [movie(1)];
+    watchmodeIds = { 1001: 55501 };
+    watchmodeSources = { 55501: "error" };
+
+    const result = await runSync();
+    expect(result.errors).toHaveLength(1);
+
+    const row = await prisma.mediaItem.findFirstOrThrow();
+    expect(row.streamingUnknown).toBe(true);
+    expect(row.providerSyncedAt).toBeNull();
+    // The mapping is still good; only the availability call failed.
+    expect(row.watchmodeId).toBe(55501);
+  });
+
+  it("reuses a stored Watchmode id instead of searching again", async () => {
+    await watchmodeMovieSettings();
+    const conn = await makeConnection();
+    radarrMovies = [movie(1)];
+    watchmodeSources = { 55501: wmOnNetflix };
+    await makeMediaItem(conn.id, {
+      arrId: 1,
+      tmdbId: 1001,
+      watchmodeId: 55501,
+      providerSyncedAt: null,
+    });
+
+    await runSync();
+    expect(watchmodeSearchCalls).toBe(0);
+    expect(watchmodeSourceCalls).toEqual([55501]);
+  });
+
+  it("clears a stale tmdbMissing flag rather than sweeping on it", async () => {
+    await watchmodeMovieSettings();
+    const conn = await makeConnection();
+    radarrMovies = [movie(1)];
+    watchmodeIds = { 1001: 55501 };
+    watchmodeSources = { 55501: wmOnNetflix };
+    // Flagged by an earlier TMDB-backed sync. Nothing consults TMDB now, so
+    // leaving it set would let a sweep delete the movie on a stale verdict.
+    await makeMediaItem(conn.id, { arrId: 1, tmdbId: 1001, tmdbMissing: true });
+
+    await runSync();
+    const row = await prisma.mediaItem.findFirstOrThrow();
+    expect(row.tmdbMissing).toBe(false);
+  });
+
+  it("holds a movie for the TV freshness window, not the 24-hour one", async () => {
+    await watchmodeMovieSettings();
+    const conn = await makeConnection();
+    radarrMovies = [movie(1)];
+    watchmodeIds = { 1001: 55501 };
+    watchmodeSources = { 55501: wmOnNetflix };
+    // Older than the TMDB window, well inside the Watchmode one: a credit per
+    // movie per day is exactly what this window exists to prevent.
+    await makeMediaItem(conn.id, {
+      arrId: 1,
+      tmdbId: 1001,
+      watchmodeId: 55501,
+      providerSyncedAt: new Date(Date.now() - MOVIE_TTL_MS - 1000),
+    });
+
+    const result = await runSync();
+    expect(result.movieSkipped).toBe(1);
+    expect(watchmodeSourceCalls).toEqual([]);
+  });
+
+  it("re-checks once the Watchmode window has passed", async () => {
+    await watchmodeMovieSettings();
+    const conn = await makeConnection();
+    radarrMovies = [movie(1)];
+    watchmodeIds = { 1001: 55501 };
+    watchmodeSources = { 55501: wmOnNetflix };
+    await makeMediaItem(conn.id, {
+      arrId: 1,
+      tmdbId: 1001,
+      watchmodeId: 55501,
+      providerSyncedAt: new Date(Date.now() - WATCHMODE_MOVIE_TTL_MS - 1000),
+    });
+
+    const result = await runSync();
+    expect(result.movieSkipped).toBe(0);
+    expect(watchmodeSourceCalls).toEqual([55501]);
+  });
+
+  it("does not probe the Watchmode plan when there is no Sonarr to use it", async () => {
+    await watchmodeMovieSettings();
+    await makeConnection();
+    radarrMovies = [movie(1)];
+    watchmodeIds = { 1001: 55501 };
+
+    await runSync();
+    // The changes feed is episode-shaped, so the probe would buy nothing.
+    expect(watchmodePlanProbes).toBe(0);
+  });
+});
+
 describe("runSync — configuration guards", () => {
   it("refuses to run for Radarr without TMDB configured", async () => {
     await makeSettings({ tmdbApiKey: null, tmdbRegions: [], tmdbProviderIds: [] });
     await makeConnection();
     await expect(runSync()).rejects.toThrow(/TMDB API key/);
+  });
+
+  it("refuses to run for Radarr on Watchmode without a Watchmode key", async () => {
+    await makeSettings({ movieProvider: "WATCHMODE", countries: ["US"], serviceIds: [WM_NETFLIX] });
+    await makeConnection();
+    // The message has to name the half of the library that is blocked: with a
+    // movie provider to choose from, "needed for TV" is no longer a safe guess.
+    await expect(runSync()).rejects.toThrow(/Watchmode API key.*needed for movies/);
+  });
+
+  it("does not require TMDB when Watchmode answers movies", async () => {
+    await makeSettings({
+      movieProvider: "WATCHMODE",
+      watchmodeApiKeys: ["wm-key"],
+      watchmodeApiKey: "wm-key",
+      countries: ["US"],
+      serviceIds: [WM_NETFLIX],
+      countedTypes: ["sub"],
+      tmdbApiKey: null,
+      tmdbRegions: [],
+      tmdbProviderIds: [],
+    });
+    await makeConnection();
+    radarrMovies = [movie(1)];
+
+    const result = await runSync();
+    expect(result.movies).toBe(1);
+    expect(result.errors).toEqual([]);
   });
 
   it("ignores disabled connections", async () => {

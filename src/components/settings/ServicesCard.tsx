@@ -32,7 +32,9 @@ export function ServicesCard({ settings, onChange }: CardProps) {
   return (
     <div className="card" style={{ marginBottom: 20 }}>
       <div className="section-title" style={{ marginTop: 0 }}>
-        <h2 style={{ fontSize: 18 }}>Streaming services (TV)</h2>
+        <h2 style={{ fontSize: 18 }}>
+          Streaming services ({settings.movieProvider === "WATCHMODE" ? "TV & movies" : "TV"})
+        </h2>
         <span className="count">{selected.length} selected</span>
       </div>
       {!settings.countries.length && <div className="muted">Select at least one country first.</div>}

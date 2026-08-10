@@ -8,6 +8,7 @@ import { WatchmodeCard } from "@/components/settings/WatchmodeCard";
 import { TitleMapCard } from "@/components/settings/TitleMapCard";
 import { CountriesCard } from "@/components/settings/CountriesCard";
 import { ServicesCard } from "@/components/settings/ServicesCard";
+import { MovieProviderCard } from "@/components/settings/MovieProviderCard";
 import { TmdbCard } from "@/components/settings/TmdbCard";
 import { TmdbRegionsCard } from "@/components/settings/TmdbRegionsCard";
 import { TmdbProvidersCard } from "@/components/settings/TmdbProvidersCard";
@@ -117,7 +118,15 @@ export default function SettingsPage() {
             <>
               <p className="muted" style={{ marginTop: 0 }}>
                 Watchmode provides per-episode streaming availability and is used for
-                <strong> TV shows</strong>.
+                <strong> TV shows</strong>
+                {settings.movieProvider === "WATCHMODE" ? (
+                  <>
+                    {" "}
+                    and, because you chose it on the <strong>Movies</strong> tab,{" "}
+                    <strong>movies</strong>
+                  </>
+                ) : null}
+                . The countries and services below apply to everything it answers for.
               </p>
               <WatchmodeCard settings={settings} onChange={refresh} />
               <TitleMapCard enabled={settings.watchmodeApiKeySet} />
@@ -129,12 +138,30 @@ export default function SettingsPage() {
           {tab === "tmdb" && (
             <>
               <p className="muted" style={{ marginTop: 0 }}>
-                TheMovieDB (JustWatch-powered) provides streaming availability and is used for
-                <strong> movies</strong>.
+                Movie streaming availability. TV always comes from Watchmode — only movies
+                have a choice of provider.
               </p>
-              <TmdbCard settings={settings} onChange={refresh} />
-              <TmdbRegionsCard settings={settings} onChange={refresh} />
-              <TmdbProvidersCard settings={settings} onChange={refresh} />
+              <MovieProviderCard settings={settings} onChange={refresh} />
+              {settings.movieProvider === "TMDB" ? (
+                <>
+                  <TmdbCard settings={settings} onChange={refresh} />
+                  <TmdbRegionsCard settings={settings} onChange={refresh} />
+                  <TmdbProvidersCard settings={settings} onChange={refresh} />
+                </>
+              ) : (
+                // Hidden rather than disabled: with Watchmode answering movies
+                // these say nothing about what a sweep will do, and a region
+                // list that has no effect is worse than no region list. The
+                // stored values are untouched and come back on switching back.
+                <div className="card">
+                  <p className="muted" style={{ margin: 0 }}>
+                    Movies are being looked up on Watchmode, so the TheMovieDB key, regions
+                    and providers aren&rsquo;t used. Pick the countries and services on the{" "}
+                    <strong>Watchmode</strong> tab instead. Your TheMovieDB settings are kept
+                    and reappear here if you switch back.
+                  </p>
+                </div>
+              )}
             </>
           )}
 

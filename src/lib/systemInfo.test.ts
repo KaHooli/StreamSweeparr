@@ -164,6 +164,7 @@ const info: SystemInfo = {
     watchmodePlan: "free",
     countries: 1,
     serviceIds: 4,
+    movieProvider: "TMDB",
     tmdbApiKeySet: true,
     tmdbRegions: 1,
     tmdbProviderIds: 5,

@@ -1,13 +1,16 @@
 import { describe, it, expect, beforeEach, afterAll, vi } from "vitest";
 
 /**
- * The Watchmode key ring, driven through the real settings route.
+ * The settings route against a real database — the Watchmode key ring, and the
+ * movie provider choice.
  *
  * The ring is edited without the browser ever seeing a stored key: a field the
  * user did not retype is sent as the position it occupies. These tests check
  * that round trip against a real database — that positions resolve to the right
  * keys, that the stored form is ciphertext, and that a stale edit is refused
- * rather than quietly deleting a key.
+ * rather than quietly deleting a key. The provider tests are here for the same
+ * reason: what matters is that the switch persists and that it leaves the other
+ * provider's stored configuration intact.
  */
 
 let cookieValue: string | undefined;
@@ -164,5 +167,43 @@ describe("PATCH /api/settings — Watchmode key ring", () => {
     const tooMany = Array.from({ length: 11 }, (_, i) => ({ value: `k${i}` }));
     expect((await patch({ watchmodeApiKeys: tooMany })).status).toBe(400);
     expect((await getSettings()).watchmodeApiKeys).toEqual([]);
+  });
+});
+
+describe("PATCH /api/settings — movie availability provider", () => {
+  it("defaults to TMDB, so an upgrade never starts spending Watchmode credits", async () => {
+    await signInAsAdmin();
+    await makeSettings();
+
+    expect((await (await GET()).json()).movieProvider).toBe("TMDB");
+  });
+
+  it("switches movies to Watchmode without disturbing the TMDB configuration", async () => {
+    await signInAsAdmin();
+    await makeSettings({
+      tmdbApiKey: "tmdb-key",
+      tmdbRegions: ["US"],
+      tmdbProviderIds: [8],
+    });
+
+    const res = await patch({ movieProvider: "WATCHMODE" });
+    expect(res.status).toBe(200);
+    expect((await res.json()).movieProvider).toBe("WATCHMODE");
+
+    // Switching is not a reset: everything TMDB needs is still there, so
+    // switching back costs nothing but the click.
+    const stored = await getSettings();
+    expect(stored.movieProvider).toBe("WATCHMODE");
+    expect(stored.tmdbApiKey).toBe("tmdb-key");
+    expect(stored.tmdbRegions).toEqual(["US"]);
+    expect(stored.tmdbProviderIds).toEqual([8]);
+  });
+
+  it("rejects a provider it has never heard of", async () => {
+    await signInAsAdmin();
+    await makeSettings();
+
+    expect((await patch({ movieProvider: "JUSTWATCH" })).status).toBe(400);
+    expect((await getSettings()).movieProvider).toBe("TMDB");
   });
 });

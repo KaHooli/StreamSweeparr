@@ -55,6 +55,7 @@ export async function makeMediaItem(
     tmdbMissing: boolean;
     skipped: boolean;
     tmdbId: number | null;
+    watchmodeId: number | null;
     providerSyncedAt: Date | null;
     lastSyncedAt: Date;
   }> = {}
@@ -73,6 +74,7 @@ export async function makeMediaItem(
       tmdbMissing: over.tmdbMissing ?? false,
       skipped: over.skipped ?? false,
       tmdbId: over.tmdbId === undefined ? 100 : over.tmdbId,
+      ...(over.watchmodeId !== undefined ? { watchmodeId: over.watchmodeId } : {}),
       ...(over.providerSyncedAt !== undefined ? { providerSyncedAt: over.providerSyncedAt } : {}),
       ...(over.lastSyncedAt !== undefined ? { lastSyncedAt: over.lastSyncedAt } : {}),
     },

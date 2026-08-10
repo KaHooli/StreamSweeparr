@@ -36,7 +36,14 @@ export function OptionsCard({ settings, onChange }: CardProps) {
       />
       <Toggle
         title="Remove movies deleted from TMDB"
-        desc="If TMDB reports a movie's id no longer exists, remove it from Radarr. Media files are kept."
+        // Nothing consults TMDB while Watchmode answers for movies, so no movie
+        // is ever flagged and this switch has nothing to act on. Say so rather
+        // than leave a destructive-looking option reading as if it were armed.
+        desc={
+          settings.movieProvider === "WATCHMODE"
+            ? "If TMDB reports a movie's id no longer exists, remove it from Radarr. Not in use: movies are being looked up on Watchmode."
+            : "If TMDB reports a movie's id no longer exists, remove it from Radarr. Media files are kept."
+        }
         checked={settings.removeMissingTmdbMovies}
         danger
         onChange={(v) => set({ removeMissingTmdbMovies: v })}

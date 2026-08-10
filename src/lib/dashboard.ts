@@ -140,8 +140,10 @@ export async function getDashboardData(): Promise<DashboardData> {
     monitored: m.monitored,
     hasFile: m.hasFile,
     tmdbId: m.tmdbId,
-    // Movie availability comes from TMDB, which gives no per-provider link, so
-    // every logo here resolves through the service search / TMDB fallbacks.
+    // A movie answered by TMDB has no per-provider link, so its logos resolve
+    // through the service search / TMDB fallbacks; one answered by Watchmode
+    // carries the same `web_url` deep links a series does, and dedupeServices
+    // prefers those when they are there.
     services: dedupeServices(m.streamingInfo, tmdbWatchUrl("movie", m.tmdbId), m.title),
     lastSyncedAt: m.lastSyncedAt,
   }));

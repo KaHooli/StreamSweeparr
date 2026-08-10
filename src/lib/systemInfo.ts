@@ -79,6 +79,8 @@ export interface ConfigInfo {
   watchmodePlan: string | null;
   countries: number;
   serviceIds: number;
+  /** Which provider answers movie availability ("TMDB" | "WATCHMODE"). */
+  movieProvider: string;
   tmdbApiKeySet: boolean;
   tmdbRegions: number;
   tmdbProviderIds: number;
@@ -296,10 +298,14 @@ export function buildDiagnosticsText(info: SystemInfo): string {
       `${watchmodeKeySummary(cfg)}, plan ${cfg.watchmodePlan ?? "unknown"}, ` +
         `${cfg.countries} country/ies, ${cfg.serviceIds} service(s)`
     );
+    row("Movie availability", cfg.movieProvider === "WATCHMODE" ? "Watchmode" : "TheMovieDB");
     row(
       "TMDB",
       `key ${cfg.tmdbApiKeySet ? "set" : "not set"}, ${cfg.tmdbRegions} region(s), ` +
-        `${cfg.tmdbProviderIds} provider(s)`
+        `${cfg.tmdbProviderIds} provider(s)` +
+        // Say so rather than leaving a plausible-looking row to be read as the
+        // configuration in force — this is a diagnostics screen.
+        (cfg.movieProvider === "WATCHMODE" ? " (not in use)" : "")
     );
     row("Seerr", yesNo(cfg.seerrConfigured));
     row(
