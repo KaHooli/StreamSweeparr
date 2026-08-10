@@ -10,7 +10,8 @@ export const dynamic = "force-dynamic";
 export default async function DashboardPage() {
   const settings = await getSettings();
   // Per media type, mirroring what runSync actually validates — a Radarr-only
-  // install needs TMDB and nothing from Watchmode. See lib/setupState.ts.
+  // install needs whichever provider answers for movies, and nothing else.
+  // See lib/setupState.ts.
   const setup = setupStatus(settings);
 
   if (!setup.ready) {

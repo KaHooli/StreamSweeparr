@@ -7,6 +7,7 @@ function settings(over: Partial<SetupSettingsShape> = {}): SetupSettingsShape {
     watchmodeApiKeys: ["wm-key"],
     countries: ["US"],
     serviceIds: [203],
+    movieProvider: "TMDB",
     tmdbApiKey: "tmdb-key",
     tmdbRegions: ["US"],
     tmdbProviderIds: [8],
@@ -94,6 +95,47 @@ describe("setupStatus", () => {
       "at least one TMDB region (for movies)",
       "at least one TMDB movie provider (for movies)",
     ]);
+  });
+
+  // The same lockout as the Radarr-only one, one setting along: movies on
+  // Watchmode make the TMDB stack irrelevant, and runSync stopped asking for it.
+  it("does not require TMDB when Watchmode answers for movies", () => {
+    const status = setupStatus(
+      settings({
+        movieProvider: "WATCHMODE",
+        tmdbApiKey: null,
+        tmdbRegions: [],
+        tmdbProviderIds: [],
+        connections: [{ type: "RADARR", enabled: true }],
+      })
+    );
+    expect(status).toEqual({ ready: true, missing: [] });
+  });
+
+  it("asks for the Watchmode stack when movies are pointed at it", () => {
+    const status = setupStatus(
+      settings({
+        movieProvider: "WATCHMODE",
+        watchmodeApiKeys: [],
+        countries: [],
+        serviceIds: [],
+        connections: [{ type: "RADARR", enabled: true }],
+      })
+    );
+    expect(status.ready).toBe(false);
+    // Labelled "for movies", not "for TV": this install has no Sonarr at all.
+    expect(status.missing).toEqual([
+      "a Watchmode API key (for movies)",
+      "at least one Watchmode country (for movies)",
+      "at least one streaming service (for movies)",
+    ]);
+  });
+
+  it("says one Watchmode key covers both when Sonarr is enabled too", () => {
+    const status = setupStatus(
+      settings({ movieProvider: "WATCHMODE", watchmodeApiKeys: [] })
+    );
+    expect(status.missing).toEqual(["a Watchmode API key (for TV and movies)"]);
   });
 
   it("reports both stacks when both kinds of connection are enabled", () => {
