@@ -29,6 +29,11 @@ export interface SettingsDto {
   countries: string[];
   serviceIds: number[];
   countedTypes: string[];
+  /**
+   * Which provider answers movie availability. TV is always Watchmode; movies
+   * default to TMDB because its API is free, leaving Watchmode credits for TV.
+   */
+  movieProvider: "TMDB" | "WATCHMODE";
   tmdbApiKeySet: boolean;
   tmdbRegions: string[];
   tmdbProviderIds: number[];

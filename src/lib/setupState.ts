@@ -11,14 +11,18 @@
  * to the sweep button.
  *
  * The rule is per media type, mirroring `runSync`: enabled Sonarr connections
- * need the Watchmode stack, enabled Radarr connections need the TMDB stack, and
- * an install with neither kind of connection needs a connection first.
+ * need the Watchmode stack, enabled Radarr connections need whichever stack
+ * `movieProvider` names, and an install with neither kind of connection needs a
+ * connection first. Movies pointed at Watchmode therefore need no TMDB key at
+ * all — asking for one would be the same lockout in a new place.
  */
 
 export interface SetupSettingsShape {
   watchmodeApiKeys: string[];
   countries: string[];
   serviceIds: number[];
+  /** Which provider answers movie availability: "TMDB" | "WATCHMODE". */
+  movieProvider: string;
   tmdbApiKey: string | null;
   tmdbRegions: string[];
   tmdbProviderIds: number[];
@@ -51,14 +55,22 @@ export function setupStatus(s: SetupSettingsShape): SetupStatus {
   }
 
   // Only ask for the credentials the enabled connections actually consume —
-  // the same split `runSync` makes before it validates anything.
-  if (enabled.some((c) => c.type === "SONARR")) {
-    if (!s.watchmodeApiKeys.length) missing.push("a Watchmode API key (for TV)");
-    if (!s.countries.length) missing.push("at least one Watchmode country (for TV)");
-    if (!s.serviceIds.length) missing.push("at least one streaming service (for TV)");
+  // the same split `runSync` makes before it validates anything, including the
+  // movie provider, so that neither screen can demand a key the other doesn't.
+  const sonarr = enabled.some((c) => c.type === "SONARR");
+  const radarr = enabled.some((c) => c.type === "RADARR");
+  const watchmodeMovies = radarr && s.movieProvider === "WATCHMODE";
+
+  if (sonarr || watchmodeMovies) {
+    // Name what the credential is for, so a movies-only install on Watchmode is
+    // not sent looking for the TV setup it hasn't got.
+    const forWhat = sonarr ? (watchmodeMovies ? "TV and movies" : "TV") : "movies";
+    if (!s.watchmodeApiKeys.length) missing.push(`a Watchmode API key (for ${forWhat})`);
+    if (!s.countries.length) missing.push(`at least one Watchmode country (for ${forWhat})`);
+    if (!s.serviceIds.length) missing.push(`at least one streaming service (for ${forWhat})`);
   }
 
-  if (enabled.some((c) => c.type === "RADARR")) {
+  if (radarr && !watchmodeMovies) {
     if (!s.tmdbApiKey) missing.push("a TheMovieDB API key (for movies)");
     if (!s.tmdbRegions.length) missing.push("at least one TMDB region (for movies)");
     if (!s.tmdbProviderIds.length) missing.push("at least one TMDB movie provider (for movies)");

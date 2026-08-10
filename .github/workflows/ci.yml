@@ -1,12 +1,15 @@
 name: CI
 
-# The quality gate, in two jobs that run in parallel:
+# The quality gate, running in parallel:
 #
-#   verify — lint, typecheck, unit + integration tests, and the Next build
-#   image  — builds the Docker image the project actually ships
+#   verify      — lint, typecheck, unit + integration tests, and the Next build
+#   image-build — builds the Docker image the project ships, on amd64 and
+#                 arm64, both natively
+#   image       — one stable name for the above, so branch protection has
+#                 something fixed to require
 #
-# Both must be required in branch protection; each covers what the other does
-# not. Publishing the image is a separate workflow that runs only on `main`.
+# `verify` and `image` must both be required in branch protection; each covers
+# what the other does not. Publishing is a separate workflow, only on `main`.
 on:
   push:
     branches:
@@ -119,28 +122,38 @@ jobs:
       - name: Build
         run: npx next build
 
-  # The image that actually ships, built on every PR.
+  # The image that actually ships, built on every PR — once per architecture.
   #
   # The publish workflow only runs on `main`, so before this existed nothing
   # built the Dockerfile until after merge — a broken base image or a bad COPY
-  # was found in the registry rather than in review.
+  # was found in the registry rather than in review. Building only amd64 left
+  # the same hole one architecture narrower: an arm64-specific break still
+  # reached `main` and surfaced at publish, which is the expensive place to
+  # find it.
   #
-  # A separate job rather than a step inside `verify`, so the ~4 minutes it
-  # takes runs alongside the tests instead of after them. The cost of that
-  # choice: it is its own required check. `verify` passing no longer implies
-  # the image builds, so `image` has to be named in the branch protection
-  # ruleset too, or a broken Dockerfile can merge with a green tick.
+  # Separate jobs rather than steps inside `verify`, so the ~4 minutes they
+  # take run alongside the tests instead of after them.
   #
-  # Single-arch and no push: a correctness check, not a release. The publish
-  # workflow still does the real multi-arch build.
-  image:
-    runs-on: ubuntu-latest
+  # No push: a correctness check, not a release. The publish workflow is what
+  # pushes, and it builds the same two architectures the same way.
+  image-build:
+    runs-on: ${{ matrix.runner }}
 
     # Cached runs take ~90-160s; the first uncached build took just over 4
-    # minutes. 20 minutes covers a cold cache plus a slow registry, and this
-    # is the single-arch build — the emulated arm64 one that hung for three
-    # hours lives in the publish workflow, which has its own timeout.
+    # minutes. 20 minutes covers a cold cache plus a slow registry. Both legs
+    # are native — nothing here runs under emulation.
     timeout-minutes: 20
+
+    strategy:
+      # One architecture failing should not cancel the other: knowing whether
+      # a break is arch-specific is most of the diagnosis.
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
 
     steps:
       - name: Checkout
@@ -153,7 +166,32 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: .
-          platforms: linux/amd64
+          platforms: ${{ matrix.platform }}
           push: false
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # Scoped per architecture. A shared scope has the two builds evicting
+          # each other's layers, so neither ever gets a warm cache.
+          cache-from: type=gha,scope=ci-${{ matrix.platform }}
+          cache-to: type=gha,mode=max,scope=ci-${{ matrix.platform }}
+
+  # The required check, kept deliberately as one job with a stable name.
+  #
+  # `image` is named in the branch protection ruleset. Turning it into a matrix
+  # directly would have renamed the checks to `image (linux/amd64)` and
+  # `image (linux/arm64)`, so the rule would sit waiting for an `image` that no
+  # longer reports and every PR would block. This job is what keeps that name,
+  # whatever the matrix above grows to.
+  #
+  # `if: always()` plus an explicit result test, rather than a bare `needs:`,
+  # because a job skipped by a failed dependency reports as *skipped* — and a
+  # skipped required check can satisfy the rule it was meant to enforce.
+  image:
+    needs: image-build
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Fail unless every architecture built
+        if: needs.image-build.result != 'success'
+        run: |
+          echo "image-build concluded: ${{ needs.image-build.result }}"
+          exit 1

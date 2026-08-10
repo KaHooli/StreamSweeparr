@@ -895,6 +895,43 @@ a.provider-link:hover {
   background: #fff;
 }
 
+/* one-of-N choice list (e.g. which provider answers movie availability) */
+.choices {
+  display: grid;
+  gap: 10px;
+}
+.choice {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-elev);
+  cursor: pointer;
+  transition: border-color 0.12s ease, background 0.12s ease;
+}
+.choice:hover {
+  border-color: var(--accent);
+}
+.choice.selected {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.choice input {
+  margin-top: 3px;
+  accent-color: var(--accent);
+  flex: 0 0 auto;
+}
+.choice .txt strong {
+  display: block;
+  font-size: 14px;
+}
+.choice .txt span {
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
 /* selectable pill grids (countries / services) */
 .pills {
   display: grid;
