@@ -23,8 +23,14 @@ in step with what is already available on the streaming services you pay for:
   everything still unmonitored, then trigger a search for what remains
   monitored.
 
+A sweep starts three ways — the button, the schedule (`lib/scheduler.ts`), or a
+Sonarr/Radarr webhook saying a title was just added (`lib/sweepQueue.ts`). The
+third is the same sweep with every query narrowed to those titles, not a
+separate code path; `runTargetedSweep` in `lib/sweep.ts` is the entry point.
+
 Sweeps are destructive by design, so `applyChanges` defaults to **false** — a
-run is a dry-run until an admin explicitly enables LIVE mode.
+run is a dry-run until an admin explicitly enables LIVE mode. That applies to
+all three triggers equally.
 
 Single-tenant: `Settings` is one row, always `id = 1`.
 
@@ -69,8 +75,8 @@ npm run prisma:push        # prisma db push (local scratch only)
 
 **Before proposing a change as finished, run: `npm run lint && npm run typecheck
 && npm test`.** Add `npm run test:integration` when you touch `lib/sync.ts`,
-`lib/sweep.ts`, `lib/jobs.ts`, `lib/secrets.ts`, the users API, or anything that
-writes to Postgres.
+`lib/sweep.ts`, `lib/jobs.ts`, `lib/secrets.ts`, `lib/sweepQueue.ts`, the users
+API, the webhook route, or anything that writes to Postgres.
 
 Integration tests need a real database and **refuse to start without an explicit
 `DATABASE_URL`** (they `TRUNCATE`, so pointing them at a live deployment has to
@@ -122,6 +128,8 @@ src/
 | Sonarr / Radarr / Seerr clients | `lib/arr.ts` |
 | Title ID map (TMDB/IMDB → Watchmode, CSV import) | `lib/titlemap.ts` |
 | Scheduled sweeps: pure interval maths / the timer | `lib/schedule.ts`, `lib/scheduler.ts` |
+| Webhook sweeps: payload parsing + shared secret / the URLs the UI builds | `lib/webhook.ts`, `lib/webhookUrl.ts` |
+| Webhook sweep queue: enqueue, claim, drain, the worker | `lib/sweepQueue.ts` |
 | Sessions (edge-safe HMAC) | `lib/session.ts` |
 | Route guards (Node, database-backed) | `lib/auth.ts` |
 | Credential encryption at rest | `lib/secrets.ts` |
@@ -172,8 +180,17 @@ run before anything is installed). `public/` is excluded from linting.
 (`crypto.subtle`) rather than `node:crypto`, and why `instrumentation.ts` uses
 dynamic `await import()` for everything Node-only.
 
-Never import `lib/safeFetch.ts` (`node:dns`, `node:net`), `lib/secrets.ts`
-(`node:crypto`) or `lib/db.ts` from anything reachable by the proxy.
+Never import `lib/safeFetch.ts` (`node:dns`, `node:net`), `lib/secrets.ts` or
+`lib/webhook.ts` (both `node:crypto`), or `lib/db.ts` from anything reachable by
+the proxy. `proxy.ts` therefore spells out the webhook paths itself rather than
+importing them — if you add a public path, keep that list and `lib/webhookUrl.ts`
+in step by hand.
+
+The same split runs the other way, for **client** components. `lib/webhook.ts`
+is server-only, so the URL-building half it shares with the settings card lives
+in `lib/webhookUrl.ts`, which has no Node imports and is safe in the browser.
+When a client component needs logic that currently sits in a Node-only module,
+split the isomorphic part out like this rather than duplicating it.
 
 ### 4. Two layers of auth, with distinct jobs
 
@@ -197,19 +214,29 @@ export const POST = withGuard(requireAdmin, async (session, req: NextRequest) =>
 ```
 
 `withGuard` translates `AuthError` into the right JSON status. **A new route
-gets a guard.** The only unguarded routes are `/api/health` (public probe, and
-deliberately thin so it is not a recon surface) and the `/api/auth/*` endpoints
-that must work before a session exists — and those are also listed as public in
-`proxy.ts`.
+gets a guard.** There are exactly three exceptions, and all three are listed as
+public in `proxy.ts` too:
+
+- `/api/health` — public probe, deliberately thin so it is not a recon surface.
+- `/api/auth/*` — must work before a session exists.
+- `/api/webhook/{sonarr,radarr}` — Sonarr and Radarr have no way to hold a
+  session, so this one authenticates *itself* rather than being unauthenticated:
+  it is refused with 503 unless `webhookEnabled` is set, then compares the
+  caller's token against `Settings.webhookToken` in constant time, and
+  rate-limits rejected calls. It queues and returns; it never sweeps inline.
+  See `lib/webhook.ts`.
+
+Do not add a fourth without the same treatment — a route outside the session
+gate needs its own credential, its own kill switch, and its own rate limit.
 
 Bump `tokenVersion` whenever a session must stop being honoured (role change,
 password change, admin revocation).
 
 ### 5. Credentials are encrypted at rest, and `getSettings()` hides it
 
-Watchmode/TMDB/Seerr keys, the OIDC client secret, and every Sonarr/Radarr API
-key are stored as `enc:v1:<base64url>` (AES-256-GCM, key derived from
-`AUTH_SECRET` via HKDF).
+Watchmode/TMDB/Seerr keys, the OIDC client secret, the webhook token, and every
+Sonarr/Radarr API key are stored as `enc:v1:<base64url>` (AES-256-GCM, key
+derived from `AUTH_SECRET` via HKDF).
 
 - Read config through **`getSettings()`** — it returns decrypted values and
   normalises the Watchmode key ring.
@@ -221,6 +248,12 @@ key are stored as `enc:v1:<base64url>` (AES-256-GCM, key derived from
 - **Secrets never reach the browser.** The settings API returns booleans
   (`tmdbApiKeySet`) and counts (`watchmodeApiKeyCount`), and the UI refers to an
   untouched stored key *by position*. Keep it that way.
+- **One deliberate exception: `webhookToken`.** It is returned in full, because
+  it has no use until the admin pastes it into Sonarr/Radarr and a masked value
+  cannot be pasted. That is the bar for an exception — the credential is
+  *outbound*, the endpoint returning it is `requireAdmin`, and the value is
+  still encrypted at rest. A credential the app uses on the user's behalf never
+  qualifies.
 - `secretsUnreadable` distinguishes "never configured" from "`AUTH_SECRET`
   changed, so this can no longer be decrypted". Do not collapse the two.
 
@@ -252,6 +285,14 @@ A sweep never abandons the library on one failure: per-item errors are collected
 by `ErrorCollector` and the run ends `FAILED` with a summary, so a partial sweep
 is never mistaken for a clean one.
 
+Because only one run may be active, **anything that wants to start a sweep on an
+external event has to queue, not call `startRun` and hope.** That is what
+`QueuedSweep` + `lib/sweepQueue.ts` are for: the webhook endpoint records the
+title and returns, and a worker turns whatever has settled into one targeted
+run. `runTargetedSweep`'s `onFinished` is how a caller learns the outcome of a
+body that is otherwise detached — the queue uses it to drop the titles it handed
+over, or to put them back.
+
 ### 8. Destructive-by-default is guarded
 
 Anything that deletes or mutates Sonarr/Radarr must respect:
@@ -277,6 +318,14 @@ metered `/search`), **change detection** on paid plans
 (`providerSyncedAt`, 7 days for TV; 24 hours for TMDB movies). A LIVE sweep also
 updates the snapshot in place rather than re-syncing afterwards.
 
+A **scoped** sync (`runSync(progress, { targets, force })`) is the cheap path
+and the one deliberate exception: it looks at only the named titles, and `force`
+bypasses the freshness windows because a webhook sweep runs *because* those
+titles just changed. It also skips the changes feed and must never advance
+`watchmodeChangesCursor` — moving the cursor after looking at three series would
+mark every other change in the feed as seen. For the same reason it does not
+prune: a pass that never saw the rest of the library cannot conclude it is gone.
+
 If you add a provider call, say in its docblock what bounds how often it runs.
 
 ### 10. Data model rules
@@ -287,9 +336,13 @@ If you add a provider call, say in its docblock what bounds how often it runs.
 - `watchmodeApiKeys` (array) is the source of truth for the key ring;
   `watchmodeApiKey` is a derived mirror of the first element kept for older code
   paths. Write both consistently.
+- `QueuedSweep` is a work queue, not a log: rows are deleted once their sweep
+  finishes. Its unique key `(connectionId, mediaType, arrId)` is what collapses a
+  webhook that fires twice into one sweep, and `claimedBy` is what makes a claim
+  exclusive between replicas. Do not relax either.
 - Indexes exist for specific queries and the schema says which (dashboard
-  filtering, sync's prune-by-timestamp, the end-of-run episode scan). Keep the
-  comment truthful if you change a query shape.
+  filtering, sync's prune-by-timestamp, the end-of-run episode scan, the queue's
+  oldest-unclaimed scan). Keep the comment truthful if you change a query shape.
 
 ---
 
@@ -328,6 +381,7 @@ Two suites, split by whether they need infrastructure.
 database and no network. Covers pure decision logic and anything mockable:
 `planItem`'s matrix, session tokens, auth guards, password hashing, rate
 limiting, provider matching, encryption, the SSRF guard, sweep scheduling, the
+webhook payload/token/addressing rules, the sweep queue's claim lifecycle, the
 concurrency pool, and the *arr clients' wire format (fetch-mocked).
 
 **Integration — `src/**/*.itest.ts`**, run by `npm run test:integration` against
@@ -415,7 +469,8 @@ Images publish to GHCR from `main` and `v*.*.*` tags only, stamped with
 | `SSRF_ALLOW_PRIVATE` | `true` when the *arr apps are on a private LAN. |
 | `SYNC_CONCURRENCY` | Default 4, max 32. Raise `connection_limit` alongside it. |
 | `LOG_LEVEL` | `debug` \| `info` \| `warn` \| `error`. |
-| `TITLE_MAP_SCHEDULER`, `SWEEP_SCHEDULER` | `off` opts one replica out of a timer. Sweep slots are claimed atomically, so multiple replicas are safe either way. |
+| `TITLE_MAP_SCHEDULER`, `SWEEP_SCHEDULER` | `off` opts one replica out of a timer. Sweep slots and queued webhook titles are both claimed atomically, so multiple replicas are safe either way. `SWEEP_SCHEDULER=off` also stops the webhook queue worker — an instance with it set still *accepts* webhooks, so at least one instance must be left without it or the queue only grows. |
+| `WEBHOOK_SWEEP_DELAY_SECONDS` | How long a webhook-queued title settles before its sweep (default 60, capped at 3600). Sonarr fires "On Series Add" before it has fetched the episode list, so this is what makes sure there is something to sweep. |
 
 ---
 
