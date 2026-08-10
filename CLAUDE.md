@@ -407,14 +407,24 @@ must *never* be cached.
 
 ## CI and the Node version
 
-`.github/workflows/ci.yml` runs on every push and PR as **two parallel jobs,
-both required**:
+`.github/workflows/ci.yml` runs on every push and PR. **`verify` and `image`
+are both required**:
 
 - `verify` — `check:node` → `npm ci` → `prisma generate` → audit (fails only on
   **critical**) → lint → typecheck → unit tests → `migrate deploy` against a
   Postgres service container → integration tests → `next build`.
-- `image` — builds the Dockerfile, single-arch, no push. `verify` passing does
-  **not** imply the image builds, which is why it is separately required.
+- `image-build` — builds the Dockerfile on **amd64 and arm64**, both natively,
+  no push. An arm64-only break used to reach `main` and surface at publish.
+- `image` — an aggregator that fails unless every `image-build` leg succeeded.
+  It exists purely to keep one stable required-check name: making `image` a
+  matrix directly would rename the checks to `image (linux/amd64)` and
+  `image (linux/arm64)`, leaving branch protection waiting on an `image` that
+  never reports again. It uses `if: always()` and an explicit result test,
+  because a job skipped by a failed dependency reports as *skipped*, and a
+  skipped required check can satisfy the rule it was meant to enforce.
+
+`verify` passing does **not** imply the image builds, which is why `image` is
+separately required.
 
 `.nvmrc` is the single source of truth for the Node major. `npm run check:node`
 asserts that the Dockerfile's `FROM node:` lines, `engines.node`, and CI's
