@@ -909,7 +909,7 @@ Everything else is configured in the UI. See
 | `SYNC_CONCURRENCY` | Titles looked up in parallel during a sync (default `4`, max `32`) |
 | `LOG_LEVEL` | `debug` / `info` / `warn` / `error` for background work (default `info`) |
 | `SWEEP_SCHEDULER` | `off` stops *this instance* running scheduled **and** webhook sweeps |
-| `WEBHOOK_SWEEP_DELAY_SECONDS` | How long a webhook-queued title settles before its sweep (default `60`) |
+| `WEBHOOK_SWEEP_DELAY_SECONDS` | How long a webhook-queued title settles before its sweep (default `60`, max `3600`) |
 | `TITLE_MAP_SCHEDULER` | `off` disables the 12h Title ID map refresh on this instance |
 | `PORT` | Port for `next start` (default `3000`) |
 
