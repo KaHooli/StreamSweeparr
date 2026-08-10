@@ -507,9 +507,31 @@ async function sweepSonarr(
   arrIds?: number[]
 ) {
   const client = new SonarrClient(conn.baseUrl, conn.apiKey);
+  // Select rather than include: `include: { episodes: true }` pulls every
+  // column of every episode, and `streamingInfo` is a JSON blob per episode —
+  // a six-figure episode table arrives in memory in one go, almost all of it
+  // for fields the sweep never reads. The decision only needs planItem's four
+  // flags plus the ids used to act on them. (lib/sync.ts and searchSonarr both
+  // avoid the eager join for the same reason.)
   const series = await prisma.mediaItem.findMany({
     where: { connectionId: conn.id, type: "TV", skipped: false, ...arrIdFilter(arrIds) },
-    include: { episodes: true },
+    select: {
+      id: true,
+      title: true,
+      episodes: {
+        select: {
+          id: true,
+          arrEpisodeId: true,
+          seasonNumber: true,
+          episodeNumber: true,
+          episodeFileId: true,
+          monitored: true,
+          hasFile: true,
+          onStreaming: true,
+          streamingUnknown: true,
+        },
+      },
+    },
   });
 
   // A show Sonarr has only just added often has no episode list yet — the
