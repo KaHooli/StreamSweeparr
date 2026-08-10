@@ -620,7 +620,15 @@ async function searchRadarr(
   if (!ids.length) return;
   push("action", `[${conn.name}] Search ${ids.length} monitored movie(s).`);
   counts.searchedItems += ids.length;
-  if (!dryRun) await client.searchMovies(ids);
+  if (!dryRun) {
+    // Chunked for the same reason the episode search is: a whole library's
+    // worth of ids in one MoviesSearch command is a request big enough for a
+    // proxy in front of Radarr to reject, and every other bulk call this sweep
+    // makes is already batched.
+    for (const batch of chunk(ids, BATCH)) {
+      await client.searchMovies(batch);
+    }
+  }
 }
 
 async function searchSonarr(
