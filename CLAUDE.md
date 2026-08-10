@@ -450,6 +450,14 @@ major). Majors are a human decision. Action majors are allowed.
 Images publish to GHCR from `main` and `v*.*.*` tags only, stamped with
 `APP_COMMIT` / `APP_BUILT_AT` build args that surface in **Settings → Info**.
 
+`docker-publish.yml` is serialised by a repository-wide `concurrency` group,
+because it moves `latest` and two runs in flight have no ordering between them —
+whichever finishes last wins, so a slower run on an older commit can leave
+`latest` pointing backwards. It does **not** cancel in progress: a publish
+pushes per-architecture digests before assembling them, so interrupting one can
+leave digests no tag references. A burst of merges therefore publishes the
+newest commit and may skip the `sha-` image for ones superseded in between.
+
 `docker-publish.yml` builds each architecture on a runner of that architecture
 (`ubuntu-latest` and `ubuntu-24.04-arm`), pushes both **by digest with no tag**,
 and only then stitches them into one multi-arch tag in a `merge` job — so

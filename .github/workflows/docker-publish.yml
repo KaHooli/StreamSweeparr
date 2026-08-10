@@ -20,6 +20,30 @@ on:
       - "v*.*.*"
   workflow_dispatch:
 
+# One publish at a time, repository-wide.
+#
+# This workflow moves `latest`, and two runs in flight have no ordering between
+# them: whichever finishes last wins. Merge two PRs a minute apart and the older
+# commit's run can finish second, leaving `latest` pointing at the *earlier*
+# image with nothing failing to say so. Four merges in quick succession stayed
+# in order once, but by luck rather than design — the runs happened not to
+# overlap.
+#
+# `cancel-in-progress: false` because a publish is not safe to interrupt: it
+# pushes per-architecture digests and only then assembles them, so killing one
+# mid-flight can leave digests in the registry that no tag ever references.
+# Waiting a few minutes is the cheaper mistake.
+#
+# Worth knowing: GitHub keeps only the most recent *pending* run per group, so a
+# burst of merges will cancel the ones queued behind it and publish the newest.
+# Intermediate commits can therefore go without a `sha-` image. That is the
+# right trade — those commits were superseded within minutes, and the tag exists
+# so a bug report can name the build it came from, which nobody can be running
+# if it was never published. `latest` correctness is what matters here.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
 env:
   REGISTRY: ghcr.io
   # Image name = ghcr.io/<owner>/<repo>, lowercased in `prepare`.
