@@ -199,6 +199,7 @@ async function configInfo(): Promise<ConfigInfo | null> {
       watchmodePlan: s.watchmodePlan ?? null,
       countries: s.countries.length,
       serviceIds: s.serviceIds.length,
+      movieProvider: s.movieProvider,
       tmdbApiKeySet: !!s.tmdbApiKey,
       tmdbRegions: s.tmdbRegions.length,
       tmdbProviderIds: s.tmdbProviderIds.length,

@@ -23,6 +23,7 @@ const settings = (over: Partial<SettingsDto> = {}): SettingsDto =>
     countries: [],
     serviceIds: [],
     countedTypes: [],
+    movieProvider: "TMDB",
     tmdbApiKeySet: false,
     tmdbRegions: [],
     tmdbProviderIds: [],
