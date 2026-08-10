@@ -429,6 +429,27 @@ major). Majors are a human decision. Action majors are allowed.
 Images publish to GHCR from `main` and `v*.*.*` tags only, stamped with
 `APP_COMMIT` / `APP_BUILT_AT` build args that surface in **Settings → Info**.
 
+`docker-publish.yml` builds each architecture on a runner of that architecture
+(`ubuntu-latest` and `ubuntu-24.04-arm`), pushes both **by digest with no tag**,
+and only then stitches them into one multi-arch tag in a `merge` job — so
+`latest` never names a half-published image. It used to build both on one
+runner under QEMU, where the arm64 `npm ci` hung for 43 minutes and took the
+publish down; that layer is normally a cache hit, so the emulated install
+almost never ran and the flakiness stayed hidden until a lockfile change forced
+it. If you add a build arg that must be identical across architectures, compute
+it in `prepare` and thread it through — `APP_BUILT_AT` is there for exactly
+that reason.
+
+**The Dockerfile ships `npm ci --omit=dev`.** `deps` installs everything
+(`next build` type-checks, so the build needs `typescript` and `@types/*`);
+`prod-deps` installs the runtime tree and that is what the runner copies.
+Anything the *running container* needs is therefore a real `dependency` — which
+is why `prisma` is one: `docker-entrypoint.sh` runs `prisma migrate deploy` at
+startup. That worked before only because the image happened to carry every
+devDependency; against a runtime tree built with `--omit=dev`, a build-only
+classification would leave `npx` reaching for the network on every boot. Put
+build-only tooling in `devDependencies` and expect it not to exist at runtime.
+
 ---
 
 ## UI conventions
