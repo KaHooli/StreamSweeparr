@@ -1,6 +1,10 @@
 import { defineConfig } from "vitest/config";
 import { fileURLToPath } from "node:url";
 
+/*
+ * `.mts` for the same reason as vitest.config.mts — see the note there.
+ */
+
 /**
  * Integration suite: exercises sync, sweep and the run lock against a real
  * PostgreSQL, so the SQL that the unit tests mock away is actually run.

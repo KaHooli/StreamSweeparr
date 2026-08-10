@@ -1,6 +1,14 @@
 import { defineConfig } from "vitest/config";
 import { fileURLToPath } from "node:url";
 
+/*
+ * `.mts` rather than `.ts`: Vite loads a `.ts` config as CommonJS unless the
+ * nearest package.json says otherwise, and warns on every run that the ESM
+ * syntax here will stop working when its native config loader becomes the
+ * default. The extension states the module system outright, which is cheaper
+ * than adding `"type": "module"` to package.json and auditing what that moves.
+ */
+
 /**
  * Unit suite — no database, no network.
  *

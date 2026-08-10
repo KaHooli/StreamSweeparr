@@ -78,14 +78,24 @@ jobs:
       - name: Prisma generate
         run: npx prisma generate
 
-      # Fail the build on critical advisories in shipped dependencies. High and
-      # below are reported but not blocking: several Next.js advisories have no
-      # fix inside the 14.x line, so gating on them would wedge CI on an upgrade
-      # that has to be done deliberately.
+      # Fail the build on critical advisories, across the whole tree.
+      #
+      # High and below are reported but not blocking: several Next.js advisories
+      # have no fix inside the current line, so gating on them would wedge CI on
+      # an upgrade that has to be done deliberately.
+      #
+      # The blocking check deliberately does NOT pass `--omit=dev`, and that
+      # matters more than it looks. Dependabot is configured to ignore major
+      # bumps, and its rationale names this step as the backstop for a security
+      # fix that only a major can deliver. With dev dependencies omitted that
+      # backstop had a hole exactly where the ignore rule creates the risk: a
+      # critical advisory in the test runner sat here unreported while CI stayed
+      # green. Build-time tooling is part of the supply chain that produces the
+      # image, so it is in scope.
       - name: Audit dependencies
         run: |
-          npm audit --omit=dev || true
-          npm audit --omit=dev --audit-level=critical
+          npm audit || true
+          npm audit --audit-level=critical
 
       - name: Lint
         run: npm run lint
