@@ -624,6 +624,7 @@ The tab is **administrators only**, and so is the endpoint behind it.
 | **"Connection failed" when adding Sonarr/Radarr** | They're on a private LAN, which the SSRF guard blocks by default | Set `SSRF_ALLOW_PRIVATE=true` |
 | **The app refuses to start** | `AUTH_SECRET` missing or under 16 characters in production | `openssl rand -hex 32` and set it |
 | **SSO fails with *"invalid or mismatching redirect_uri"*** | The app is guessing its own address from behind a proxy | Set `PUBLIC_URL` to your real public URL, and register the exact redirect URI shown on the OIDC card |
+| **SSO fails with *"Single sign-on failed. Check the server log for details."*** | The detail is deliberately kept out of the URL — the login page is public | Read the app log: the line is tagged `[oidc]` and names the actual cause (a non-HTTPS endpoint, a mismatched issuer or client id, an expired token) |
 | **My API keys suddenly read as "not configured"** | `AUTH_SECRET` changed — it's also the encryption key | Restore the old secret, or re-enter the keys. [Details](#-encrypted-credentials) |
 | **Pages time out on a small NAS / VM** | Prisma's connection pool is sized from CPU count | Append `&connection_limit=10&pool_timeout=20` to `DATABASE_URL` |
 | **No install option in my browser** | Service workers need a secure context | Serve over HTTPS (or test on `localhost`) |
@@ -820,6 +821,24 @@ The flow is Authorization Code + PKCE with `state` validation. Users are
 provisioned on first login and can be restricted with an allow-list. **New SSO
 users get the `user` role** — an admin promotes them under **Settings → Users
 &amp; security → Users**.
+
+The `id_token` that comes back is checked against the issuer you configured,
+the client id you configured, and its own expiry, and if your provider also
+serves a `userinfo` endpoint the two have to agree on *who* signed in. A token
+that fails any of those is refused rather than used.
+
+> [!IMPORTANT]
+> **Your OIDC endpoints must be HTTPS.** The issuer (and therefore discovery),
+> the token endpoint and the userinfo endpoint are all refused over plain
+> `http://`. Your client secret is POSTed to the token endpoint and the identity
+> tokens come back on that same connection, so over HTTP anyone on the network
+> path can read the secret and rewrite the answer — including who you are. The
+> browser-facing authorize URL is not subject to this, since it carries no
+> secret.
+>
+> If your identity provider is currently HTTP-only on your LAN, put it behind a
+> TLS terminator before enabling SSO here. `SSRF_ALLOW_PRIVATE` governs whether
+> a *private address* may be reached at all; it does not relax this.
 
 > [!WARNING]
 > **Redirect URI:** register the *exact* value shown on the OIDC card with your
@@ -1078,6 +1097,7 @@ that does not carry a session.
 | **Scheduled sweeps** — interval maths (pure) + the timer that claims a slot | `src/lib/{schedule,scheduler}.ts` |
 | **Webhook sweeps** — payload parsing + shared secret, the URLs the UI hands out, the queue and its worker | `src/lib/{webhook,webhookUrl,sweepQueue}.ts`, `src/app/api/webhook/[arr]/route.ts` |
 | Background run lock + live progress | `src/lib/jobs.ts` |
+| Whether setup is complete, per media type | `src/lib/setupState.ts` |
 | SSRF-guarded fetch | `src/lib/safeFetch.ts` |
 | Credential encryption at rest | `src/lib/secrets.ts` |
 | Country flags | `src/lib/flags.ts` |

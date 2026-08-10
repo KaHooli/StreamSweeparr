@@ -68,8 +68,13 @@ async function fetchValidators(): Promise<{ etag: string | null; lastModified: s
  *
  * We re-emit as tab-separated values with \N for NULL, which is COPY's default
  * text format and avoids quoting/escaping ambiguity in the movie titles.
+ *
+ * Exported for the unit suite. This is the part of the import that is easy to
+ * get quietly wrong — a title containing a comma, a quote, a tab or a stray
+ * backslash is a malformed COPY row rather than a visible error — and it is
+ * pure, so it is testable without a database or the 78MB download.
  */
-function makeCsvToCopyTransform() {
+export function makeCsvToCopyTransform() {
   let leftover = "";
   let headerSkipped = false;
 

@@ -23,8 +23,10 @@ updates:
     #
     # Caveat worth knowing: this also suppresses *security* updates whose only
     # fix is a major bump. The backstop is the CI audit step, which fails the
-    # build on a critical advisory — so such a case surfaces loudly and gets
-    # handled deliberately, which is the intent here anyway.
+    # build on a critical advisory anywhere in the tree — so such a case
+    # surfaces loudly and gets handled deliberately, which is the intent here
+    # anyway. That step audits dev dependencies too, on purpose: they are the
+    # ones this ignore rule strands, and build tooling is still supply chain.
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]

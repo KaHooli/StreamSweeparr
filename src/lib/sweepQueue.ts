@@ -26,7 +26,7 @@ import type { MediaType } from "@prisma/client";
 import { prisma, getSettings } from "./db";
 import { logger } from "./logger";
 import { runTargetedSweep, type SweepTarget } from "./sweep";
-import { RunLockError } from "./jobs";
+import { RunLockError, hasLiveRun } from "./jobs";
 import { schedulerDisabledByEnv } from "./schedule";
 
 const log = logger("webhook");
@@ -53,9 +53,22 @@ const MAX_BATCH = 50;
 const MAX_ATTEMPTS = 5;
 
 /**
- * A claim older than this belonged to a process that died. The run lock's own
- * staleness window is five minutes, so this is comfortably past the point where
- * the sweep it was waiting on could still be alive.
+ * How long a claim may sit untouched before it is a candidate for reclaiming.
+ *
+ * Only a candidate: the claim is released solely when no run is alive as well
+ * (see `hasLiveRun`). A claim's real lifetime is the sweep it is waiting on,
+ * and a sweep has no maximum duration — a batch of MAX_BATCH series, each
+ * pulling episode availability and then searching, can comfortably outlive any
+ * constant put here.
+ *
+ * This once read purely as a timeout, justified by the run lock's five-minute
+ * window. That reasoning confused two different things: five minutes is how
+ * long a run may go without a *heartbeat*, not how long it may run. A sweep
+ * that took longer than this had its rows reclaimed underneath it, re-claimed
+ * under a new token by the next tick, and swept a second time — while the
+ * original sweep's `settleClaim` deleted by a token no row carried any more and
+ * removed nothing. Duplicated work, and Watchmode credits are the one resource
+ * this app is careful with.
  */
 const CLAIM_STALE_MS = 10 * 60 * 1000;
 
@@ -148,11 +161,18 @@ export async function drainSweepQueue(now: Date = new Date()): Promise<DrainResu
   const settings = await getSettings();
   if (!settings.webhookEnabled) return { status: "disabled" };
 
-  // Reclaim rows whose claimer never came back.
-  await prisma.queuedSweep.updateMany({
-    where: { claimedAt: { lt: new Date(now.getTime() - CLAIM_STALE_MS) } },
-    data: { claimedAt: null, claimedBy: null },
-  });
+  // Reclaim rows whose claimer never came back — but only once nothing is
+  // running. A live run is the one thing that says an old-looking claim may
+  // still be in flight, and deferring costs the queued titles nothing but a
+  // tick or two. If the claiming process really did die, its run stops
+  // heartbeating and `hasLiveRun` goes false within the same five minutes
+  // `startRun` uses to reap the run itself, so this cannot wedge.
+  if (!(await hasLiveRun(now))) {
+    await prisma.queuedSweep.updateMany({
+      where: { claimedAt: { lt: new Date(now.getTime() - CLAIM_STALE_MS) } },
+      data: { claimedAt: null, claimedBy: null },
+    });
+  }
 
   const readyBefore = new Date(now.getTime() - settleMs());
   const ready = await prisma.queuedSweep.findMany({

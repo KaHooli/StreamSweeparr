@@ -65,9 +65,12 @@ export async function register() {
     };
 
     // Kick off shortly after boot (so the DB is reachable), then every 12h.
-    setTimeout(tick, 10_000);
+    const first = setTimeout(tick, 10_000);
     const timer = setInterval(tick, TITLE_MAP_TTL_MS);
-    // Do not keep the event loop alive solely for this timer.
+    // Do not keep the event loop alive solely for these timers — including the
+    // initial one, which otherwise holds the process open for ten seconds after
+    // there is nothing left to do. (The sweep queue worker unrefs both.)
+    if (typeof first.unref === "function") first.unref();
     if (typeof timer.unref === "function") timer.unref();
   }
 

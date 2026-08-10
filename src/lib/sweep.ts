@@ -507,9 +507,31 @@ async function sweepSonarr(
   arrIds?: number[]
 ) {
   const client = new SonarrClient(conn.baseUrl, conn.apiKey);
+  // Select rather than include: `include: { episodes: true }` pulls every
+  // column of every episode, and `streamingInfo` is a JSON blob per episode —
+  // a six-figure episode table arrives in memory in one go, almost all of it
+  // for fields the sweep never reads. The decision only needs planItem's four
+  // flags plus the ids used to act on them. (lib/sync.ts and searchSonarr both
+  // avoid the eager join for the same reason.)
   const series = await prisma.mediaItem.findMany({
     where: { connectionId: conn.id, type: "TV", skipped: false, ...arrIdFilter(arrIds) },
-    include: { episodes: true },
+    select: {
+      id: true,
+      title: true,
+      episodes: {
+        select: {
+          id: true,
+          arrEpisodeId: true,
+          seasonNumber: true,
+          episodeNumber: true,
+          episodeFileId: true,
+          monitored: true,
+          hasFile: true,
+          onStreaming: true,
+          streamingUnknown: true,
+        },
+      },
+    },
   });
 
   // A show Sonarr has only just added often has no episode list yet — the
@@ -620,7 +642,15 @@ async function searchRadarr(
   if (!ids.length) return;
   push("action", `[${conn.name}] Search ${ids.length} monitored movie(s).`);
   counts.searchedItems += ids.length;
-  if (!dryRun) await client.searchMovies(ids);
+  if (!dryRun) {
+    // Chunked for the same reason the episode search is: a whole library's
+    // worth of ids in one MoviesSearch command is a request big enough for a
+    // proxy in front of Radarr to reject, and every other bulk call this sweep
+    // makes is already batched.
+    for (const batch of chunk(ids, BATCH)) {
+      await client.searchMovies(batch);
+    }
+  }
 }
 
 async function searchSonarr(

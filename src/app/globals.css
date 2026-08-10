@@ -434,12 +434,27 @@ a:hover {
   }
 }
 
+/* Every on-streaming title is in the DOM at once — that is what lets the A-Z
+   rail measure the page and size itself like a scrollbar, and what lets search
+   and jump-to-letter work without a round trip. `content-visibility` is what
+   makes that affordable on a large library: the browser skips layout, style
+   and paint for cards that are off-screen, and does the work as they approach
+   the viewport. The element boxes still exist, so `getBoundingClientRect` on
+   the letter anchors keeps reporting real positions.
+
+   `contain-intrinsic-size: auto <length>` is the half that keeps it honest.
+   The length is the placeholder height a card is assumed to have before it has
+   ever been rendered — roughly a 2:3 poster at tile width plus the body — and
+   `auto` tells the browser to remember each card's real size once measured, so
+   scroll position and rail spans settle rather than drifting as you go. */
 .poster-card {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 14px;
   overflow: hidden;
   transition: transform 0.12s ease, border-color 0.12s ease;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 340px;
 }
 .poster-card:hover {
   transform: translateY(-3px);
