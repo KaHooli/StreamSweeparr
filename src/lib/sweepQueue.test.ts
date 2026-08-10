@@ -28,6 +28,9 @@ interface Args {
 
 let rows: Row[] = [];
 const settingsRow = { webhookEnabled: true };
+// Whether a run is currently alive. The drain only reclaims stale claims when
+// nothing is running, so this gates that half of the behaviour.
+let liveRun: { id: number } | null = null;
 
 /** The subset of Prisma filtering the drain actually relies on. */
 function matches(row: Row, where: Record<string, unknown> = {}): boolean {
@@ -88,6 +91,8 @@ vi.mock("./db", () => ({
       deleteMany: (a: Args) => queuedSweep.deleteMany(a),
       upsert: () => queuedSweep.upsert(),
     },
+    // `hasLiveRun` reads this; the drain asks it before reclaiming anything.
+    runLog: { findFirst: async () => liveRun },
   },
   getSettings: async () => settingsRow,
 }));
@@ -128,6 +133,7 @@ function row(overrides: Partial<Row> = {}): Row {
 beforeEach(() => {
   rows = [];
   settingsRow.webhookEnabled = true;
+  liveRun = null;
   runTargetedSweep.mockClear();
   runTargetedSweep.mockResolvedValue(99);
   delete process.env.WEBHOOK_SWEEP_DELAY_SECONDS;
@@ -224,6 +230,23 @@ describe("drainSweepQueue", () => {
 
   it("reclaims a title whose claimer died", async () => {
     rows = [row({ claimedAt: new Date(now.getTime() - 30 * MINUTE), claimedBy: "gone" })];
+    expect(await drainSweepQueue(now)).toMatchObject({ status: "started", targets: 1 });
+  });
+
+  // A sweep has no maximum duration, so an old claim is not evidence its sweep
+  // is gone. Reclaiming one out from under a running sweep is what used to make
+  // the same titles sweep twice.
+  it("does not reclaim an old claim while a run is still alive", async () => {
+    liveRun = { id: 42 };
+    rows = [row({ claimedAt: new Date(now.getTime() - 30 * MINUTE), claimedBy: "slow-sweep" })];
+    expect(await drainSweepQueue(now)).toEqual({ status: "empty" });
+    expect(rows[0]).toMatchObject({ claimedBy: "slow-sweep" });
+    expect(runTargetedSweep).not.toHaveBeenCalled();
+  });
+
+  it("reclaims once the run that held the claim has gone quiet", async () => {
+    liveRun = null;
+    rows = [row({ claimedAt: new Date(now.getTime() - 30 * MINUTE), claimedBy: "slow-sweep" })];
     expect(await drainSweepQueue(now)).toMatchObject({ status: "started", targets: 1 });
   });
 
