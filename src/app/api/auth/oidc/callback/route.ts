@@ -9,8 +9,11 @@ import {
 import { upsertOidcUser } from "@/lib/users";
 import { createSession, SESSION_COOKIE, sessionCookieOptions } from "@/lib/session";
 import { oidcRedirectUri, publicOrigin } from "@/lib/request";
+import { logger } from "@/lib/logger";
 
 export const dynamic = "force-dynamic";
+
+const log = logger("oidc");
 
 const STATE_COOKIE = "ss_oidc_state";
 const VERIFIER_COOKIE = "ss_oidc_verifier";
@@ -73,6 +76,12 @@ export async function GET(req: NextRequest) {
     res.cookies.set(VERIFIER_COOKIE, "", { path: "/", maxAge: 0 });
     return res;
   } catch (e) {
-    return fail(req, (e as Error).message);
+    // The detail goes to the log, not the address bar. This endpoint is
+    // reachable without a session, so whatever the exception happens to
+    // contain — an internal endpoint URL, a provider's response body — would
+    // otherwise be readable by anyone who can reach the login page. The admin
+    // debugging their own setup is the person with the logs.
+    log.error(`sign-in failed: ${(e as Error).message}`);
+    return fail(req, "Single sign-on failed. Check the server log for details.");
   }
 }
