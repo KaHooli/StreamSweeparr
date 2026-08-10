@@ -15,6 +15,7 @@ import { SeerrCard } from "@/components/settings/SeerrCard";
 import { ConnectionsCard } from "@/components/settings/ConnectionsCard";
 import { OptionsCard } from "@/components/settings/OptionsCard";
 import { ScheduleCard } from "@/components/settings/ScheduleCard";
+import { WebhookCard } from "@/components/settings/WebhookCard";
 import { AccountCard } from "@/components/settings/AccountCard";
 import { LoginOptionsCard } from "@/components/settings/LoginOptionsCard";
 import { UsersCard } from "@/components/settings/UsersCard";
@@ -148,6 +149,7 @@ export default function SettingsPage() {
             <>
               <OptionsCard settings={settings} onChange={refresh} />
               <ScheduleCard settings={settings} onChange={refresh} />
+              <WebhookCard settings={settings} onChange={refresh} />
             </>
           )}
 

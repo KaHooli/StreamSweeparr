@@ -43,9 +43,12 @@ vi.mock("./arr", () => ({
   },
 }));
 
+/** How the sweep asked sync to scope itself, for the targeted-sweep tests. */
+const syncOptions: unknown[] = [];
+
 // The sweep syncs first; that path has its own tests, so stub it out here.
 vi.mock("./sync", () => ({
-  runSync: async () => ({
+  runSync: async (_progress: unknown, options: unknown) => (syncOptions.push(options), {
     connections: 1,
     movies: 0,
     series: 0,
@@ -64,7 +67,7 @@ vi.mock("./sync", () => ({
 }));
 
 import { prisma } from "@/lib/db";
-import { runSweep } from "@/lib/sweep";
+import { runSweep, runTargetedSweep, type SweepTarget } from "@/lib/sweep";
 import {
   resetDatabase,
   makeSettings,
@@ -77,20 +80,30 @@ import {
 beforeEach(async () => {
   await resetDatabase();
   arrCalls.length = 0;
+  syncOptions.length = 0;
   failing.clear();
 });
 afterAll(async () => {
   await prisma.$disconnect();
 });
 
-/** Kick off a sweep and wait for the detached body to settle. */
-async function sweepAndWait() {
-  const id = await runSweep();
+/** Wait for a detached run body to settle, then read the row back. */
+async function awaitRun(id: number) {
   await waitFor(async () => {
     const run = await prisma.runLog.findUnique({ where: { id } });
     return !!run && run.status !== "RUNNING";
   });
   return prisma.runLog.findUniqueOrThrow({ where: { id } });
+}
+
+/** Kick off a sweep and wait for the detached body to settle. */
+async function sweepAndWait() {
+  return awaitRun(await runSweep());
+}
+
+/** Kick off a targeted sweep (the webhook path) and wait for it. */
+async function targetedSweepAndWait(targets: SweepTarget[]) {
+  return awaitRun(await runTargetedSweep(targets));
 }
 
 const callsTo = (method: string) => arrCalls.filter((c) => c.method === method);
@@ -317,5 +330,164 @@ describe("error isolation", () => {
     const lines = (run.log as { level: string; msg: string }[]).map((l) => l.msg);
     expect(lines.some((m) => m.includes("setMoviesMonitored failed"))).toBe(true);
     expect(lines.some((m) => m.includes("deleteMovieFiles failed"))).toBe(true);
+  });
+});
+
+describe("targeted sweep", () => {
+  it("acts on the named movie and leaves the rest of the library alone", async () => {
+    await makeSettings({ applyChanges: true, deleteFiles: true, searchAtEnd: false });
+    const conn = await makeConnection();
+    await makeMediaItem(conn.id, {
+      arrId: 1,
+      title: "Just Added",
+      monitored: true,
+      onStreaming: true,
+      movieFileId: 11,
+    });
+    // Equally sweepable, but nobody asked about it.
+    await makeMediaItem(conn.id, {
+      arrId: 2,
+      title: "Untouched",
+      monitored: true,
+      onStreaming: true,
+      movieFileId: 12,
+    });
+
+    const run = await targetedSweepAndWait([
+      { connectionId: conn.id, type: "MOVIE", arrId: 1, title: "Just Added" },
+    ]);
+
+    expect(run.status).toBe("SUCCESS");
+    expect(run.unmonitoredMovies).toBe(1);
+    expect(callsTo("setMoviesMonitored")[0].args).toEqual([[1], false]);
+    expect(callsTo("deleteMovieFiles")[0].args).toEqual([[11]]);
+
+    const untouched = await prisma.mediaItem.findFirstOrThrow({ where: { arrId: 2 } });
+    expect(untouched.monitored).toBe(true);
+    expect(untouched.hasFile).toBe(true);
+  });
+
+  it("tells sync which titles to refresh, and to ignore its freshness windows", async () => {
+    await makeSettings({ applyChanges: true, searchAtEnd: false });
+    const conn = await makeConnection();
+    await makeMediaItem(conn.id, { arrId: 1, monitored: true, onStreaming: true });
+
+    await targetedSweepAndWait([
+      { connectionId: conn.id, type: "MOVIE", arrId: 1, title: "Just Added" },
+    ]);
+
+    expect(syncOptions[0]).toEqual({
+      targets: [{ connectionId: conn.id, type: "MOVIE", arrId: 1 }],
+      force: true,
+    });
+  });
+
+  it("searches only the titles it covered", async () => {
+    await makeSettings({ applyChanges: true, deleteFiles: false, searchAtEnd: true });
+    const conn = await makeConnection();
+    await makeMediaItem(conn.id, { arrId: 1, title: "Wanted", monitored: true, onStreaming: false });
+    await makeMediaItem(conn.id, { arrId: 2, title: "Other", monitored: true, onStreaming: false });
+
+    const run = await targetedSweepAndWait([
+      { connectionId: conn.id, type: "MOVIE", arrId: 1, title: "Wanted" },
+    ]);
+
+    expect(run.searchedItems).toBe(1);
+    expect(callsTo("searchMovies")[0].args).toEqual([[1]]);
+  });
+
+  it("skips connections none of the targets live on", async () => {
+    await makeSettings({ applyChanges: true, searchAtEnd: true });
+    const radarr = await makeConnection({ type: "RADARR", baseUrl: "http://r:7878" });
+    const sonarr = await makeConnection({ type: "SONARR", baseUrl: "http://s:8989" });
+    const show = await makeMediaItem(sonarr.id, { type: "TV", arrId: 9 });
+    await makeEpisode(show.id, { arrEpisodeId: 901, monitored: true, onStreaming: true });
+    await makeMediaItem(radarr.id, { arrId: 1, monitored: true, onStreaming: true });
+
+    const run = await targetedSweepAndWait([
+      { connectionId: sonarr.id, type: "TV", arrId: 9, title: "New Show" },
+    ]);
+
+    expect(run.unmonitoredEps).toBe(1);
+    expect(run.unmonitoredMovies).toBe(0);
+    // Nothing at all was asked of Radarr — not even the end-of-run search.
+    expect(arrCalls.every((c) => c.client === "sonarr")).toBe(true);
+  });
+
+  it("sweeps several newly added titles in one run", async () => {
+    await makeSettings({ applyChanges: true, deleteFiles: false, searchAtEnd: false });
+    const conn = await makeConnection();
+    await makeMediaItem(conn.id, { arrId: 1, monitored: true, onStreaming: true });
+    await makeMediaItem(conn.id, { arrId: 2, monitored: true, onStreaming: true });
+    await makeMediaItem(conn.id, { arrId: 3, monitored: true, onStreaming: true });
+
+    const run = await targetedSweepAndWait([
+      { connectionId: conn.id, type: "MOVIE", arrId: 1, title: "One" },
+      { connectionId: conn.id, type: "MOVIE", arrId: 3, title: "Three" },
+    ]);
+
+    expect(run.unmonitoredMovies).toBe(2);
+    expect(callsTo("setMoviesMonitored")[0].args).toEqual([[1, 3], false]);
+    expect((await prisma.mediaItem.findFirstOrThrow({ where: { arrId: 2 } })).monitored).toBe(true);
+  });
+
+  it("says so when Sonarr has not built the episode list yet", async () => {
+    await makeSettings({ applyChanges: true, searchAtEnd: false });
+    const conn = await makeConnection({ type: "SONARR" });
+    await makeMediaItem(conn.id, { type: "TV", arrId: 9, title: "Brand New" });
+
+    const run = await targetedSweepAndWait([
+      { connectionId: conn.id, type: "TV", arrId: 9, title: "Brand New" },
+    ]);
+
+    expect(run.status).toBe("SUCCESS");
+    const lines = (run.log as { level: string; msg: string }[]).map((l) => l.msg);
+    expect(lines.some((m) => m.includes("has no episodes in Sonarr yet"))).toBe(true);
+  });
+
+  it("opens the run log by naming what it is sweeping and why", async () => {
+    await makeSettings({ applyChanges: true, searchAtEnd: false });
+    const conn = await makeConnection();
+    await makeMediaItem(conn.id, { arrId: 1, monitored: true, onStreaming: true });
+
+    const run = await targetedSweepAndWait([
+      { connectionId: conn.id, type: "MOVIE", arrId: 1, title: "Just Added" },
+    ]);
+
+    const first = (run.log as { msg: string }[])[0].msg;
+    expect(first).toContain("webhook-triggered");
+    expect(first).toContain('"Just Added"');
+  });
+
+  it("reports the outcome to the caller once the detached body is done", async () => {
+    await makeSettings({ applyChanges: true, searchAtEnd: false });
+    const conn = await makeConnection();
+    await makeMediaItem(conn.id, { arrId: 1, monitored: true, onStreaming: true });
+
+    const outcomes: { ok: boolean }[] = [];
+    const id = await runTargetedSweep(
+      [{ connectionId: conn.id, type: "MOVIE", arrId: 1, title: "Just Added" }],
+      { onFinished: async (o) => void outcomes.push(o) }
+    );
+    await awaitRun(id);
+    await waitFor(async () => outcomes.length > 0);
+    expect(outcomes[0].ok).toBe(true);
+
+    // A sweep that hit item failures is reported as a failure, so the queue can
+    // decide whether the titles are worth another attempt.
+    failing.add("radarr.setMoviesMonitored");
+    await prisma.mediaItem.updateMany({ data: { monitored: true } });
+    const second = await runTargetedSweep(
+      [{ connectionId: conn.id, type: "MOVIE", arrId: 1, title: "Just Added" }],
+      { onFinished: async (o) => void outcomes.push(o) }
+    );
+    await awaitRun(second);
+    await waitFor(async () => outcomes.length > 1);
+    expect(outcomes[1].ok).toBe(false);
+  });
+
+  it("refuses a targeted sweep with nothing to target", async () => {
+    await makeSettings();
+    await expect(runTargetedSweep([])).rejects.toThrow(/at least one title/);
   });
 });

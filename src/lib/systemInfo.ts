@@ -88,6 +88,11 @@ export interface ConfigInfo {
   sweepIntervalHours: number;
   sweepNextRunAt: string | null;
   sweepLastRunAt: string | null;
+  /** Webhook-triggered sweeps: switched on, and does a token exist to use? */
+  webhookEnabled: boolean;
+  webhookTokenSet: boolean;
+  /** Titles waiting for a webhook sweep — a number stuck above zero is a clue. */
+  webhookQueued: number;
   titleMapSyncedAt: string | null;
   localLoginEnabled: boolean;
   oidcConfigured: boolean;
@@ -306,6 +311,12 @@ export function buildDiagnosticsText(info: SystemInfo): string {
       "Scheduled sweeps",
       cfg.sweepScheduleEnabled
         ? `every ${cfg.sweepIntervalHours}h, next ${cfg.sweepNextRunAt ?? "?"}, last ${cfg.sweepLastRunAt ?? "never"}`
+        : "off"
+    );
+    row(
+      "Webhook sweeps",
+      cfg.webhookEnabled
+        ? `on, token ${cfg.webhookTokenSet ? "set" : "MISSING"}, ${cfg.webhookQueued} title(s) queued`
         : "off"
     );
     row("Title ID map refreshed", cfg.titleMapSyncedAt);

@@ -212,6 +212,12 @@ async function configInfo(): Promise<ConfigInfo | null> {
       sweepIntervalHours: s.sweepIntervalHours,
       sweepNextRunAt: s.sweepNextRunAt?.toISOString() ?? null,
       sweepLastRunAt: s.sweepLastRunAt?.toISOString() ?? null,
+      webhookEnabled: s.webhookEnabled,
+      webhookTokenSet: !!s.webhookToken,
+      // A queue that never empties is the symptom of a worker that isn't
+      // running — SWEEP_SCHEDULER=off on the only replica, say — so the depth
+      // is worth reporting next to the switch itself.
+      webhookQueued: await prisma.queuedSweep.count().catch(() => 0),
       titleMapSyncedAt: s.titleMapSyncedAt?.toISOString() ?? null,
       localLoginEnabled: effectiveLocalLoginEnabled(s),
       oidcConfigured: isOidcConfigured(s),

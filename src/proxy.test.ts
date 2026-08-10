@@ -90,3 +90,41 @@ describe("proxy PWA assets", () => {
     }
   });
 });
+
+describe("proxy webhook endpoint", () => {
+  // Sonarr and Radarr cannot hold a session, so the receiver has to be reachable
+  // anonymously. It authenticates with its own shared secret instead — see
+  // app/api/webhook/[arr]/route.ts.
+  for (const path of ["/api/webhook/sonarr", "/api/webhook/radarr"]) {
+    it(`lets an anonymous ${path} call reach the route`, async () => {
+      expect(isPassThrough(await proxy(request(path)))).toBe(true);
+    });
+  }
+
+  it("keeps the query string, which is where the token rides", async () => {
+    const res = await proxy(request("/api/webhook/sonarr?token=abc&connection=2"));
+    expect(isPassThrough(res)).toBe(true);
+  });
+
+  it("opens up those two paths and nothing around them", async () => {
+    for (const path of [
+      "/api/webhook",
+      "/api/webhook/",
+      "/api/webhook/lidarr",
+      "/api/webhook/sonarr/extra",
+      "/api/webhooks",
+    ]) {
+      expect(isPassThrough(await proxy(request(path)))).toBe(false);
+    }
+  });
+
+  it("stays open during a forced password change", async () => {
+    // The admin's own password state has nothing to do with whether Sonarr may
+    // report a new series.
+    const token = await createSession(
+      { id: 1, username: "admin", role: "ADMIN", mustChangePassword: true },
+      "local"
+    );
+    expect(isPassThrough(await proxy(request("/api/webhook/sonarr", token)))).toBe(true);
+  });
+});

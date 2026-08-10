@@ -239,6 +239,17 @@ export function InfoCard() {
                   : "off"
               }
             />
+            <Row
+              label="Webhook sweeps"
+              hint="Sonarr/Radarr sweeping each title as it's added"
+              value={
+                cfg.webhookEnabled
+                  ? `on · token ${cfg.webhookTokenSet ? "set" : "missing"} · ${
+                      cfg.webhookQueued
+                    } queued`
+                  : "off"
+              }
+            />
             <Row label="Title ID map refreshed" value={formatWhen(cfg.titleMapSyncedAt)} />
             <Row label="Local login" value={yesNo(cfg.localLoginEnabled)} />
             <Row label="OIDC configured" value={yesNo(cfg.oidcConfigured)} />

@@ -18,9 +18,10 @@
  * without mutating Sonarr/Radarr.
  */
 
+import type { MediaType } from "@prisma/client";
 import { prisma, getSettings } from "./db";
 import { SonarrClient, RadarrClient } from "./arr";
-import { runSync } from "./sync";
+import { runSync, type SyncTarget } from "./sync";
 import { startRun, RunContext, type LogLevel, type RunCounts } from "./jobs";
 import { describeSchedule } from "./schedule";
 
@@ -83,7 +84,23 @@ export class SweepPartialFailure extends Error {
 }
 
 /** What kicked the sweep off — recorded in the run log. */
-export type SweepTrigger = "manual" | "schedule";
+export type SweepTrigger = "manual" | "schedule" | "webhook";
+
+/**
+ * One title a sweep should confine itself to.
+ *
+ * A targeted sweep is the whole sweep — same sync, same decision matrix, same
+ * end-of-run search — with every database query narrowed to these titles. That
+ * is what makes "Sonarr just added a show, check that show" cost one Watchmode
+ * call instead of a library-wide pass.
+ */
+export interface SweepTarget {
+  connectionId: number;
+  type: MediaType;
+  arrId: number;
+  /** For the run log; the sweep re-reads everything it acts on. */
+  title: string;
+}
 
 /**
  * Start a sweep in the background (behind the run lock). Returns the runId.
@@ -95,51 +112,117 @@ export async function runSweep(trigger: SweepTrigger = "manual"): Promise<number
   return startRun("SWEEP", dryRun, (ctx) => sweepBody(ctx, dryRun, trigger));
 }
 
-async function sweepBody(ctx: RunContext, dryRun: boolean, trigger: SweepTrigger): Promise<void> {
+/**
+ * Start a sweep confined to `targets` — the webhook path.
+ *
+ * `onFinished` runs once the body is done, before the run is finalised, and is
+ * how the caller learns the outcome of work that is otherwise detached: the
+ * queue uses it to drop the titles it handed over, or to put them back.
+ */
+export async function runTargetedSweep(
+  targets: SweepTarget[],
+  opts: {
+    trigger?: SweepTrigger;
+    onFinished?: (outcome: { ok: boolean; error?: Error }) => Promise<void>;
+  } = {}
+): Promise<number> {
+  if (!targets.length) throw new Error("A targeted sweep needs at least one title.");
+  const settings = await getSettings();
+  const dryRun = !settings.applyChanges;
+  return startRun("SWEEP", dryRun, async (ctx) => {
+    let outcome: { ok: boolean; error?: Error } = { ok: false };
+    try {
+      await sweepBody(ctx, dryRun, opts.trigger ?? "webhook", targets);
+      outcome = { ok: true };
+    } catch (e) {
+      outcome = { ok: false, error: e as Error };
+      throw e;
+    } finally {
+      if (opts.onFinished) {
+        // A bookkeeping failure must not turn a completed sweep into a failed
+        // one — the run log is the record of what actually happened.
+        await opts.onFinished(outcome).catch(() => {});
+      }
+    }
+  });
+}
+
+/** Human-readable list of the titles a targeted sweep covers. */
+function describeTargets(targets: SweepTarget[]): string {
+  const shown = targets.slice(0, 5).map((t) => `"${t.title}"`);
+  const rest = targets.length - shown.length;
+  return shown.join(", ") + (rest > 0 ? ` and ${rest} more` : "");
+}
+
+async function sweepBody(
+  ctx: RunContext,
+  dryRun: boolean,
+  trigger: SweepTrigger,
+  targets?: SweepTarget[]
+): Promise<void> {
   const settings = await getSettings();
   const push: Push = (level, msg) => ctx.push(level, msg);
   const counts = ctx.counts;
+  const mode = dryRun ? "DRY-RUN" : "LIVE";
 
   push(
     "info",
-    trigger === "schedule"
-      ? `Starting scheduled ${dryRun ? "DRY-RUN" : "LIVE"} sweep (${describeSchedule(
-          settings.sweepIntervalHours
-        )}).`
-      : `Starting ${dryRun ? "DRY-RUN" : "LIVE"} sweep.`
+    targets
+      ? `Starting webhook-triggered ${mode} sweep for ${targets.length} newly added ` +
+          `title(s): ${describeTargets(targets)}.`
+      : trigger === "schedule"
+      ? `Starting scheduled ${mode} sweep (${describeSchedule(settings.sweepIntervalHours)}).`
+      : `Starting ${mode} sweep.`
   );
 
   const errors = new ErrorCollector(push);
 
-  // 1. Refresh snapshot first.
+  // Which *arr ids each connection is limited to, or null for the whole library.
+  const scope = targets ? targetsByConnection(targets) : null;
+
+  // 1. Refresh snapshot first. A targeted sweep forces the provider lookup: it
+  // is running *because* something just changed for these titles, so a cached
+  // answer is the wrong one to act on.
   push("info", "Syncing latest state from Sonarr/Radarr + Watchmode…");
-  const sync = await runSync(push);
+  const sync = await runSync(
+    push,
+    targets ? { targets: targets.map(toSyncTarget), force: true } : {}
+  );
   push(
     "info",
     `Synced ${sync.movies} movies (${sync.onStreamingMovies} on streaming), ${sync.series} series (${sync.onStreamingSeries} on streaming).`
   );
   for (const e of sync.errors) push("warn", e);
 
-  const connections = settings.connections.filter((c) => c.enabled);
+  const connections = settings.connections.filter(
+    (c) => c.enabled && (!scope || scope.has(c.id))
+  );
 
   for (const conn of connections) {
+    const arrIds = scope?.get(conn.id);
     // A connection that falls over (unreachable instance, bad API key) must not
     // take the other connections down with it.
     await errors.attempt(`[${conn.name}] sweep`, () =>
       conn.type === "RADARR"
-        ? sweepRadarr(conn, settings, dryRun, counts, push, errors)
-        : sweepSonarr(conn, settings, dryRun, counts, push, errors)
+        ? sweepRadarr(conn, settings, dryRun, counts, push, errors, arrIds)
+        : sweepSonarr(conn, settings, dryRun, counts, push, errors, arrIds)
     );
   }
 
-  // 4. Search all monitored items.
+  // 4. Search the monitored items this sweep covered.
   if (settings.searchAtEnd) {
-    push("info", "Triggering search for all monitored items…");
+    push(
+      "info",
+      targets
+        ? "Triggering search for the monitored items among these titles…"
+        : "Triggering search for all monitored items…"
+    );
     for (const conn of connections) {
+      const arrIds = scope?.get(conn.id);
       await errors.attempt(`[${conn.name}] search`, () =>
         conn.type === "RADARR"
-          ? searchRadarr(conn, dryRun, counts, push)
-          : searchSonarr(conn, dryRun, counts, push)
+          ? searchRadarr(conn, dryRun, counts, push, arrIds)
+          : searchSonarr(conn, dryRun, counts, push, arrIds)
       );
     }
   }
@@ -156,6 +239,30 @@ async function sweepBody(ctx: RunContext, dryRun: boolean, trigger: SweepTrigger
   }
 
   push("info", "Sweep complete.");
+}
+
+/** Drop the label a targeted sweep carries for the run log. */
+function toSyncTarget(t: SweepTarget): SyncTarget {
+  return { connectionId: t.connectionId, type: t.type, arrId: t.arrId };
+}
+
+/** Connection id -> the *arr ids a targeted sweep is confined to on it. */
+function targetsByConnection(targets: SweepTarget[]): Map<number, number[]> {
+  const out = new Map<number, number[]>();
+  for (const t of targets) {
+    const ids = out.get(t.connectionId) ?? [];
+    if (!ids.includes(t.arrId)) ids.push(t.arrId);
+    out.set(t.connectionId, ids);
+  }
+  return out;
+}
+
+/**
+ * A Prisma `where` fragment confining a query to a targeted sweep's ids.
+ * Undefined means "the whole library", which is the unscoped sweep.
+ */
+function arrIdFilter(arrIds?: number[]) {
+  return arrIds ? { arrId: { in: arrIds } } : {};
 }
 
 /** What the sweep should do with one item's monitoring flag. */
@@ -249,11 +356,12 @@ async function sweepRadarr(
   dryRun: boolean,
   counts: RunCounts,
   push: Push,
-  errors: ErrorCollector
+  errors: ErrorCollector,
+  arrIds?: number[]
 ) {
   const client = new RadarrClient(conn.baseUrl, conn.apiKey);
   const movies = await prisma.mediaItem.findMany({
-    where: { connectionId: conn.id, type: "MOVIE", skipped: false },
+    where: { connectionId: conn.id, type: "MOVIE", skipped: false, ...arrIdFilter(arrIds) },
   });
 
   // Decide everything first, then act in batches. Planning is pure and cannot
@@ -395,13 +503,29 @@ async function sweepSonarr(
   dryRun: boolean,
   counts: RunCounts,
   push: Push,
-  errors: ErrorCollector
+  errors: ErrorCollector,
+  arrIds?: number[]
 ) {
   const client = new SonarrClient(conn.baseUrl, conn.apiKey);
   const series = await prisma.mediaItem.findMany({
-    where: { connectionId: conn.id, type: "TV", skipped: false },
+    where: { connectionId: conn.id, type: "TV", skipped: false, ...arrIdFilter(arrIds) },
     include: { episodes: true },
   });
+
+  // A show Sonarr has only just added often has no episode list yet — the
+  // refresh that builds it runs on Sonarr's own schedule. Saying so beats a
+  // silent no-op, because the next full sweep is what will actually cover it.
+  if (arrIds) {
+    for (const s of series) {
+      if (!s.episodes.length) {
+        push(
+          "warn",
+          `[${conn.name}] "${s.title}" has no episodes in Sonarr yet, so there is nothing to ` +
+            `sweep. It will be covered by the next full sweep.`
+        );
+      }
+    }
+  }
 
   for (const s of series) {
     const toUnmonitor: number[] = [];
@@ -478,11 +602,18 @@ async function searchRadarr(
   conn: { id: number; name: string; baseUrl: string; apiKey: string },
   dryRun: boolean,
   counts: RunCounts,
-  push: Push
+  push: Push,
+  arrIds?: number[]
 ) {
   const client = new RadarrClient(conn.baseUrl, conn.apiKey);
   const monitored = await prisma.mediaItem.findMany({
-    where: { connectionId: conn.id, type: "MOVIE", monitored: true, skipped: false },
+    where: {
+      connectionId: conn.id,
+      type: "MOVIE",
+      monitored: true,
+      skipped: false,
+      ...arrIdFilter(arrIds),
+    },
     select: { arrId: true },
   });
   const ids = monitored.map((m) => m.arrId);
@@ -496,7 +627,8 @@ async function searchSonarr(
   conn: { id: number; name: string; baseUrl: string; apiKey: string },
   dryRun: boolean,
   counts: RunCounts,
-  push: Push
+  push: Push,
+  arrIds?: number[]
 ) {
   const client = new SonarrClient(conn.baseUrl, conn.apiKey);
   // Read the episode ids directly rather than loading every series with its
@@ -504,7 +636,7 @@ async function searchSonarr(
   const episodes = await prisma.episode.findMany({
     where: {
       monitored: true,
-      media: { connectionId: conn.id, type: "TV", skipped: false },
+      media: { connectionId: conn.id, type: "TV", skipped: false, ...arrIdFilter(arrIds) },
     },
     select: { arrEpisodeId: true },
   });

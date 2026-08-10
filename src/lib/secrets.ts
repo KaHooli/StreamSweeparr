@@ -154,6 +154,10 @@ export const SETTINGS_SECRET_FIELDS = [
   "seerrApiKey",
   "tmdbApiKey",
   "oidcClientSecret",
+  // The shared secret Sonarr/Radarr present on the webhook endpoint. It is the
+  // only thing guarding a route that starts sweeps, so it belongs here with the
+  // rest of the credentials rather than sitting in the clear.
+  "webhookToken",
 ] as const;
 
 export type SettingsSecretField = (typeof SETTINGS_SECRET_FIELDS)[number];
