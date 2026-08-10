@@ -16,8 +16,13 @@ StreamSweeparr is a self-hosted Next.js app that keeps a Sonarr/Radarr library
 in step with what is already available on the streaming services you pay for:
 
 - **Sync** snapshots the library from every Sonarr/Radarr instance and enriches
-  it with streaming availability — **Watchmode for TV** (per-episode),
-  **TheMovieDB for movies** (JustWatch-backed watch providers).
+  it with streaming availability — **Watchmode for TV** (per-episode) and, by
+  default, **TheMovieDB for movies** (JustWatch-backed watch providers).
+  `Settings.movieProvider` can point movies at Watchmode's title-level sources
+  endpoint instead; TV has no such choice. TMDB is the default because it is
+  free, so it leaves the metered Watchmode budget to the half of the library
+  that cannot avoid it — see `MovieLookup` in `lib/sync.ts`, chosen once in
+  `runSync` and handed to `syncRadarr`.
 - **Sweep** acts on that snapshot: unmonitor (and optionally delete) what is on
   streaming, re-monitor what has left streaming, optionally purge files for
   everything still unmonitored, then trigger a search for what remains
@@ -317,6 +322,12 @@ metered `/search`), **change detection** on paid plans
 (`watchmodeChangesCursor`, with automatic plan probing), and freshness windows
 (`providerSyncedAt`, 7 days for TV; 24 hours for TMDB movies). A LIVE sweep also
 updates the snapshot in place rather than re-syncing afterwards.
+
+A movie answered by Watchmode keeps the **7-day** TV window rather than the
+24-hour TMDB one (`WATCHMODE_MOVIE_TTL_MS`): what makes a daily re-check
+affordable is that TMDB calls are free. For the same reason an install using
+Watchmode for movies *only* skips the plan probe — the changes feed is
+episode-shaped, so the answer could not be used.
 
 A **scoped** sync (`runSync(progress, { targets, force })`) is the cheap path
 and the one deliberate exception: it looks at only the named titles, and `force`

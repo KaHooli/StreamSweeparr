@@ -2,9 +2,15 @@
  * Sync engine.
  *
  * Pulls the current state of every enabled Sonarr/Radarr connection, enriches
- * each title with Watchmode streaming availability for the user's selected
- * countries + services, and writes a fresh snapshot to PostgreSQL. The
- * dashboard reads exclusively from this snapshot.
+ * each title with streaming availability for the user's selected countries +
+ * services, and writes a fresh snapshot to PostgreSQL. The dashboard reads
+ * exclusively from this snapshot.
+ *
+ * TV always comes from Watchmode — nothing else has per-episode availability.
+ * Movies come from whichever provider `Settings.movieProvider` names: TMDB by
+ * default (free and unmetered, so it leaves the Watchmode credit budget to TV),
+ * or Watchmode for an install that would rather configure one provider than
+ * two. See `MovieLookup`, chosen once in `runSync`.
  */
 
 import type { MediaType, Prisma } from "@prisma/client";
@@ -17,6 +23,7 @@ import {
   resolveSkipTagIds,
   hasSkipTag,
   SKIP_TAG_LABEL,
+  type RadarrMovie,
   type SonarrEpisode,
 } from "./arr";
 import { WatchmodeClient, matchSources, type WatchmodeTitleSource } from "./watchmode";
@@ -40,7 +47,7 @@ export interface SyncResult {
   // and how many were skipped as unchanged/fresh (credit-saving visibility).
   tvProviderCalls: number;
   tvSkipped: number;
-  /** Movies that hit TMDB this sync, and those served from the cached answer. */
+  /** Movies that hit their availability provider, and those served from cache. */
   movieProviderCalls: number;
   movieSkipped: number;
   /** Series that hit the title-level sources endpoint for provider deep links. */
@@ -91,6 +98,38 @@ interface SyncScope {
 
 const FULL_SCOPE: SyncScope = { force: false };
 
+/**
+ * Everything `syncRadarr` needs to answer "is this movie on streaming?".
+ *
+ * A discriminated union rather than two optional clients: the choice is made
+ * once, in `runSync`, where the settings are, and each branch below carries
+ * exactly the configuration its provider reads — Watchmode's countries and
+ * source ids are a different axis from TMDB's regions and provider ids, and
+ * mixing them is the bug this shape prevents.
+ */
+type MovieLookup =
+  | {
+      kind: "tmdb";
+      tmdb: TmdbClient;
+      regions: string[];
+      providerIds: number[];
+      countedTypes: string[];
+    }
+  | {
+      kind: "watchmode";
+      wm: WatchmodeClient;
+      regions: string[];
+      serviceIds: number[];
+      countedTypes: string[];
+      /** Source id -> logo, so movie tiles render the same as series ones. */
+      logos: Map<number, string | null>;
+    };
+
+/** How long a successful movie lookup stays good, per provider. */
+function movieTtlMs(lookup: MovieLookup): number {
+  return lookup.kind === "watchmode" ? WATCHMODE_MOVIE_TTL_MS : MOVIE_TTL_MS;
+}
+
 // A series whose Watchmode data is younger than this is not re-pulled unless
 // the changes feed says it changed. Safety net for when the changes feed is
 // unavailable or misses something.
@@ -101,6 +140,12 @@ const TTL_MS = TTL_DAYS * 24 * 60 * 60 * 1000;
 // time-based and the window is correspondingly shorter than the TV one.
 const MOVIE_TTL_HOURS = 24;
 export const MOVIE_TTL_MS = MOVIE_TTL_HOURS * 60 * 60 * 1000;
+
+// A movie answered by Watchmode instead of TMDB keeps the *TV* window, because
+// what makes the 24-hour one affordable is that TMDB calls are free. Every
+// Watchmode lookup spends a credit, so re-asking daily would quietly cost more
+// per movie than the whole TV library costs per week.
+export const WATCHMODE_MOVIE_TTL_MS = TTL_MS;
 
 // Re-probe the Watchmode plan at most this often (in case the user upgrades
 // from free to paid, or vice versa).
@@ -254,16 +299,25 @@ export async function runSync(
 
   const hasRadarr = connections.some((c) => c.type === "RADARR");
   const hasSonarr = connections.some((c) => c.type === "SONARR");
+  // TV is Watchmode by necessity; movies follow the configured provider.
+  const watchmodeMovies = settings.movieProvider === "WATCHMODE";
+  // One client and one key ring serve both media types, so Watchmode is set up
+  // when *either* half of the library needs it.
+  const needsWatchmode = hasSonarr || (hasRadarr && watchmodeMovies);
 
-  // TV episodes use Watchmode; movies use TMDB. Validate only what's needed
-  // for the connection types actually configured.
-  if (hasSonarr) {
+  // Validate only what's needed for the connection types actually configured,
+  // and say which half of the library the missing setting is holding up — with
+  // a movie provider to choose from, "needed for TV" is no longer implied.
+  if (needsWatchmode) {
+    const forWhat = hasSonarr ? (hasRadarr && watchmodeMovies ? "TV and movies" : "TV") : "movies";
     if (!settings.watchmodeApiKeys.length)
-      throw new Error("Watchmode API key is not configured (needed for TV).");
-    if (!settings.countries.length) throw new Error("No Watchmode countries selected (needed for TV).");
-    if (!settings.serviceIds.length) throw new Error("No Watchmode streaming services selected (needed for TV).");
+      throw new Error(`Watchmode API key is not configured (needed for ${forWhat}).`);
+    if (!settings.countries.length)
+      throw new Error(`No Watchmode countries selected (needed for ${forWhat}).`);
+    if (!settings.serviceIds.length)
+      throw new Error(`No Watchmode streaming services selected (needed for ${forWhat}).`);
   }
-  if (hasRadarr) {
+  if (hasRadarr && !watchmodeMovies) {
     if (!settings.tmdbApiKey) throw new Error("TMDB API key is not configured (needed for movies).");
     if (!settings.tmdbRegions.length) throw new Error("No TMDB regions selected (needed for movies).");
     if (!settings.tmdbProviderIds.length) throw new Error("No TMDB movie providers selected (needed for movies).");
@@ -280,7 +334,7 @@ export async function runSync(
   // Timestamp captured *before* work starts; becomes the next changes cursor.
   const syncStartedAt = new Date();
 
-  if (hasSonarr && settings.watchmodeApiKeys.length) {
+  if (needsWatchmode && settings.watchmodeApiKeys.length) {
     // Ensure the local Title ID map is fresh (self-throttles to a 12h window).
     // A failure here is non-fatal: findTitleId falls back to the search API.
     try {
@@ -308,11 +362,16 @@ export async function runSync(
     // Detect the account plan (cached). Only paid plans can use the premium
     // Changes API; free plans use the 7-day TTL fallback. Re-probe if we've
     // never checked or the last check is stale (user may have upgraded).
+    //
+    // Only worth a request when there is a changes feed to consult, i.e. when
+    // there is a Sonarr connection: the feed is episode-shaped, so an install
+    // using Watchmode for movies alone would spend a credit on an answer it can
+    // never act on.
     watchmodePlan = settings.watchmodePlan as "paid" | "free" | "unknown" | null;
     const planStale =
       !settings.watchmodePlanCheckedAt ||
       Date.now() - settings.watchmodePlanCheckedAt.getTime() > PLAN_RECHECK_MS;
-    if (!watchmodePlan || watchmodePlan === "unknown" || planStale) {
+    if (hasSonarr && (!watchmodePlan || watchmodePlan === "unknown" || planStale)) {
       const detected = await wm.detectPlan();
       // Keep a previous definitive result if the probe was inconclusive.
       watchmodePlan = detected === "unknown" ? watchmodePlan ?? "unknown" : detected;
@@ -327,6 +386,10 @@ export async function runSync(
       // A scoped sync names the series it cares about and pulls them regardless
       // (see SyncOptions.force), so the feed has nothing to decide and its
       // paginated calls would be spent for nothing.
+      changedIds = null;
+    } else if (!hasSonarr) {
+      // No series to ask about — see the plan probe above. Movies fall back to
+      // their freshness window exactly as they do on TMDB.
       changedIds = null;
     } else if (watchmodePlan === "paid") {
       // Ask Watchmode which titles changed since our last sync. A few paginated
@@ -371,11 +434,35 @@ export async function runSync(
     }
   }
 
-  // Movie (TMDB) setup — only when a Radarr connection exists.
-  const tmdb = hasRadarr && settings.tmdbApiKey ? new TmdbClient(settings.tmdbApiKey) : null;
-  const tmdbRegions = settings.tmdbRegions;
-  const tmdbProviderIds = settings.tmdbProviderIds;
-  const tmdbCountedTypes = settings.tmdbCountedTypes;
+  // Movie setup — only when a Radarr connection exists, and only for the
+  // provider that will actually be asked. The unused provider's configuration
+  // is left alone rather than cleared, so switching back needs no re-entry.
+  const tmdb =
+    hasRadarr && !watchmodeMovies && settings.tmdbApiKey
+      ? new TmdbClient(settings.tmdbApiKey)
+      : null;
+  const movieLookup: MovieLookup | null = !hasRadarr
+    ? null
+    : watchmodeMovies
+    ? wm
+      ? {
+          kind: "watchmode",
+          wm,
+          regions,
+          serviceIds,
+          countedTypes,
+          logos: wmLogos,
+        }
+      : null
+    : tmdb
+    ? {
+        kind: "tmdb",
+        tmdb,
+        regions: settings.tmdbRegions,
+        providerIds: settings.tmdbProviderIds,
+        countedTypes: settings.tmdbCountedTypes,
+      }
+    : null;
 
   for (const conn of connections) {
     const scope = scopes?.get(conn.id) ?? FULL_SCOPE;
@@ -387,8 +474,11 @@ export async function runSync(
           "…"
       );
       if (conn.type === "RADARR") {
-        if (!tmdb) throw new Error("TMDB is not configured.");
-        await syncRadarr(conn, tmdb, tmdbRegions, tmdbProviderIds, tmdbCountedTypes, result, errors, progress, scope);
+        if (!movieLookup)
+          throw new Error(
+            `${watchmodeMovies ? "Watchmode" : "TMDB"} is not configured (needed for movies).`
+          );
+        await syncRadarr(conn, movieLookup, result, errors, progress, scope);
       } else {
         if (!wm) throw new Error("Watchmode is not configured.");
         await syncSonarr(conn, wm, regions, serviceIds, countedTypes, result, errors, changedIds, wmLogos, scope);
@@ -411,13 +501,15 @@ export async function runSync(
     });
   }
 
+  const movieWindow = watchmodeMovies ? `${TTL_DAYS}-day` : `${MOVIE_TTL_HOURS}h`;
   progress(
     "info",
     `Watchmode calls this sync: ${result.tvProviderCalls} episode fetch(es) across ${result.series} series ` +
       `(${result.tvSkipped} skipped as unchanged/fresh), ` +
       `${result.tvLinkCalls} provider-link fetch(es). ` +
-      `TMDB calls: ${result.movieProviderCalls} across ${result.movies} movies ` +
-      `(${result.movieSkipped} served from cache, ${MOVIE_TTL_HOURS}h freshness window). ` +
+      `${watchmodeMovies ? "Watchmode (movies)" : "TMDB"} calls: ${result.movieProviderCalls} ` +
+      `across ${result.movies} movies ` +
+      `(${result.movieSkipped} served from cache, ${movieWindow} freshness window). ` +
       `${result.taggedSkipped} title(s) ignored via the "${SKIP_TAG_LABEL}" tag.`
   );
   if (result.tvMissingLinks) {
@@ -433,10 +525,7 @@ export async function runSync(
 
 async function syncRadarr(
   conn: { id: number; name: string; baseUrl: string; apiKey: string },
-  tmdb: TmdbClient,
-  regions: string[],
-  providerIds: number[],
-  countedTypes: string[],
+  lookup: MovieLookup,
   result: SyncResult,
   errors: string[],
   progress: ProgressFn,
@@ -461,6 +550,9 @@ async function syncRadarr(
     where: { connectionId: conn.id, type: "MOVIE", ...arrIdFilter(scope) },
     select: {
       arrId: true,
+      // Only the Watchmode path reads this, but selecting it unconditionally
+      // costs one integer per row and keeps the two branches symmetrical.
+      watchmodeId: true,
       providerSyncedAt: true,
       streamingUnknown: true,
       onStreaming: true,
@@ -516,11 +608,12 @@ async function syncRadarr(
 
     const existing = existingByArrId.get(movie.id);
 
-    // Movies have no equivalent of Watchmode's changes feed, so freshness is
-    // purely time-based: a title looked up recently, successfully, and not
-    // flagged as missing keeps its answer. Availability moves on a monthly
-    // cadence, so a day-old answer is still a good one — and on a 12-hourly
-    // schedule this halves the TMDB traffic.
+    // Movies have no equivalent of Watchmode's episode changes feed, so
+    // freshness is purely time-based: a title looked up recently, successfully,
+    // and not flagged as missing keeps its answer. Availability moves on a
+    // monthly cadence, so a day-old answer is still a good one — and on a
+    // 12-hourly schedule this halves the TMDB traffic. A Watchmode-answered
+    // movie uses the longer window instead (see WATCHMODE_MOVIE_TTL_MS).
     const fresh =
       !scope.force &&
       !!existing &&
@@ -528,7 +621,7 @@ async function syncRadarr(
       !existing.streamingUnknown &&
       !existing.tmdbMissing &&
       !!existing.providerSyncedAt &&
-      now - existing.providerSyncedAt.getTime() < MOVIE_TTL_MS;
+      now - existing.providerSyncedAt.getTime() < movieTtlMs(lookup);
 
     if (fresh) {
       result.movieSkipped++;
@@ -540,56 +633,24 @@ async function syncRadarr(
       return;
     }
 
-    let matched: MatchedTmdbProvider[] = [];
-    // Track whether we could actually determine streaming availability. A
-    // failed lookup must not be treated as "not on streaming".
-    let streamingUnknown = false;
-    // TMDB says this id no longer exists (deleted/merged entry). Recorded here;
-    // the sweep decides whether to remove it from Radarr. Sync stays read-only.
-    let tmdbMissing = false;
-    try {
-      if (movie.tmdbId) {
-        const availability = await tmdb.movieWatchProviders(movie.tmdbId);
-        result.movieProviderCalls++;
-        matched = matchTmdbProviders(availability, regions, providerIds, countedTypes);
-      } else {
-        // No TMDB id from Radarr -> we can't look it up. Mark unknown so the
-        // sweep leaves it alone rather than re-monitoring.
-        streamingUnknown = true;
-      }
-    } catch (e) {
-      streamingUnknown = true;
-      if (isTmdbNotFound(e)) {
-        tmdbMissing = true;
-        result.tmdbMissingMovies++;
-        progress(
-          "warn",
-          `[${conn.name}] "${movie.title}" no longer exists on TMDB (id ${movie.tmdbId}).`
-        );
-      } else {
-        errors.push(`[${conn.name}] ${movie.title}: ${(e as Error).message}`);
-      }
-    }
+    const answer =
+      lookup.kind === "tmdb"
+        ? await lookupMovieOnTmdb(lookup, movie, conn, result, errors, progress)
+        : await lookupMovieOnWatchmode(lookup, movie, existing?.watchmodeId ?? null, conn, result, errors);
 
-    const onStreaming = matched.length > 0;
+    const onStreaming = answer.streamingInfo.length > 0;
     if (onStreaming) result.onStreamingMovies++;
     result.movies++;
 
     const availabilityState = {
       skipped: false,
-      tmdbMissing,
+      tmdbMissing: answer.tmdbMissing,
       onStreaming,
-      streamingUnknown,
-      streamingInfo: matched.map((m) => ({
-        sourceId: m.providerId,
-        name: m.name,
-        type: m.type,
-        region: m.region,
-        logo: m.logo,
-        webUrl: null,
-      })),
+      streamingUnknown: answer.streamingUnknown,
+      streamingInfo: asJson(answer.streamingInfo),
       // Only start the freshness clock on a lookup that actually answered.
-      providerSyncedAt: streamingUnknown ? null : syncedAt,
+      providerSyncedAt: answer.streamingUnknown ? null : syncedAt,
+      ...(answer.watchmodeId !== undefined ? { watchmodeId: answer.watchmodeId } : {}),
     };
 
     await prisma.mediaItem.upsert({
@@ -611,6 +672,146 @@ async function syncRadarr(
     await prisma.mediaItem.deleteMany({
       where: { connectionId: conn.id, type: "MOVIE", lastSyncedAt: { lt: syncedAt } },
     });
+  }
+}
+
+/**
+ * What one movie's availability lookup produced, whichever provider answered.
+ *
+ * Deliberately not "the matched providers": the three flags are the part the
+ * sweep acts on, and collapsing "we could not find out" into an empty provider
+ * list is exactly the mistake that would unmonitor a library during an outage.
+ */
+interface MovieAvailability {
+  streamingInfo: StreamingInfoEntry[];
+  /** The lookup could not answer. Never treat this as "not on streaming". */
+  streamingUnknown: boolean;
+  /** TMDB reports the id as gone; the sweep may remove the movie from Radarr. */
+  tmdbMissing: boolean;
+  /**
+   * The Watchmode id this movie resolved to, so the next sync skips the lookup.
+   * `undefined` means "not this provider's business" and leaves the column
+   * untouched — a stored id stays put across a switch to TMDB and back.
+   */
+  watchmodeId?: number | null;
+}
+
+/** Movie availability from TMDB's JustWatch-backed watch/providers data. */
+async function lookupMovieOnTmdb(
+  lookup: Extract<MovieLookup, { kind: "tmdb" }>,
+  movie: RadarrMovie,
+  conn: { name: string },
+  result: SyncResult,
+  errors: string[],
+  progress: ProgressFn
+): Promise<MovieAvailability> {
+  let matched: MatchedTmdbProvider[] = [];
+  let streamingUnknown = false;
+  // TMDB says this id no longer exists (deleted/merged entry). Recorded here;
+  // the sweep decides whether to remove it from Radarr. Sync stays read-only.
+  let tmdbMissing = false;
+  try {
+    if (movie.tmdbId) {
+      const availability = await lookup.tmdb.movieWatchProviders(movie.tmdbId);
+      result.movieProviderCalls++;
+      matched = matchTmdbProviders(
+        availability,
+        lookup.regions,
+        lookup.providerIds,
+        lookup.countedTypes
+      );
+    } else {
+      // No TMDB id from Radarr -> we can't look it up. Mark unknown so the
+      // sweep leaves it alone rather than re-monitoring.
+      streamingUnknown = true;
+    }
+  } catch (e) {
+    streamingUnknown = true;
+    if (isTmdbNotFound(e)) {
+      tmdbMissing = true;
+      result.tmdbMissingMovies++;
+      progress(
+        "warn",
+        `[${conn.name}] "${movie.title}" no longer exists on TMDB (id ${movie.tmdbId}).`
+      );
+    } else {
+      errors.push(`[${conn.name}] ${movie.title}: ${(e as Error).message}`);
+    }
+  }
+
+  return {
+    // TMDB has no per-provider deep link, so the dashboard falls back to the
+    // service's own search (see lib/dashboard.ts).
+    streamingInfo: matched.map((m) => ({
+      sourceId: m.providerId,
+      name: m.name,
+      type: m.type,
+      region: m.region,
+      logo: m.logo,
+      webUrl: null,
+    })),
+    streamingUnknown,
+    tmdbMissing,
+  };
+}
+
+/**
+ * Movie availability from Watchmode's title-level sources endpoint.
+ *
+ * One request per movie, and the same endpoint the TV path uses for provider
+ * deep links — so unlike the TMDB answer this one arrives with `web_url`
+ * already filled in, and the dashboard logos link straight to the film.
+ *
+ * Bounded by the freshness window in `syncRadarr` (7 days, the TV one, because
+ * every call here costs a credit) plus the resolved id cached on the row, which
+ * keeps the metered `/search` endpoint out of steady-state syncs.
+ */
+async function lookupMovieOnWatchmode(
+  lookup: Extract<MovieLookup, { kind: "watchmode" }>,
+  movie: RadarrMovie,
+  knownWatchmodeId: number | null,
+  conn: { name: string },
+  result: SyncResult,
+  errors: string[]
+): Promise<MovieAvailability> {
+  let watchmodeId = knownWatchmodeId;
+  if (!watchmodeId) {
+    try {
+      watchmodeId = await lookup.wm.findTitleId({
+        tmdbId: movie.tmdbId,
+        imdbId: movie.imdbId,
+        type: "movie",
+        name: movie.title,
+        year: movie.year,
+        resolveLocal: lookupWatchmodeId,
+      });
+    } catch (e) {
+      errors.push(`[${conn.name}] ${movie.title}: ${(e as Error).message}`);
+    }
+  }
+
+  if (watchmodeId === null) {
+    // Unmapped title: availability is genuinely unknown, not "not streaming".
+    // tmdbMissing is cleared because nothing here consults TMDB — leaving a
+    // stale flag set would let the sweep delete a movie on the word of a
+    // provider this install no longer asks.
+    return { streamingInfo: [], streamingUnknown: true, tmdbMissing: false, watchmodeId: null };
+  }
+
+  try {
+    const sources = await lookup.wm.titleSources(watchmodeId, lookup.regions);
+    result.movieProviderCalls++;
+    const matched = matchSources(sources, lookup.serviceIds, lookup.countedTypes);
+    return {
+      streamingInfo: streamingInfoJson(matched, lookup.logos),
+      streamingUnknown: false,
+      tmdbMissing: false,
+      watchmodeId,
+    };
+  } catch (e) {
+    errors.push(`[${conn.name}] ${movie.title}: ${(e as Error).message}`);
+    // Keep the resolved id: the lookup failed, the mapping did not.
+    return { streamingInfo: [], streamingUnknown: true, tmdbMissing: false, watchmodeId };
   }
 }
 

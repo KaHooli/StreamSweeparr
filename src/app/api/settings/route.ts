@@ -51,7 +51,9 @@ const settingsSchema = z.object({
   countries: z.array(z.string().regex(/^[A-Za-z]{2}$/, "Invalid country code.")).optional(),
   serviceIds: z.array(z.number().int().positive()).optional(),
   countedTypes: z.array(z.enum(COUNTED_TYPES)).optional(),
-  // TMDB (movies)
+  // Which provider answers movie availability. TV is always Watchmode.
+  movieProvider: z.enum(["TMDB", "WATCHMODE"]).optional(),
+  // TMDB (movies, unless movieProvider says Watchmode)
   tmdbApiKey: z.string().nullable().optional(),
   tmdbRegions: z.array(z.string().regex(/^[A-Za-z]{2}$/, "Invalid region code.")).optional(),
   tmdbProviderIds: z.array(z.number().int().positive()).optional(),
@@ -111,6 +113,7 @@ function serialize(
     countries: s.countries,
     serviceIds: s.serviceIds,
     countedTypes: s.countedTypes,
+    movieProvider: s.movieProvider,
     tmdbApiKeySet: !!s.tmdbApiKey,
     tmdbRegions: s.tmdbRegions,
     tmdbProviderIds: s.tmdbProviderIds,
@@ -206,7 +209,9 @@ export const PATCH = withGuard(requireAdmin, async (_session, req: NextRequest) 
   if (p.countries !== undefined) data.countries = p.countries;
   if (p.serviceIds !== undefined) data.serviceIds = p.serviceIds;
   if (p.countedTypes !== undefined) data.countedTypes = p.countedTypes;
-  // TMDB (movies)
+  if (p.movieProvider !== undefined) data.movieProvider = p.movieProvider;
+  // TMDB (movies). The values are kept even while Watchmode answers movies, so
+  // switching back does not mean re-entering a key and re-picking providers.
   if (p.tmdbApiKey !== undefined && p.tmdbApiKey !== null && p.tmdbApiKey !== "")
     data.tmdbApiKey = p.tmdbApiKey;
   if (p.tmdbRegions !== undefined) data.tmdbRegions = p.tmdbRegions;

@@ -38,8 +38,10 @@ StreamSweeparr runs three jobs against your library:
 | 🔁 | **Re-monitor** | Puts a title back on the list the moment it **leaves** all of your services |
 | 🔍 | **Search** | Kicks off a Sonarr/Radarr search for everything still monitored at the end of a run |
 
-It checks availability with **Watchmode** for TV (per-episode data) and
-**TheMovieDB / JustWatch** for movies, and gives you a dashboard, a full log of
+It checks availability with **Watchmode** for TV (per-episode data) and, by
+default, **TheMovieDB / JustWatch** for movies — or Watchmode for those too, if
+you would rather run one provider ([how to
+choose](#choosing-who-answers-for-movies)). It gives you a dashboard, a full log of
 every run, and two ways to run it without you: [on a
 timer](#-scheduled-sweeps), or [the moment a title is
 added](#-sweeping-new-titles-as-theyre-added) — Sonarr and Radarr tell it, and
@@ -81,6 +83,7 @@ just that one title is swept.
 
 **For the curious**
 [How it decides what's "on streaming"](#-how-it-decides-whats-on-streaming) ·
+[Who answers for movies](#choosing-who-answers-for-movies) ·
 [Keeping API usage low](#-keeping-api-usage-low) ·
 [Architecture](#-architecture) ·
 [Developing &amp; testing](#-developing--testing)
@@ -97,7 +100,7 @@ Gather these first — the setup wizard asks for them in this order:
 | ✅ | **A PostgreSQL server, v13+** | Comes with the Docker Compose file below |
 | ✅ | **Sonarr and/or Radarr** | v3 or v4 — you need the base URL and API key for each |
 | 📺 | **A Watchmode API key** | [api.watchmode.com](https://api.watchmode.com) — *only if you use Sonarr*. You can add several, and they're used in turn |
-| 🎬 | **A TheMovieDB API key** | [themoviedb.org](https://www.themoviedb.org) — *only if you use Radarr* |
+| 🎬 | **A TheMovieDB API key** | [themoviedb.org](https://www.themoviedb.org) — *only if you use Radarr*, and only while TMDB is answering for movies |
 | ⭐ | **A Seerr server** | Optional — lets the app auto-discover your Sonarr/Radarr instances |
 
 > [!TIP]
@@ -105,6 +108,11 @@ Gather these first — the setup wizard asks for them in this order:
 > Watchmode is enough. Movies only? Just TMDB. Both free tiers are fine —
 > see [Keeping API usage low](#-keeping-api-usage-low) for how little the app
 > spends.
+>
+> Movies can be pointed at **Watchmode** instead, in which case you need no TMDB
+> key at all — one provider for the whole library, paid for in Watchmode
+> credits. See [Choosing who answers for
+> movies](#choosing-who-answers-for-movies).
 
 ---
 
@@ -238,9 +246,9 @@ Afterwards you can rename the account (or set it from the environment with
 Single sign-on and extra user accounts live on that tab too — see
 [Accounts, login &amp; security](#-accounts-login--security).
 
-### 2. Add your Watchmode key — *TV only*
+### 2. Add your Watchmode key — *TV, and optionally movies*
 
-**Settings → Watchmode (TV)** → paste the key → **Test &amp; save**.
+**Settings → Watchmode** → paste the key → **Test &amp; save**.
 
 Once a key is saved, **+ Add another key** appears. Add as many as you have (up
 to 10): they're numbered, and **every request starts at key 1 and moves to the
@@ -257,11 +265,37 @@ Then pick:
 
 ### 3. Add your TMDB key — *movies only*
 
-**Settings → TheMovieDB (Movies)** → paste the key → **Test &amp; save**.
+**Settings → Movies** → paste the key → **Test &amp; save**. (That tab is also
+where you choose *which* provider answers for movies — TMDB by default, see
+[below](#choosing-who-answers-for-movies).)
 
 Then pick your **watch provider regions**, and per region the **movie
 providers** you subscribe to, plus which categories count (Subscription / Free /
 Ads / Rent / Buy).
+
+#### Choosing who answers for movies
+
+The same tab has one choice above the key: **which provider answers "is this
+movie on streaming?"**.
+
+| | Costs | Configured with | Deep links on tiles |
+|---|---|---|---|
+| **TheMovieDB** *(default)* | nothing — the API is free and unmetered | the regions and providers on the **Movies** tab | no — logos link to a search |
+| **Watchmode** | one credit per movie looked up | the countries and services on the **Watchmode** tab | yes — straight to the film |
+
+**TMDB is the default, and it is the right answer for most people.** TV has no
+alternative — Watchmode is the only provider with per-episode data — so every
+movie TMDB answers for is a Watchmode credit left for the half of your library
+that cannot avoid spending them.
+
+Pick **Watchmode** if you'd rather configure one provider than two, or if you
+want the provider logos on movie tiles to link straight to the film. A movie is
+then re-checked at most once a week (the same window as a series) instead of
+daily, because each lookup costs a credit.
+
+Switching either way takes effect on the next sync, and nothing is thrown away:
+your TMDB key, regions and providers stay stored while Watchmode is answering,
+and come straight back if you switch back.
 
 ### 4. Connect Sonarr &amp; Radarr
 
@@ -407,6 +441,10 @@ from unmonitored titles even if **Delete files when unmonitoring** is off.
 
 <details>
 <summary><b>"Remove movies deleted from TMDB" — what that actually is</b></summary>
+
+This one only applies while **TMDB is answering for movies**, which is the
+default. With movies on Watchmode nothing consults TMDB, so no movie is ever
+flagged and the option has nothing to act on.
 
 TMDB sometimes deletes or merges entries — usually cancelled or never-produced
 films — leaving Radarr holding an id that no longer resolves. Those lookups come
@@ -673,6 +711,11 @@ Radarr goes and gets it again in the same run.
 Only for the media types you use — Watchmode for TV (Sonarr), TMDB for movies
 (Radarr). If you only run Radarr, you never need a Watchmode key.
 
+And if you'd rather keep one key than two, movies can be pointed at Watchmode as
+well, under **Settings → Movies**. TMDB stays the default because it's free, so
+using it leaves your Watchmode credits for TV — where there is no alternative.
+See [Choosing who answers for movies](#choosing-who-answers-for-movies).
+
 </details>
 
 <details>
@@ -681,6 +724,9 @@ Only for the media types you use — Watchmode for TV (Sonarr), TMDB for movies
 It's built not to. The metered search endpoint is essentially never used (ids
 are resolved from a locally imported map), availability is cached for 7 days,
 and on paid plans a changes feed means unchanged shows aren't re-fetched at all.
+Movies don't touch that budget at all unless you
+[ask them to](#choosing-who-answers-for-movies), and when you do they're cached
+for the same 7 days.
 And if one key isn't enough for the first pass over a big library, you can save
 several — they're used in order, each one taking over when the one before it
 runs out. Full detail in [Keeping API usage low](#-keeping-api-usage-low).
@@ -941,15 +987,15 @@ and instance-wide limiters still apply, so brute force is still bounded.
 
 ## 🧮 How it decides what's "on streaming"
 
-Two providers, split by media type. Both are configured on their own Settings
-tab, and both work the same way: a title counts as *on streaming* only if the
-service is one **you selected** *and* the way it's offered is a **type you
-count**.
+Split by media type, and each provider is configured on its own Settings tab.
+They all work the same way: a title counts as *on streaming* only if the service
+is one **you selected** *and* the way it's offered is a **type you count**.
 
 | | Provider | Counts if… | "On streaming" means |
 |---|---|---|---|
 | 📺 | **TV — Watchmode** | the source is one of your selected services, and its type (`sub`, `free`, `purchase`, `rent`, `tv_everywhere`) is one you count | **≥1 episode** matches |
-| 🎬 | **Movies — TMDB** | the provider is one of your selected ones for that region, and the category (`flatrate`, `free`, `ads`, `rent`, `buy`) is one you count | **≥1 match** |
+| 🎬 | **Movies — TMDB** *(default)* | the provider is one of your selected ones for that region, and the category (`flatrate`, `free`, `ads`, `rent`, `buy`) is one you count | **≥1 match** |
+| 🎬 | **Movies — Watchmode** *(optional)* | exactly the TV rule, against the same countries, services and source types you picked for TV | **≥1 match** |
 
 This is why the source-type checkboxes matter: leave *Rent* and *Buy*
 unchecked and a film that's only purchasable won't be treated as something you
@@ -980,14 +1026,23 @@ made versus skipped.
 
 The first sync after setup still pulls every series once, because nothing is
 cached yet. Every sync after that is cheap. If that first sync is bigger than a
-single free key's monthly credit, add more keys under **Settings → Watchmode
-(TV)** — a run that exhausts key 1 carries on with key 2 rather than stopping
-half way, and the run log says when it switched.
+single free key's monthly credit, add more keys under **Settings → Watchmode** —
+a run that exhausts key 1 carries on with key 2 rather than stopping half way,
+and the run log says when it switched.
 
 **Movies (TMDB)** get the same treatment on a shorter clock: TMDB has no changes
 feed, so a movie looked up successfully in the last **24 hours** is served from
 cache. On a 12-hourly schedule that halves TMDB traffic. Anything whose lookup
 failed — or that just had its `ss-skip` tag removed — is always re-checked.
+
+**Movies on Watchmode** — if you [chose that](#choosing-who-answers-for-movies) —
+are held for **7 days** instead, the same window as a series. What makes the
+24-hour window affordable is that TMDB calls are free; every Watchmode call
+spends a credit, so a daily re-check would cost more per film than a whole TV
+library costs per week. Each movie also keeps the Watchmode id it resolved to,
+so the metered search endpoint stays out of steady-state syncs, and an install
+that uses Watchmode for *movies only* never probes for the Changes API — the
+feed is episode-shaped, so there would be nothing to do with the answer.
 
 Sync also looks titles up **in parallel** (`SYNC_CONCURRENCY`, default 4), which
 is what turns a large library's sync from minutes of waiting into something much
@@ -1019,7 +1074,7 @@ The refresh runs at the start of every sync and on a 12-hour timer:
 
 Lookups try this map first and only fall back to Watchmode's `/search` when a
 title is missing from the CSV. You can check status and force a refresh under
-**Settings → Watchmode (TV) → Title ID map**, or via `POST /api/titlemap`
+**Settings → Watchmode → Title ID map**, or via `POST /api/titlemap`
 (`{ "force": true }` to bypass the window and ETag). `TITLE_MAP_SCHEDULER=off`
 disables the timer on an instance.
 
@@ -1091,12 +1146,13 @@ that does not carry a session.
 <details>
 <summary><b>External API endpoints used</b></summary>
 
-- **Watchmode (TV):** `/v1/regions/`, `/v1/sources/`, `/v1/search/` (fallback
-  only), `/v1/title/{id}/episodes/`, `/v1/title/{id}/sources/` (provider deep
-  links, only for shows still missing one), `/v1/changes/titles_episodes_changed/`
+- **Watchmode (TV, and movies if you selected it):** `/v1/regions/`,
+  `/v1/sources/`, `/v1/search/` (fallback only), `/v1/title/{id}/episodes/`,
+  `/v1/title/{id}/sources/` (provider deep links for shows still missing one —
+  and the whole answer for a movie), `/v1/changes/titles_episodes_changed/`
   (paid plans; used for change detection), `/v1/status/` (auth via `X-API-Key`),
   plus the public `datasets/title_id_map.csv`.
-- **TheMovieDB (movies):** `/3/watch/providers/regions`,
+- **TheMovieDB (movies, by default):** `/3/watch/providers/regions`,
   `/3/watch/providers/movie`, `/3/movie/{id}/watch/providers`
   (auth via the `api_key` query param).
 - **Sonarr v3:** `GET /series`, `GET /series/{id}` (webhook sweeps),

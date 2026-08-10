@@ -15,6 +15,13 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+// Where movie streaming availability comes from. TV has no equivalent choice:
+// Watchmode is the only provider here with per-episode data.
+enum MovieProvider {
+  TMDB
+  WATCHMODE
+}
+
 // Single-row application settings (id is always 1).
 model Settings {
   id                Int      @id @default(1)
@@ -38,9 +45,19 @@ model Settings {
   // Watchmode types: sub, free, purchase, rent, tv_everywhere.
   countedTypes      String[] @default(["sub", "free"])
 
-  // --- TheMovieDB (TMDB) — used for MOVIE streaming availability ---
-  // TV episodes still use Watchmode (per-episode data); movies use TMDB's
-  // JustWatch-powered watch/providers data.
+  // Which provider answers "is this movie on streaming?". TV is always
+  // Watchmode (nothing else has per-episode data), but movies have a choice,
+  // and the default is deliberately TMDB: its API is free and unmetered, so
+  // every movie looked up there is a Watchmode credit left for TV.
+  // WATCHMODE is for the user who would rather configure one provider than two
+  // and has credits to spare — it reads the same countries/services/counted
+  // types as TV, and answers from the title-level sources endpoint.
+  movieProvider     MovieProvider @default(TMDB)
+
+  // --- TheMovieDB (TMDB) — the default source of MOVIE availability ---
+  // TV episodes always use Watchmode (per-episode data); movies use TMDB's
+  // JustWatch-powered watch/providers data unless `movieProvider` says
+  // otherwise, in which case these columns are simply unused.
   tmdbApiKey        String?
   // Selected TMDB watch-provider region codes (ISO 3166-1), e.g. ["US","GB"].
   tmdbRegions       String[] @default([])

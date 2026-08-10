@@ -22,10 +22,17 @@ export interface SettingsTab {
   adminOnly?: boolean;
 }
 
-/** Configuration tabs, in display order. Add new ones here. */
+/**
+ * Configuration tabs, in display order. Add new ones here.
+ *
+ * The media-type labels the first two carried ("Watchmode (TV)", "TheMovieDB
+ * (Movies)") stopped being true once movies could be answered by either
+ * provider. Which one is in force is a setting, so each tab says so in its own
+ * copy, where it can change with the setting, rather than in a fixed name.
+ */
 export const CONFIG_TABS: SettingsTab[] = [
-  { key: "watchmode", label: "Watchmode (TV)" },
-  { key: "tmdb", label: "TheMovieDB (Movies)" },
+  { key: "watchmode", label: "Watchmode" },
+  { key: "tmdb", label: "Movies" },
   { key: "connections", label: "Connections" },
   { key: "run", label: "Run options" },
   { key: "account", label: "Users & security" },
