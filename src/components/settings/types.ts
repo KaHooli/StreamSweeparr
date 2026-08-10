@@ -44,6 +44,14 @@ export interface SettingsDto {
   sweepNextRunAt: string | null;
   sweepLastRunAt: string | null;
   sweepSchedulerDisabledByEnv: boolean;
+  webhookEnabled: boolean;
+  /**
+   * The shared secret in full, not a `…Set` flag. It is only useful once it has
+   * been pasted into Sonarr/Radarr, so the card has to be able to show it.
+   */
+  webhookToken: string;
+  /** How long a newly added title waits before its sweep starts. */
+  webhookSettleSeconds: number;
   localLoginEnabled: boolean;
   localLoginEffective: boolean;
   localLoginLock: { locked: boolean; reason: string | null };

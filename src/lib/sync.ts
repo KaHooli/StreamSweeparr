@@ -7,9 +7,10 @@
  * dashboard reads exclusively from this snapshot.
  */
 
-import type { Prisma } from "@prisma/client";
+import type { MediaType, Prisma } from "@prisma/client";
 import { prisma, getSettings } from "./db";
 import {
+  ArrError,
   SonarrClient,
   RadarrClient,
   posterFromImages,
@@ -56,6 +57,39 @@ export interface SyncResult {
 // Optional progress sink so a sync can stream status into a run log.
 export type ProgressFn = (level: "info" | "action" | "warn", msg: string) => void;
 const noopProgress: ProgressFn = () => {};
+
+/** One title a scoped sync should refresh, instead of the whole library. */
+export interface SyncTarget {
+  connectionId: number;
+  type: MediaType;
+  arrId: number;
+}
+
+export interface SyncOptions {
+  /**
+   * Refresh only these titles. Connections none of them belong to are skipped
+   * entirely, and the "anything untouched has left the instance" prune is
+   * skipped too — this pass never saw the rest of the library, so every other
+   * row is untouched by definition rather than gone.
+   */
+  targets?: SyncTarget[];
+  /**
+   * Ignore the freshness windows and pull provider data for the targets even if
+   * their cached answer is still young. A webhook-triggered sweep asks about a
+   * title *because* something just changed for it, so a cached answer is the
+   * wrong one to act on.
+   */
+  force?: boolean;
+}
+
+/** How much of one connection a sync pass should cover. */
+interface SyncScope {
+  /** Undefined = the whole library; otherwise just these *arr ids. */
+  arrIds?: number[];
+  force: boolean;
+}
+
+const FULL_SCOPE: SyncScope = { force: false };
 
 // A series whose Watchmode data is younger than this is not re-pulled unless
 // the changes feed says it changed. Safety net for when the changes feed is
@@ -187,7 +221,10 @@ export function applyProviderLinks(
   return complete;
 }
 
-export async function runSync(progress: ProgressFn = noopProgress): Promise<SyncResult> {
+export async function runSync(
+  progress: ProgressFn = noopProgress,
+  options: SyncOptions = {}
+): Promise<SyncResult> {
   const settings = await getSettings();
   const errors: string[] = [];
   const result: SyncResult = {
@@ -207,7 +244,12 @@ export async function runSync(progress: ProgressFn = noopProgress): Promise<Sync
     errors,
   };
 
-  const connections = settings.connections.filter((c) => c.enabled);
+  // A scoped sync narrows the work twice over: to the connections the targets
+  // live on, and within each of those to the target ids.
+  const scopes = options.targets ? scopeByConnection(options.targets, !!options.force) : null;
+  const connections = settings.connections.filter(
+    (c) => c.enabled && (!scopes || scopes.has(c.id))
+  );
   result.connections = connections.length;
 
   const hasRadarr = connections.some((c) => c.type === "RADARR");
@@ -281,7 +323,12 @@ export async function runSync(progress: ProgressFn = noopProgress): Promise<Sync
       progress("info", `Watchmode plan detected: ${watchmodePlan}.`);
     }
 
-    if (watchmodePlan === "paid") {
+    if (scopes) {
+      // A scoped sync names the series it cares about and pulls them regardless
+      // (see SyncOptions.force), so the feed has nothing to decide and its
+      // paginated calls would be spent for nothing.
+      changedIds = null;
+    } else if (watchmodePlan === "paid") {
       // Ask Watchmode which titles changed since our last sync. A few paginated
       // calls cover the whole feed regardless of library size.
       if (settings.watchmodeChangesCursor) {
@@ -331,14 +378,20 @@ export async function runSync(progress: ProgressFn = noopProgress): Promise<Sync
   const tmdbCountedTypes = settings.tmdbCountedTypes;
 
   for (const conn of connections) {
+    const scope = scopes?.get(conn.id) ?? FULL_SCOPE;
     try {
-      progress("info", `Syncing ${conn.type === "RADARR" ? "movies" : "series"} from "${conn.name}"…`);
+      progress(
+        "info",
+        `Syncing ${conn.type === "RADARR" ? "movies" : "series"} from "${conn.name}"` +
+          (scope.arrIds ? ` (${scope.arrIds.length} title(s))` : "") +
+          "…"
+      );
       if (conn.type === "RADARR") {
         if (!tmdb) throw new Error("TMDB is not configured.");
-        await syncRadarr(conn, tmdb, tmdbRegions, tmdbProviderIds, tmdbCountedTypes, result, errors, progress);
+        await syncRadarr(conn, tmdb, tmdbRegions, tmdbProviderIds, tmdbCountedTypes, result, errors, progress, scope);
       } else {
         if (!wm) throw new Error("Watchmode is not configured.");
-        await syncSonarr(conn, wm, regions, serviceIds, countedTypes, result, errors, changedIds, wmLogos);
+        await syncSonarr(conn, wm, regions, serviceIds, countedTypes, result, errors, changedIds, wmLogos, scope);
       }
     } catch (e) {
       errors.push(`[${conn.name}] ${(e as Error).message}`);
@@ -348,7 +401,10 @@ export async function runSync(progress: ProgressFn = noopProgress): Promise<Sync
   // Advance the changes cursor only on a paid plan (the only case the cursor is
   // consumed). Using the pre-work timestamp guarantees we never miss a change
   // that landed while this sync was running.
-  if (hasSonarr && wm && watchmodePlan === "paid") {
+  //
+  // A scoped sync must never advance it: it looked at a handful of series, so
+  // moving the cursor would mark every *other* change in the feed as seen.
+  if (hasSonarr && wm && watchmodePlan === "paid" && !scopes) {
     await prisma.settings.update({
       where: { id: 1 },
       data: { watchmodeChangesCursor: syncStartedAt },
@@ -383,10 +439,13 @@ async function syncRadarr(
   countedTypes: string[],
   result: SyncResult,
   errors: string[],
-  progress: ProgressFn
+  progress: ProgressFn,
+  scope: SyncScope = FULL_SCOPE
 ) {
   const client = new RadarrClient(conn.baseUrl, conn.apiKey);
-  const movies = await client.getMovies();
+  const movies = scope.arrIds
+    ? await fetchScoped(scope.arrIds, (id) => client.getMovie(id), conn, "movie", errors)
+    : await client.getMovies();
   // Which tag ids mean "leave this title alone"? Tag lookup is a local *arr
   // call, so it costs nothing against the streaming APIs.
   let skipIds = new Set<number>();
@@ -399,7 +458,7 @@ async function syncRadarr(
   // One read of the existing snapshot instead of a lookup per title. Used for
   // the freshness check and to carry cached availability forward on a skip.
   const existingRows = await prisma.mediaItem.findMany({
-    where: { connectionId: conn.id, type: "MOVIE" },
+    where: { connectionId: conn.id, type: "MOVIE", ...arrIdFilter(scope) },
     select: {
       arrId: true,
       providerSyncedAt: true,
@@ -463,6 +522,7 @@ async function syncRadarr(
     // cadence, so a day-old answer is still a good one — and on a 12-hourly
     // schedule this halves the TMDB traffic.
     const fresh =
+      !scope.force &&
       !!existing &&
       !existing.skipped &&
       !existing.streamingUnknown &&
@@ -545,10 +605,13 @@ async function syncRadarr(
     });
   });
 
-  // Anything this pass did not touch is no longer in Radarr.
-  await prisma.mediaItem.deleteMany({
-    where: { connectionId: conn.id, type: "MOVIE", lastSyncedAt: { lt: syncedAt } },
-  });
+  // Anything this pass did not touch is no longer in Radarr. A scoped pass
+  // never looked at the rest of the library, so it has no standing to say that.
+  if (!scope.arrIds) {
+    await prisma.mediaItem.deleteMany({
+      where: { connectionId: conn.id, type: "MOVIE", lastSyncedAt: { lt: syncedAt } },
+    });
+  }
 }
 
 async function syncSonarr(
@@ -563,10 +626,13 @@ async function syncSonarr(
   // unavailable → rely on the TTL alone).
   changedIds: Set<number> | null,
   // Streaming service id -> logo URL, for the dashboard tiles.
-  logos: Map<number, string | null>
+  logos: Map<number, string | null>,
+  scope: SyncScope = FULL_SCOPE
 ) {
   const client = new SonarrClient(conn.baseUrl, conn.apiKey);
-  const seriesList = await client.getSeries();
+  const seriesList = scope.arrIds
+    ? await fetchScoped(scope.arrIds, (id) => client.getSeriesById(id), conn, "series", errors)
+    : await client.getSeries();
   let skipIds = new Set<number>();
   try {
     skipIds = resolveSkipTagIds(await client.getTags());
@@ -578,7 +644,7 @@ async function syncSonarr(
   // episode rows: those are only needed for series we end up skipping, and
   // eagerly joining them loads the entire episode table on every sync.
   const existingRows = await prisma.mediaItem.findMany({
-    where: { connectionId: conn.id, type: "TV" },
+    where: { connectionId: conn.id, type: "TV", ...arrIdFilter(scope) },
     select: {
       id: true,
       arrId: true,
@@ -665,6 +731,7 @@ async function syncSonarr(
 
     // Decide whether we can skip the (metered) Watchmode episodes call.
     const fresh =
+      !scope.force &&
       !!existing?.providerSyncedAt &&
       now - existing.providerSyncedAt.getTime() < TTL_MS;
     const changed =
@@ -842,8 +909,58 @@ async function syncSonarr(
     });
   });
 
-  // Anything this pass did not touch is no longer in Sonarr.
-  await prisma.mediaItem.deleteMany({
-    where: { connectionId: conn.id, type: "TV", lastSyncedAt: { lt: syncedAt } },
-  });
+  // Anything this pass did not touch is no longer in Sonarr — see syncRadarr
+  // for why a scoped pass must not draw that conclusion.
+  if (!scope.arrIds) {
+    await prisma.mediaItem.deleteMany({
+      where: { connectionId: conn.id, type: "TV", lastSyncedAt: { lt: syncedAt } },
+    });
+  }
+}
+
+/* --------------------------- Scoped sync helpers -------------------------- */
+
+/** Group targets into one scope per connection. */
+function scopeByConnection(targets: SyncTarget[], force: boolean): Map<number, SyncScope> {
+  const byConnection = new Map<number, Set<number>>();
+  for (const t of targets) {
+    const ids = byConnection.get(t.connectionId) ?? new Set<number>();
+    ids.add(t.arrId);
+    byConnection.set(t.connectionId, ids);
+  }
+  return new Map(
+    [...byConnection].map(([connectionId, ids]) => [connectionId, { arrIds: [...ids], force }])
+  );
+}
+
+/** A Prisma `where` fragment limiting a query to the scope's ids. */
+function arrIdFilter(scope: SyncScope) {
+  return scope.arrIds ? { arrId: { in: scope.arrIds } } : {};
+}
+
+/**
+ * Fetch the named titles one by one, in place of the instance's full list.
+ *
+ * A title that has already been removed again (404) is dropped rather than
+ * treated as an error: the webhook that named it is only ever a moment behind
+ * the instance, and "you asked about something I deleted" is not a failure.
+ */
+async function fetchScoped<T>(
+  arrIds: number[],
+  fetchOne: (id: number) => Promise<T>,
+  conn: { name: string },
+  what: string,
+  errors: string[]
+): Promise<T[]> {
+  const out: T[] = [];
+  for (const id of arrIds) {
+    try {
+      const item = await fetchOne(id);
+      if (item) out.push(item);
+    } catch (e) {
+      if (e instanceof ArrError && e.status === 404) continue;
+      errors.push(`[${conn.name}] ${what} ${id}: ${(e as Error).message}`);
+    }
+  }
+  return out;
 }

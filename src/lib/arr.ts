@@ -126,6 +126,11 @@ export class SonarrClient {
     return arrFetch<SonarrSeries[]>(this.baseUrl, this.apiKey, "/api/v3/series");
   }
 
+  /** One series by id — for a sync scoped to a single show. */
+  getSeriesById(id: number) {
+    return arrFetch<SonarrSeries>(this.baseUrl, this.apiKey, `/api/v3/series/${id}`);
+  }
+
   getTags() {
     return arrFetch<ArrTag[]>(this.baseUrl, this.apiKey, "/api/v3/tag");
   }

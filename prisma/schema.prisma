@@ -75,6 +75,16 @@ model Settings {
   // Last time the scheduler claimed a slot and started a sweep.
   sweepLastRunAt       DateTime?
 
+  // --- Webhook-triggered sweeps ---
+  // Sonarr and Radarr call StreamSweeparr when a series/movie is added, and
+  // only that one title is swept. Off by default: it opens an endpoint that is
+  // reachable without a session, so it has to be an explicit choice.
+  webhookEnabled       Boolean @default(false)
+  // Shared secret every webhook call must present (query string, header, bearer
+  // or basic-auth password). Encrypted at rest like every other credential;
+  // generated for the user when webhooks are switched on.
+  webhookToken         String?
+
   // --- Watchmode Title ID map dataset sync metadata ---
   // HTTP validators from the last successful title_id_map.csv download, used to
   // skip re-importing when the dataset has not changed.
@@ -196,8 +206,49 @@ model ArrConnection {
   settingsId Int      @default(1)
 
   media      MediaItem[]
+  queued     QueuedSweep[]
 
   @@unique([type, baseUrl])
+}
+
+// A title waiting for its own targeted sweep, put here by a Sonarr/Radarr
+// webhook.
+//
+// The webhook cannot simply start a sweep: only one run may be active at a
+// time, so adding ten shows at once would start one sweep and reject nine.
+// Queueing instead means the endpoint always answers immediately, duplicates
+// collapse (the unique key is the title itself), and a worker drains the queue
+// into one targeted sweep covering everything that has settled.
+//
+// The queue lives in the database rather than in the process so a restart
+// mid-flight doesn't drop the titles, and so several replicas can share it —
+// `claimedBy` is what makes a claim exclusive.
+model QueuedSweep {
+  id           Int       @id @default(autoincrement())
+  mediaType    MediaType
+  // Primary key from the *arr instance (Sonarr series id / Radarr movie id).
+  arrId        Int
+  // Title as the webhook reported it, for the run log — the sweep re-reads
+  // everything else from the instance.
+  title        String
+  // The *arr event that queued this, e.g. "SeriesAdd" / "MovieAdded".
+  eventType    String?
+  queuedAt     DateTime  @default(now())
+  // Set while a drain has this row in flight; cleared if the sweep couldn't
+  // start, and reaped if the claiming process died.
+  claimedAt    DateTime?
+  claimedBy    String?
+  // Failed drains so far. A title that keeps failing is eventually dropped
+  // rather than retried forever.
+  attempts     Int       @default(0)
+
+  connection   ArrConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  connectionId Int
+
+  // One pending entry per title: a webhook fired twice queues one sweep.
+  @@unique([connectionId, mediaType, arrId])
+  // The drain asks for unclaimed rows, oldest first.
+  @@index([claimedAt, queuedAt])
 }
 
 enum MediaType {

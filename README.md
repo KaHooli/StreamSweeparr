@@ -40,7 +40,10 @@ StreamSweeparr runs three jobs against your library:
 
 It checks availability with **Watchmode** for TV (per-episode data) and
 **TheMovieDB / JustWatch** for movies, and gives you a dashboard, a full log of
-every run, and an optional timer to do it all automatically.
+every run, and two ways to run it without you: [on a
+timer](#-scheduled-sweeps), or [the moment a title is
+added](#-sweeping-new-titles-as-theyre-added) — Sonarr and Radarr tell it, and
+just that one title is swept.
 
 > [!IMPORTANT]
 > **Nothing is changed until you say so.** Every run is a **dry-run by default**
@@ -61,6 +64,7 @@ every run, and an optional timer to do it all automatically.
 [Day to day](#-using-it-day-to-day) ·
 [Run options](#-every-run-option-in-plain-english) ·
 [Scheduled sweeps](#-scheduled-sweeps) ·
+[Sweep on add](#-sweeping-new-titles-as-theyre-added) ·
 [Skipping titles](#-keeping-titles-out-of-the-sweep) ·
 [Install as an app](#-install-it-as-an-app)
 
@@ -302,6 +306,11 @@ automatically.
 The **Runs** page keeps the full step-by-step log and the counts for every run
 you've ever done, dry-run or live.
 
+Neither button is the only way in. **[Scheduled sweeps](#-scheduled-sweeps)** run
+one every so often, and **[sweep on add](#-sweeping-new-titles-as-theyre-added)**
+lets Sonarr and Radarr trigger one for a single new title. Both produce the same
+runs on the same page.
+
 ### What the dashboard shows you
 
 - **TV shows on streaming** — a progress bar per show, counting how many
@@ -439,6 +448,83 @@ Things worth knowing:
 
 ---
 
+## 🪝 Sweeping new titles as they&rsquo;re added
+
+A scheduled sweep runs on the clock. This runs on the *event*: the moment you
+add a series in Sonarr or a movie in Radarr, that one title is checked against
+your streaming services — and if it&rsquo;s already there, it&rsquo;s unmonitored
+before the download client ever picks it up.
+
+Turn it on under **Settings → Run options → Sweep new titles as they&rsquo;re
+added**. The card then shows one ready-made URL per connection.
+
+### Setting it up
+
+In **Sonarr** (and again in **Radarr**):
+
+1. **Settings → Connect → `+` → Webhook**
+2. **Notification triggers**: tick **On Series Add** only.
+   In Radarr it&rsquo;s **On Movie Added**. Leave everything else unticked —
+   other triggers are answered with a polite "ignored" and do nothing.
+3. **URL**: paste the line for that instance from StreamSweeparr&rsquo;s Settings
+   card. It already contains the token and which connection it is:
+   `https://sweep.example.com/api/webhook/sonarr?token=…&connection=2`
+4. **Method**: POST.
+5. Press **Test** — it should come back green. StreamSweeparr answers a test by
+   naming the connection it matched, so a green tick means the URL, the token
+   *and* the addressing are all right.
+6. **Save**.
+
+If you&rsquo;d rather not put the token in the URL, Sonarr&rsquo;s
+**Username / Password** fields work too: leave the username as anything and put
+the token in the password. An `X-Webhook-Token` header or
+`Authorization: Bearer …` is accepted as well.
+
+### What actually happens
+
+A webhook never sweeps on the spot. The title is written to a queue and the
+response comes straight back — an *arr that has to wait on a full sweep records
+the notification as failed. A worker then picks the queue up:
+
+- **It waits about a minute first.** Sonarr fires *On Series Add* before it has
+  fetched the episode list, so sweeping instantly would find nothing to do.
+  `WEBHOOK_SWEEP_DELAY_SECONDS` tunes this if your Sonarr is slower than that.
+- **A batch becomes one run.** Add eight shows at once and you get one sweep
+  covering all eight, not eight runs — and a webhook that fires twice for the
+  same title still only sweeps it once.
+- **It is the ordinary sweep, just narrowed.** Same options, same decisions,
+  same **Apply changes** setting — with every query confined to those titles. It
+  costs one Watchmode/TMDB lookup per title rather than a library-wide pass.
+- **Nothing is dropped if a run is already going.** The titles simply wait for
+  the current sync or sweep to finish.
+
+Each one shows up on the **Runs** page like any other, opening with
+`Starting webhook-triggered LIVE sweep for 1 newly added title(s): "…"`.
+
+### Things worth knowing
+
+- **The endpoint is the one part of the app you can reach without signing in** —
+  Sonarr has no way to hold a session. It is refused outright while the feature
+  is switched off, and otherwise accepts only the token from this card. Rejected
+  calls are rate-limited. The token is stored encrypted like every other
+  credential, and **Regenerate** invalidates the URLs already pasted into your
+  *arr apps, so update them together.
+- **Over plain HTTP the token is in the clear.** Fine across a LAN; put the app
+  behind TLS if the traffic leaves one.
+- **One URL per instance.** With a single Sonarr the `connection=` part is
+  optional, but the card always includes it — it&rsquo;s what keeps two Sonarrs
+  from being confused for each other.
+- **A brand-new series with no episodes yet says so in the run log** and is
+  picked up by the next full sweep. If that happens often, raise
+  `WEBHOOK_SWEEP_DELAY_SECONDS`.
+- **Multiple replicas are safe** — each queued title is claimed by exactly one.
+  `SWEEP_SCHEDULER=off` stops an instance running the queue (it still accepts
+  webhooks), so leave at least one instance without it.
+- **Settings → Info** reports whether it&rsquo;s on and how many titles are
+  queued. A number that never falls means nothing is draining the queue.
+
+---
+
 ## 🏷 Keeping titles out of the sweep
 
 Tag a series in Sonarr or a movie in Radarr with **`ss-skip`** (case doesn't
@@ -520,7 +606,8 @@ off:
   how many accounts exist, and how the last run finished.
 - **Configuration** — LIVE vs dry-run, every run option, which API keys are
   *set* (never their values), how many countries/services/regions/providers are
-  selected, connection counts, and the sweep schedule.
+  selected, connection counts, the sweep schedule, and whether webhook sweeps
+  are on (with how many titles are queued).
 - **Environment** — `PUBLIC_URL`, `TRUST_PROXY`, `SSRF_ALLOW_PRIVATE`,
   `SYNC_CONCURRENCY`, `LOG_LEVEL` and friends, as the app actually read them.
 
@@ -543,6 +630,11 @@ The tab is **administrators only**, and so is the endpoint behind it.
 | **A provider logo opens a search page, not the title** | Free Watchmode plans don't include per-episode deep links, and TMDB has none for movies | Working as intended — [what each link is](#what-the-dashboard-shows-you) |
 | **A title I want to keep keeps getting swept** | It's genuinely on one of your selected services | Tag it **`ss-skip`** — [how](#-keeping-titles-out-of-the-sweep) |
 | **The first sync is slow** | Nothing is cached yet, so every title gets looked up once | Normal. Every sync after that is far cheaper — [why](#-keeping-api-usage-low) |
+| **Sonarr's webhook Test fails with 503** | Webhook sweeps are switched off in StreamSweeparr | Turn on **Settings → Run options → Sweep new titles as they're added** |
+| **Sonarr's webhook Test fails with 401** | Wrong or missing token — usually a URL copied before the token was regenerated | Re-copy the URL from the settings card into every *arr |
+| **Sonarr's webhook Test fails with 409** | You have several Sonarrs and the URL doesn't say which | Use the per-connection URL from the card; it ends with `&connection=<id>` |
+| **Titles are queued but never swept** | Nothing is draining the queue — usually `SWEEP_SCHEDULER=off` on the only instance | Leave at least one instance without it. The queue depth is on **Settings → Info** |
+| **A newly added show is swept but nothing happens** | Sonarr hadn't fetched its episode list yet — the run log says so | Raise `WEBHOOK_SWEEP_DELAY_SECONDS`; the next full sweep covers it meanwhile |
 
 Still stuck? Turn up the detail with `LOG_LEVEL=debug`, check the run log on the
 **Runs** page — it records every decision the sweep made and why — and include
@@ -599,9 +691,42 @@ runs out. Full detail in [Keeping API usage low](#-keeping-api-usage-low).
 <summary><b>Can I run more than one instance?</b></summary>
 
 Yes. Scheduled sweeps use a database claim so exactly one instance fires each
-slot, and only one sync/sweep can run at a time across all of them. Use
-`SWEEP_SCHEDULER=off` and `TITLE_MAP_SCHEDULER=off` to make an instance
-UI-only.
+slot, webhook-queued titles are claimed the same way, and only one sync/sweep
+can run at a time across all of them. Use `SWEEP_SCHEDULER=off` and
+`TITLE_MAP_SCHEDULER=off` to make an instance UI-only — but leave at least one
+instance without `SWEEP_SCHEDULER=off`, or nothing drains the webhook queue.
+
+</details>
+
+<details>
+<summary><b>Do I have to wait for a scheduled sweep after adding a show?</b></summary>
+
+No — turn on **[sweep on add](#-sweeping-new-titles-as-theyre-added)** and point
+Sonarr's *On Series Add* (or Radarr's *On Movie Added*) webhook at
+StreamSweeparr. About a minute later that one title is swept, so something
+already on Netflix is unmonitored before the download client gets to it.
+
+The delay is deliberate: Sonarr fires the webhook before it has fetched the
+show's episode list, and a sweep needs that list. `WEBHOOK_SWEEP_DELAY_SECONDS`
+adjusts it.
+
+</details>
+
+<details>
+<summary><b>Is the webhook endpoint safe to expose?</b></summary>
+
+It is the only route that answers without a session, because Sonarr has no way
+to hold one. What guards it: it is **refused outright** unless you have switched
+webhook sweeps on, it accepts only the token generated on that settings card
+(compared in constant time, stored encrypted at rest), and rejected calls are
+rate-limited per client and instance-wide. It never does the sweep inline — it
+writes a row and returns — so it cannot be used to tie the app up.
+
+It does not authenticate *which* Sonarr called, only that the caller holds the
+token. Anyone with the token can queue a sweep of a title that is already in
+your library; they cannot read anything or reach any other endpoint. Over plain
+HTTP the token travels in the clear, so put the app behind TLS if the traffic
+leaves your LAN.
 
 </details>
 
@@ -643,8 +768,9 @@ automatically on start.
 - **Transient failures never cause churn.** If a title's status can't be
   determined, it's flagged *unknown* and never re-monitored on that basis.
 - **API keys are encrypted at rest** and never sent back to the browser — the UI
-  only ever sees a "configured" flag. See
-  [Encrypted credentials](#-encrypted-credentials).
+  only ever sees a "configured" flag. The one exception is the webhook token,
+  which is shown to administrators because it is useless until you paste it into
+  Sonarr/Radarr. See [Encrypted credentials](#-encrypted-credentials).
 - **Sessions are revocable.** Changing a role, changing a password or deleting
   an account ends that account's sessions on its *next* request — not whenever
   the cookie happens to expire.
@@ -654,7 +780,10 @@ automatically on start.
 ## 🔐 Accounts, login &amp; security
 
 The whole app is behind a login. Unauthenticated page requests are redirected to
-`/login`; unauthenticated API calls get a `401`.
+`/login`; unauthenticated API calls get a `401`. The single exception is
+`/api/webhook/{sonarr,radarr}`, which Sonarr and Radarr call and which
+authenticates with its own shared secret instead — it is refused entirely unless
+you have switched [sweep on add](#-sweeping-new-titles-as-theyre-added) on.
 
 **Roles.** Every account is either **admin** (settings, connections,
 sync/sweep, user management) or **user** (read-only dashboard and run history).
@@ -712,8 +841,8 @@ account can't be demoted or deleted, and you can't delete your own account.
 ### 🔒 Encrypted credentials
 
 Everything that could be used as a credential — the Watchmode, TMDB and Seerr
-keys, the OIDC client secret, and every Sonarr/Radarr API key — is encrypted
-before it reaches the database. An *arr API key can delete media, so a database
+keys, the OIDC client secret, the webhook token, and every Sonarr/Radarr API key
+— is encrypted before it reaches the database. An *arr API key can delete media, so a database
 dump or an old backup shouldn't hand that over in the clear.
 
 - **Cipher:** AES-256-GCM, fresh IV per value.
@@ -779,7 +908,8 @@ Everything else is configured in the UI. See
 | `ADMIN_USERNAME` / `ADMIN_PASSWORD` | Seed **and** keep authoritative the local admin account |
 | `SYNC_CONCURRENCY` | Titles looked up in parallel during a sync (default `4`, max `32`) |
 | `LOG_LEVEL` | `debug` / `info` / `warn` / `error` for background work (default `info`) |
-| `SWEEP_SCHEDULER` | `off` stops *this instance* running scheduled sweeps |
+| `SWEEP_SCHEDULER` | `off` stops *this instance* running scheduled **and** webhook sweeps |
+| `WEBHOOK_SWEEP_DELAY_SECONDS` | How long a webhook-queued title settles before its sweep (default `60`) |
 | `TITLE_MAP_SCHEDULER` | `off` disables the 12h Title ID map refresh on this instance |
 | `PORT` | Port for `next start` (default `3000`) |
 
@@ -863,6 +993,12 @@ Sync also looks titles up **in parallel** (`SYNC_CONCURRENCY`, default 4), which
 is what turns a large library's sync from minutes of waiting into something much
 shorter.
 
+**[Sweeping on add](#-sweeping-new-titles-as-theyre-added) is the cheapest run
+there is.** It looks at only the titles Sonarr/Radarr just told it about, so it
+costs one lookup per new title rather than a pass over the library — and it
+deliberately ignores the freshness windows above, because it is running
+*because* that title just changed. It skips the changes feed entirely.
+
 <details>
 <summary><b>The Title ID map, in detail</b></summary>
 
@@ -912,10 +1048,15 @@ countries or services — clear `watchmodeChangesCursor` and `providerSyncedAt`.
                     └────────┬────────┘   │  Seerr (discovery) │
                              │ Prisma     └────────────────────┘
                     ┌────────▼─────────┐
-                    │  PostgreSQL      │  settings, connections,
-                    │  (external)      │  media snapshot, run logs
+                    │  PostgreSQL      │  settings, connections, media
+                    │  (external)      │  snapshot, run logs, sweep queue
                     └──────────────────┘
 ```
+
+Traffic runs the other way too: Sonarr and Radarr POST to `/api/webhook/*` when
+a title is added, which queues it for a sweep of its own — the only inbound path
+that does not carry a session.
+
 
 <details>
 <summary><b>Where things live</b></summary>
@@ -935,6 +1076,7 @@ countries or services — clear `watchmodeChangesCursor` and `providerSyncedAt`.
 | **Sync engine** — snapshot library + streaming availability into Postgres | `src/lib/sync.ts` |
 | **Sweep engine** — unmonitor/delete, re-monitor, search | `src/lib/sweep.ts` |
 | **Scheduled sweeps** — interval maths (pure) + the timer that claims a slot | `src/lib/{schedule,scheduler}.ts` |
+| **Webhook sweeps** — payload parsing + shared secret, the URLs the UI hands out, the queue and its worker | `src/lib/{webhook,webhookUrl,sweepQueue}.ts`, `src/app/api/webhook/[arr]/route.ts` |
 | Background run lock + live progress | `src/lib/jobs.ts` |
 | SSRF-guarded fetch | `src/lib/safeFetch.ts` |
 | Credential encryption at rest | `src/lib/secrets.ts` |
@@ -957,10 +1099,11 @@ countries or services — clear `watchmodeChangesCursor` and `providerSyncedAt`.
 - **TheMovieDB (movies):** `/3/watch/providers/regions`,
   `/3/watch/providers/movie`, `/3/movie/{id}/watch/providers`
   (auth via the `api_key` query param).
-- **Sonarr v3:** `GET /series`, `GET /episode`, `PUT /episode/monitor`,
-  `DELETE /episodefile/{id}`, `POST /command` (`EpisodeSearch`).
-- **Radarr v3:** `GET /movie`, `PUT /movie/{id}`, `DELETE /moviefile/{id}`,
-  `POST /command` (`MoviesSearch`).
+- **Sonarr v3:** `GET /series`, `GET /series/{id}` (webhook sweeps),
+  `GET /episode`, `PUT /episode/monitor`, `DELETE /episodefile/{id}`,
+  `POST /command` (`EpisodeSearch`).
+- **Radarr v3:** `GET /movie`, `GET /movie/{id}`, `PUT /movie/{id}`,
+  `DELETE /moviefile/{id}`, `POST /command` (`MoviesSearch`).
 - **Seerr (optional):** `GET /api/v1/settings/sonarr`, `.../radarr` to
   auto-discover instances.
 

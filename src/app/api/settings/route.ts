@@ -22,6 +22,8 @@ import {
   nextRunAfterChange,
   schedulerDisabledByEnv,
 } from "@/lib/schedule";
+import { generateWebhookToken } from "@/lib/webhook";
+import { settleMs } from "@/lib/sweepQueue";
 
 export const dynamic = "force-dynamic";
 
@@ -67,6 +69,10 @@ const settingsSchema = z.object({
     .min(MIN_SWEEP_INTERVAL_HOURS, `Interval must be at least ${MIN_SWEEP_INTERVAL_HOURS} hour.`)
     .max(MAX_SWEEP_INTERVAL_HOURS, `Interval must be at most ${MAX_SWEEP_INTERVAL_HOURS} hours.`)
     .optional(),
+  // Webhook-triggered sweeps. The token is never sent by the client: it is
+  // minted here when the feature is switched on, and replaced on request.
+  webhookEnabled: z.boolean().optional(),
+  regenerateWebhookToken: z.boolean().optional(),
   localLoginEnabled: z.boolean().optional(),
   // OIDC
   oidcEnabled: z.boolean().optional(),
@@ -122,6 +128,13 @@ function serialize(
     sweepNextRunAt: s.sweepNextRunAt ? s.sweepNextRunAt.toISOString() : null,
     sweepLastRunAt: s.sweepLastRunAt ? s.sweepLastRunAt.toISOString() : null,
     sweepSchedulerDisabledByEnv: schedulerDisabledByEnv(),
+    // Webhook-triggered sweeps. Unlike every other credential the token is
+    // returned in full: it only has a use once it is pasted into Sonarr/Radarr,
+    // so a masked one would be useless. This endpoint is admin-only, and the
+    // token is stored encrypted like the rest.
+    webhookEnabled: s.webhookEnabled,
+    webhookToken: s.webhookToken ?? "",
+    webhookSettleSeconds: Math.round(settleMs() / 1000),
     // Login options: the stored preference, the value actually in force, and
     // whether the UI control must be locked (OIDC unusable or env override).
     localLoginEnabled: s.localLoginEnabled,
@@ -217,6 +230,12 @@ export const PATCH = withGuard(requireAdmin, async (_session, req: NextRequest) 
       sweepScheduleEnabled: enabled,
       sweepIntervalHours: hours,
     });
+  }
+  // Webhook sweeps are unusable without a token, so switching them on mints one
+  // rather than leaving the user to notice a second, empty field.
+  if (p.webhookEnabled !== undefined) data.webhookEnabled = p.webhookEnabled;
+  if (p.regenerateWebhookToken || (p.webhookEnabled && !prev.webhookToken)) {
+    data.webhookToken = generateWebhookToken();
   }
   if (p.localLoginEnabled !== undefined) data.localLoginEnabled = p.localLoginEnabled;
   // OIDC (only overwrite the secret when a non-empty value is provided).

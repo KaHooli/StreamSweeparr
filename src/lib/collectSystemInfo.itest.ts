@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { collectSystemInfo } from "./collectSystemInfo";
 import { resetDatabase, makeSettings, makeConnection } from "@/test/dbHelpers";
 import { prisma } from "./db";
+import { encryptSecret } from "./secrets";
 
 /**
  * The Info tab's value is that its numbers are real, and every interesting one
@@ -86,9 +87,18 @@ describe("collectSystemInfo", () => {
       serviceIds: [203, 26],
       sweepScheduleEnabled: true,
       sweepIntervalHours: 12,
+      webhookEnabled: true,
+      webhookToken: encryptSecret("super-secret-webhook-token"),
     });
-    await makeConnection({ type: "SONARR", enabled: true, apiKey: "super-secret-key" });
+    const sonarr = await makeConnection({
+      type: "SONARR",
+      enabled: true,
+      apiKey: "super-secret-key",
+    });
     await makeConnection({ type: "RADARR", enabled: false, apiKey: "another-secret" });
+    await prisma.queuedSweep.create({
+      data: { connectionId: sonarr.id, mediaType: "TV", arrId: 1, title: "Queued Show" },
+    });
 
     const info = await collectSystemInfo();
 
@@ -97,12 +107,16 @@ describe("collectSystemInfo", () => {
     expect(info.config?.serviceIds).toBe(2);
     expect(info.config?.connections).toEqual({ sonarr: 1, radarr: 0, disabled: 1 });
     expect(info.config?.sweepScheduleEnabled).toBe(true);
+    expect(info.config?.webhookEnabled).toBe(true);
+    expect(info.config?.webhookTokenSet).toBe(true);
+    expect(info.config?.webhookQueued).toBe(1);
 
     // The guarantee the whole screen rests on: stored credentials are reported
     // as presence, never as values.
     const serialized = JSON.stringify(info);
     expect(serialized).not.toContain("super-secret-key");
     expect(serialized).not.toContain("another-secret");
+    expect(serialized).not.toContain("super-secret-webhook-token");
   });
 
   it("drops the DATABASE_URL credentials from what it reports", async () => {

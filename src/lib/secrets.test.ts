@@ -112,6 +112,7 @@ describe("row helpers", () => {
       tmdbApiKey: "tmdb",
       seerrApiKey: "seerr",
       oidcClientSecret: "oidc",
+      webhookToken: "hook",
       seerrUrl: "http://seerr:5055",
       countries: ["US"],
       deleteFiles: true,

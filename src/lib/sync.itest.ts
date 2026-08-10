@@ -15,6 +15,8 @@ let sonarrEpisodes: Record<number, unknown[]> = {};
 /** tmdbId -> availability, or the string "404" / "error" to fail the lookup. */
 let tmdbAvailability: Record<number, unknown> = {};
 let tmdbCalls: number[] = [];
+/** How often the whole Radarr library was listed — a scoped sync must not. */
+let radarrListCalls = 0;
 
 class TmdbNotFound extends Error {
   status = 404;
@@ -26,7 +28,11 @@ vi.mock("./arr", async (importOriginal) => {
     ...actual,
     RadarrClient: class {
       async getMovies() {
+        radarrListCalls++;
         return radarrMovies;
+      }
+      async getMovie(id: number) {
+        return byId(radarrMovies, id, actual.ArrError);
       }
       async getTags() {
         return [{ id: 1, label: "ss-skip" }];
@@ -35,6 +41,9 @@ vi.mock("./arr", async (importOriginal) => {
     SonarrClient: class {
       async getSeries() {
         return sonarrSeries;
+      }
+      async getSeriesById(id: number) {
+        return byId(sonarrSeries, id, actual.ArrError);
       }
       async getTags() {
         return [{ id: 1, label: "ss-skip" }];
@@ -45,6 +54,17 @@ vi.mock("./arr", async (importOriginal) => {
     },
   };
 });
+
+/** A scoped sync asks for one title at a time; an unknown id is a 404. */
+function byId(
+  items: unknown[],
+  id: number,
+  ArrErrorClass: new (message: string, status?: number) => Error
+) {
+  const found = items.find((i) => (i as { id: number }).id === id);
+  if (!found) throw new ArrErrorClass(`no such title ${id}`, 404);
+  return found;
+}
 
 vi.mock("./tmdb", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./tmdb")>();
@@ -110,6 +130,7 @@ beforeEach(async () => {
   sonarrEpisodes = {};
   tmdbAvailability = {};
   tmdbCalls = [];
+  radarrListCalls = 0;
 });
 afterAll(async () => {
   await prisma.$disconnect();
@@ -309,5 +330,88 @@ describe("runSync — configuration guards", () => {
     const result = await runSync();
     expect(result.connections).toBe(0);
     expect(await prisma.mediaItem.count()).toBe(0);
+  });
+});
+
+describe("runSync — scoped to named titles", () => {
+  it("fetches only the named title, not the whole library", async () => {
+    await radarrSettings();
+    const conn = await makeConnection();
+    radarrMovies = [movie(1), movie(2), movie(3)];
+    tmdbAvailability = { 1002: onNetflix };
+
+    const result = await runSync(undefined, {
+      targets: [{ connectionId: conn.id, type: "MOVIE", arrId: 2 }],
+    });
+
+    expect(result.movies).toBe(1);
+    expect(radarrListCalls).toBe(0);
+    // One TMDB call for one title, rather than one per movie in the library.
+    expect(tmdbCalls).toEqual([1002]);
+    const rows = await prisma.mediaItem.findMany();
+    expect(rows.map((r) => r.arrId)).toEqual([2]);
+    expect(rows[0].onStreaming).toBe(true);
+  });
+
+  it("does not prune the rest of the library it never looked at", async () => {
+    await radarrSettings();
+    const conn = await makeConnection();
+    // A snapshot from an earlier full sync.
+    await makeMediaItem(conn.id, { arrId: 1, title: "Old" });
+    await makeMediaItem(conn.id, { arrId: 2, title: "Also Old" });
+    radarrMovies = [movie(1), movie(2), movie(3)];
+
+    await runSync(undefined, { targets: [{ connectionId: conn.id, type: "MOVIE", arrId: 3 }] });
+
+    const rows = await prisma.mediaItem.findMany({ orderBy: { arrId: "asc" } });
+    expect(rows.map((r) => r.arrId)).toEqual([1, 2, 3]);
+  });
+
+  it("ignores the freshness window when told to force", async () => {
+    await radarrSettings();
+    const conn = await makeConnection();
+    radarrMovies = [movie(1)];
+    tmdbAvailability = { 1001: onNetflix };
+    // Looked up a moment ago, so an ordinary sync would serve it from cache.
+    await makeMediaItem(conn.id, { arrId: 1, tmdbId: 1001, providerSyncedAt: new Date() });
+
+    const targets = [{ connectionId: conn.id, type: "MOVIE" as const, arrId: 1 }];
+    await runSync(undefined, { targets });
+    expect(tmdbCalls).toEqual([]);
+
+    await runSync(undefined, { targets, force: true });
+    expect(tmdbCalls).toEqual([1001]);
+  });
+
+  it("skips connections none of the targets live on", async () => {
+    await radarrSettings();
+    const first = await makeConnection({ baseUrl: "http://r1:7878" });
+    const second = await makeConnection({ baseUrl: "http://r2:7878" });
+    radarrMovies = [movie(1)];
+
+    const result = await runSync(undefined, {
+      targets: [{ connectionId: second.id, type: "MOVIE", arrId: 1 }],
+    });
+
+    expect(result.connections).toBe(1);
+    const rows = await prisma.mediaItem.findMany();
+    expect(rows.map((r) => r.connectionId)).toEqual([second.id]);
+    expect(rows.every((r) => r.connectionId !== first.id)).toBe(true);
+  });
+
+  it("shrugs off a title that has already been removed again", async () => {
+    await radarrSettings();
+    const conn = await makeConnection();
+    radarrMovies = [movie(1)];
+
+    const result = await runSync(undefined, {
+      targets: [
+        { connectionId: conn.id, type: "MOVIE", arrId: 1 },
+        { connectionId: conn.id, type: "MOVIE", arrId: 99 },
+      ],
+    });
+
+    expect(result.movies).toBe(1);
+    expect(result.errors).toEqual([]);
   });
 });

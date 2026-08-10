@@ -37,6 +37,17 @@ function isPwaAsset(pathname: string): boolean {
   );
 }
 
+/**
+ * The Sonarr/Radarr webhook receiver.
+ *
+ * Spelled out rather than imported from `lib/webhook`: this file runs on the
+ * edge, and that module is Node-only (node:crypto). Kept to the exact two paths
+ * so nothing else can end up outside the session gate by sharing a prefix.
+ */
+function isWebhookEndpoint(pathname: string): boolean {
+  return pathname === "/api/webhook/sonarr" || pathname === "/api/webhook/radarr";
+}
+
 export async function proxy(req: NextRequest) {
   const { pathname, search } = req.nextUrl;
 
@@ -44,6 +55,11 @@ export async function proxy(req: NextRequest) {
     pathname === "/login" ||
     pathname.startsWith("/api/auth/") || // login, logout, oidc, session
     pathname === "/api/health" || // container probe; exposes no data
+    // Sonarr/Radarr webhooks. An *arr cannot hold a session, so this endpoint
+    // authenticates with the shared secret from Settings instead — and refuses
+    // everything while webhook sweeps are switched off. Narrowed to the two
+    // *arr kinds so the prefix can never be widened by accident.
+    isWebhookEndpoint(pathname) ||
     pathname.startsWith("/_next/") ||
     pathname === "/favicon.ico" ||
     isPwaAsset(pathname);

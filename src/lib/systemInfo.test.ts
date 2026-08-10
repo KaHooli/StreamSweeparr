@@ -173,6 +173,9 @@ const info: SystemInfo = {
     sweepIntervalHours: 12,
     sweepNextRunAt: "2026-08-07T21:00:00.000Z",
     sweepLastRunAt: "2026-08-07T09:00:00.000Z",
+    webhookEnabled: true,
+    webhookTokenSet: true,
+    webhookQueued: 2,
     titleMapSyncedAt: "2026-08-07T02:00:00.000Z",
     localLoginEnabled: true,
     oidcConfigured: false,
@@ -208,6 +211,9 @@ describe("buildDiagnosticsText", () => {
     expect(text).toContain("Server: PostgreSQL 16.4");
     expect(text).toContain("Mode: Dry-run");
     expect(text).toContain("Uptime: 1h");
+    // A queue that never drains is the symptom of a worker that isn't running,
+    // so the depth has to survive into a pasted report.
+    expect(text).toContain("Webhook sweeps: on, token set, 2 title(s) queued");
   });
 
   it("reports credentials as presence, never as values", () => {

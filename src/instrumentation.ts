@@ -1,13 +1,15 @@
 /**
  * Next.js instrumentation hook — runs once when the server process starts.
  *
- * It starts two background timers:
+ * It starts three background timers:
  *   1. The recurring (every 12h) Title ID map refresh, so the TMDB/IMDB ->
  *      Watchmode conversion table stays current without user action. The
  *      refresh is also invoked at the start of every sync (self-throttled), so
  *      this timer is a safety net for deployments that rarely sync.
  *   2. The sweep scheduler, which fires a sweep every N hours when the schedule
  *      is enabled in Settings -> Run options.
+ *   3. The webhook sweep queue worker, which sweeps titles Sonarr/Radarr told
+ *      us about as they were added.
  */
 export async function register() {
   // Only run in the Node.js server runtime (not edge / build).
@@ -75,4 +77,11 @@ export async function register() {
   // SWEEP_SCHEDULER=off opts an instance out entirely.
   const { startSweepScheduler } = await import("./lib/scheduler");
   startSweepScheduler();
+
+  // Webhook-triggered sweeps. The receiving endpoint only queues titles; this
+  // worker is what turns the queue into runs. Like the scheduler it is a cheap
+  // poll that does nothing until the feature is switched on in Settings, claims
+  // work atomically so replicas can share it, and honours SWEEP_SCHEDULER=off.
+  const { startSweepQueueWorker } = await import("./lib/sweepQueue");
+  startSweepQueueWorker();
 }

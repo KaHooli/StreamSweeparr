@@ -12,7 +12,7 @@ export async function resetDatabase() {
   // Order matters only where cascades do not cover us; TRUNCATE ... CASCADE in
   // one statement keeps it simple and fast.
   await prisma.$executeRawUnsafe(
-    'TRUNCATE TABLE "Episode", "MediaItem", "ArrConnection", "RunLog", "User", "TitleIdMap", "Settings" RESTART IDENTITY CASCADE'
+    'TRUNCATE TABLE "Episode", "MediaItem", "QueuedSweep", "ArrConnection", "RunLog", "User", "TitleIdMap", "Settings" RESTART IDENTITY CASCADE'
   );
 }
 
