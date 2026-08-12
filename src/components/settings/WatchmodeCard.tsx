@@ -3,16 +3,26 @@
 import { useState } from "react";
 import { postJson, sendJson } from "@/lib/fetcher";
 import type { WatchmodeKeyEntry } from "@/lib/watchmodeKeys";
+import {
+  WATCHMODE_CACHE_CHOICES,
+  DEFAULT_WATCHMODE_CACHE_DAYS,
+  describeWatchmodeCache,
+} from "@/lib/watchmodeCache";
 import type { CardProps } from "./types";
 
 /**
- * Watchmode credentials.
+ * Watchmode credentials and how long their answers are cached.
  *
  * A free Watchmode key carries a small monthly credit budget, so the card holds
  * a numbered ring of keys rather than a single field: sync starts at key 1 and
  * moves to the next key when one is rejected or spent. There is one field to
  * begin with; "Add another key" only appears once every field on screen is a
  * key that has been saved, so the ring can't grow into a row of empty boxes.
+ *
+ * The cache window sits alongside the keys because it is the other half of the
+ * same budget: keys set how many credits exist, the window sets how fast they
+ * are spent. It saves on its own (it is not a credential and needs no test
+ * call), so changing it does not drag the key fields through a save.
  */
 
 /**
@@ -47,6 +57,7 @@ export function WatchmodeCard({ settings, onChange }: CardProps) {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
   const [results, setResults] = useState<KeyTestResult[] | null>(null);
+  const [cacheBusy, setCacheBusy] = useState(false);
 
   // Re-seed when the stored ring changes underneath us (first load, or a save
   // that added or removed a key), adjusting state during render as `lib/
@@ -118,6 +129,29 @@ export function WatchmodeCard({ settings, onChange }: CardProps) {
       setBusy(false);
     }
   };
+
+  const saveCacheDays = async (days: number) => {
+    setCacheBusy(true);
+    setMsg(null);
+    try {
+      await sendJson("PATCH", "/api/settings", { watchmodeCacheDays: days });
+      setMsg({
+        kind: "ok",
+        text: `Watchmode answers will now be re-checked after ${describeWatchmodeCache(days)}.`,
+      });
+      onChange();
+    } catch (e) {
+      setMsg({ kind: "err", text: (e as Error).message });
+    } finally {
+      setCacheBusy(false);
+    }
+  };
+
+  // Fall back to the built-in list if the server sent none (an older build).
+  const cacheChoices = settings.watchmodeCacheChoices?.length
+    ? settings.watchmodeCacheChoices
+    : [...WATCHMODE_CACHE_CHOICES];
+  const cacheDays = settings.watchmodeCacheDays ?? DEFAULT_WATCHMODE_CACHE_DAYS;
 
   return (
     <div className="card" style={{ marginBottom: 20 }}>
@@ -202,6 +236,32 @@ export function WatchmodeCard({ settings, onChange }: CardProps) {
         </div>
       )}
 
+      <div className="field" style={{ marginTop: 16 }}>
+        <label htmlFor="watchmode-cache-days">Cache lookups for</label>
+        <select
+          id="watchmode-cache-days"
+          className="select"
+          value={cacheDays}
+          disabled={cacheBusy}
+          onChange={(e) => saveCacheDays(Number(e.target.value))}
+        >
+          {cacheChoices.map((d) => (
+            <option key={d} value={d}>
+              {describeWatchmodeCache(d)}
+              {d === DEFAULT_WATCHMODE_CACHE_DAYS ? " (default)" : ""}
+            </option>
+          ))}
+        </select>
+        <div className="hint">
+          How long an answer is kept before that title is looked up again — series episodes,
+          provider links, and movies when Watchmode is answering those too. The default of{" "}
+          {describeWatchmodeCache(DEFAULT_WATCHMODE_CACHE_DAYS)} is what a free / developer
+          key&rsquo;s monthly credit budget is sized for. A shorter window notices a title
+          arriving on streaming sooner and spends credits faster; a longer one is the way to
+          fit a large library into a small budget.
+        </div>
+      </div>
+
       {count > 0 && settings.watchmodePlan && (
         <div className="hint" style={{ marginTop: 12 }}>
           Detected plan:{" "}
@@ -213,8 +273,12 @@ export function WatchmodeCard({ settings, onChange }: CardProps) {
               : "Unknown"}
           </strong>
           {settings.watchmodePlan === "paid"
-            ? " — change-detection is enabled, minimising API usage."
-            : " — using a 7-day refresh cache to limit API usage. A paid plan enables change-detection for near-zero ongoing usage."}
+            ? ` — change-detection is enabled, minimising API usage; the ${describeWatchmodeCache(
+                cacheDays
+              )} cache above is its safety net.`
+            : ` — no Changes API on this plan, so the ${describeWatchmodeCache(
+                cacheDays
+              )} cache above is what limits API usage. A paid plan enables change-detection for near-zero ongoing usage.`}
         </div>
       )}
 

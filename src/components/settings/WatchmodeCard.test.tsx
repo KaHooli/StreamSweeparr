@@ -18,6 +18,8 @@ const settings = (over: Partial<SettingsDto> = {}): SettingsDto =>
     watchmodeApiKeyCount: 0,
     watchmodeApiKeyMax: 10,
     watchmodePlan: null,
+    watchmodeCacheDays: 7,
+    watchmodeCacheChoices: [1, 2, 3, 5, 7, 14, 30, 60, 90],
     seerrUrl: "",
     seerrApiKeySet: false,
     countries: [],
@@ -180,5 +182,40 @@ describe("WatchmodeCard", () => {
 
     expect(await screen.findByText(/Enter at least one Watchmode API key/)).toBeTruthy();
     expect(calls).toHaveLength(0);
+  });
+
+  it("saves the cache window on its own, without touching the keys", async () => {
+    const calls = mockApi([]);
+    const onChange = vi.fn();
+    render(
+      <WatchmodeCard
+        settings={settings({ watchmodeApiKeySet: true, watchmodeApiKeyCount: 1 })}
+        onChange={onChange}
+      />
+    );
+
+    fireEvent.change(screen.getByLabelText(/cache lookups for/i), { target: { value: "30" } });
+
+    await waitFor(() => expect(onChange).toHaveBeenCalled());
+    // No key test: the window is not a credential, so there is nothing to verify.
+    expect(calls).toEqual([{ url: "/api/settings", body: { watchmodeCacheDays: 30 } }]);
+    expect(screen.getByText(/re-checked after 30 days/)).toBeTruthy();
+  });
+
+  it("shows the configured window as what limits usage on a free plan", () => {
+    render(
+      <WatchmodeCard
+        settings={settings({
+          watchmodeApiKeySet: true,
+          watchmodeApiKeyCount: 1,
+          watchmodePlan: "free",
+          watchmodeCacheDays: 14,
+        })}
+        onChange={() => {}}
+      />
+    );
+
+    expect((screen.getByLabelText(/cache lookups for/i) as HTMLSelectElement).value).toBe("14");
+    expect(screen.getByText(/14 days cache above is what limits API usage/)).toBeTruthy();
   });
 });

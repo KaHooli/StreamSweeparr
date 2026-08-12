@@ -36,6 +36,11 @@ import {
   isTmdbNotFound,
   type MatchedTmdbProvider,
 } from "./tmdb";
+import {
+  clampWatchmodeCacheDays,
+  describeWatchmodeCache,
+  watchmodeCacheTtlMs,
+} from "./watchmodeCache";
 
 export interface SyncResult {
   connections: number;
@@ -123,29 +128,34 @@ type MovieLookup =
       countedTypes: string[];
       /** Source id -> logo, so movie tiles render the same as series ones. */
       logos: Map<number, string | null>;
+      /**
+       * The configured Watchmode cache window (`Settings.watchmodeCacheDays`),
+       * carried on the lookup because it is a property of the *provider* being
+       * asked, not of the media type — the TMDB branch has no equivalent.
+       */
+      ttlMs: number;
     };
 
 /** How long a successful movie lookup stays good, per provider. */
 function movieTtlMs(lookup: MovieLookup): number {
-  return lookup.kind === "watchmode" ? WATCHMODE_MOVIE_TTL_MS : MOVIE_TTL_MS;
+  return lookup.kind === "watchmode" ? lookup.ttlMs : MOVIE_TTL_MS;
 }
 
-// A series whose Watchmode data is younger than this is not re-pulled unless
-// the changes feed says it changed. Safety net for when the changes feed is
-// unavailable or misses something.
-const TTL_DAYS = 7;
-const TTL_MS = TTL_DAYS * 24 * 60 * 60 * 1000;
+// A series whose Watchmode data is younger than the configured window is not
+// re-pulled unless the changes feed says it changed. On a paid plan that is a
+// safety net for a feed that is unavailable or misses something; on a free one
+// it is the only rationing there is, which is why the window is a setting —
+// see lib/watchmodeCache.ts.
 
 // Movies have no changes feed to consult, so their freshness is purely
-// time-based and the window is correspondingly shorter than the TV one.
+// time-based. TMDB's window is fixed and short because its calls are free: a
+// day-old answer is a good one, and availability moves monthly.
 const MOVIE_TTL_HOURS = 24;
 export const MOVIE_TTL_MS = MOVIE_TTL_HOURS * 60 * 60 * 1000;
 
-// A movie answered by Watchmode instead of TMDB keeps the *TV* window, because
-// what makes the 24-hour one affordable is that TMDB calls are free. Every
-// Watchmode lookup spends a credit, so re-asking daily would quietly cost more
-// per movie than the whole TV library costs per week.
-export const WATCHMODE_MOVIE_TTL_MS = TTL_MS;
+// A movie answered by Watchmode instead of TMDB uses the *Watchmode* window
+// above, not this one: what makes a 24-hour re-check affordable is that TMDB
+// calls are free, whereas every Watchmode lookup spends a credit.
 
 // Re-probe the Watchmode plan at most this often (in case the user upgrades
 // from free to paid, or vice versa).
@@ -240,14 +250,14 @@ function storedProviderLinks(info: unknown): Map<number, string> {
  * Whether it is time to (re)ask Watchmode for a series' provider deep links.
  *
  * Intentionally independent of the episode-availability TTL — a show whose
- * episodes are still fresh would otherwise keep its unlinked logos for up to a
- * week — but still rate-limited to one request per TTL so a source
+ * episodes are still fresh would otherwise keep its unlinked logos for the
+ * whole window — but still rate-limited to one request per window so a source
  * Watchmode has no link for can't be re-probed on every sync.
  */
 export function providerLinksAreStale(
   lastCheckedAt: Date | null | undefined,
-  now = Date.now(),
-  ttlMs = TTL_MS
+  now: number,
+  ttlMs: number
 ): boolean {
   if (!lastCheckedAt) return true; // never asked (incl. rows predating the column)
   return now - lastCheckedAt.getTime() >= ttlMs;
@@ -299,6 +309,12 @@ export async function runSync(
 
   const hasRadarr = connections.some((c) => c.type === "RADARR");
   const hasSonarr = connections.some((c) => c.type === "SONARR");
+  // How long a Watchmode answer stays good, as configured on the Watchmode
+  // settings card. Clamped on the way in so a hand-edited row can't disable
+  // caching (or the freshness check) outright.
+  const wmCacheDays = clampWatchmodeCacheDays(settings.watchmodeCacheDays);
+  const wmTtlMs = watchmodeCacheTtlMs(wmCacheDays);
+  const wmCacheLabel = describeWatchmodeCache(wmCacheDays);
   // TV is Watchmode by necessity; movies follow the configured provider.
   const watchmodeMovies = settings.movieProvider === "WATCHMODE";
   // One client and one key ring serve both media types, so Watchmode is set up
@@ -360,8 +376,8 @@ export async function runSync(
     }
 
     // Detect the account plan (cached). Only paid plans can use the premium
-    // Changes API; free plans use the 7-day TTL fallback. Re-probe if we've
-    // never checked or the last check is stale (user may have upgraded).
+    // Changes API; free plans fall back on the cache window alone. Re-probe if
+    // we've never checked or the last check is stale (user may have upgraded).
     //
     // Only worth a request when there is a changes feed to consult, i.e. when
     // there is a Sonarr connection: the feed is episode-shaped, so an install
@@ -402,7 +418,7 @@ export async function runSync(
           changedIds = null;
           progress(
             "info",
-            `Watchmode changes feed error (${(e as Error).message}); using ${TTL_DAYS}-day refresh fallback this run.`
+            `Watchmode changes feed error (${(e as Error).message}); using the ${wmCacheLabel} refresh fallback this run.`
           );
         }
       } else {
@@ -413,7 +429,7 @@ export async function runSync(
       changedIds = null;
       progress(
         "info",
-        `Watchmode plan is "${watchmodePlan}" — Changes API unavailable; using ${TTL_DAYS}-day refresh fallback.`
+        `Watchmode plan is "${watchmodePlan}" — Changes API unavailable; using the ${wmCacheLabel} refresh cache.`
       );
     }
   }
@@ -452,6 +468,7 @@ export async function runSync(
           serviceIds,
           countedTypes,
           logos: wmLogos,
+          ttlMs: wmTtlMs,
         }
       : null
     : tmdb
@@ -481,7 +498,19 @@ export async function runSync(
         await syncRadarr(conn, movieLookup, result, errors, progress, scope);
       } else {
         if (!wm) throw new Error("Watchmode is not configured.");
-        await syncSonarr(conn, wm, regions, serviceIds, countedTypes, result, errors, changedIds, wmLogos, scope);
+        await syncSonarr(
+          conn,
+          wm,
+          regions,
+          serviceIds,
+          countedTypes,
+          result,
+          errors,
+          changedIds,
+          wmLogos,
+          wmTtlMs,
+          scope
+        );
       }
     } catch (e) {
       errors.push(`[${conn.name}] ${(e as Error).message}`);
@@ -501,7 +530,7 @@ export async function runSync(
     });
   }
 
-  const movieWindow = watchmodeMovies ? `${TTL_DAYS}-day` : `${MOVIE_TTL_HOURS}h`;
+  const movieWindow = watchmodeMovies ? wmCacheLabel : `${MOVIE_TTL_HOURS}h`;
   progress(
     "info",
     `Watchmode calls this sync: ${result.tvProviderCalls} episode fetch(es) across ${result.series} series ` +
@@ -613,7 +642,7 @@ async function syncRadarr(
     // and not flagged as missing keeps its answer. Availability moves on a
     // monthly cadence, so a day-old answer is still a good one — and on a
     // 12-hourly schedule this halves the TMDB traffic. A Watchmode-answered
-    // movie uses the longer window instead (see WATCHMODE_MOVIE_TTL_MS).
+    // movie uses the configured Watchmode window instead (see `movieTtlMs`).
     const fresh =
       !scope.force &&
       !!existing &&
@@ -762,9 +791,10 @@ async function lookupMovieOnTmdb(
  * deep links — so unlike the TMDB answer this one arrives with `web_url`
  * already filled in, and the dashboard logos link straight to the film.
  *
- * Bounded by the freshness window in `syncRadarr` (7 days, the TV one, because
- * every call here costs a credit) plus the resolved id cached on the row, which
- * keeps the metered `/search` endpoint out of steady-state syncs.
+ * Bounded by the freshness window in `syncRadarr` (the configured Watchmode
+ * cache window, not TMDB's 24 hours, because every call here costs a credit)
+ * plus the resolved id cached on the row, which keeps the metered `/search`
+ * endpoint out of steady-state syncs.
  */
 async function lookupMovieOnWatchmode(
   lookup: Extract<MovieLookup, { kind: "watchmode" }>,
@@ -828,6 +858,8 @@ async function syncSonarr(
   changedIds: Set<number> | null,
   // Streaming service id -> logo URL, for the dashboard tiles.
   logos: Map<number, string | null>,
+  // Configured Watchmode cache window, already clamped (lib/watchmodeCache.ts).
+  ttlMs: number,
   scope: SyncScope = FULL_SCOPE
 ) {
   const client = new SonarrClient(conn.baseUrl, conn.apiKey);
@@ -934,7 +966,7 @@ async function syncSonarr(
     const fresh =
       !scope.force &&
       !!existing?.providerSyncedAt &&
-      now - existing.providerSyncedAt.getTime() < TTL_MS;
+      now - existing.providerSyncedAt.getTime() < ttlMs;
     const changed =
       changedIds !== null && watchmodeId !== null && changedIds.has(watchmodeId);
     // Skip only when: we have a prior successful pull, it's still fresh, and the
@@ -1080,7 +1112,7 @@ async function syncSonarr(
       onStreaming &&
       !linksComplete &&
       watchmodeId !== null &&
-      providerLinksAreStale(providerLinksSyncedAt, now)
+      providerLinksAreStale(providerLinksSyncedAt, now, ttlMs)
     ) {
       try {
         const titleSources = await wm.titleSources(watchmodeId, regions);

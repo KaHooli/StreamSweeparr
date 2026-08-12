@@ -11,6 +11,8 @@
  * is where the password stops.
  */
 
+import { describeWatchmodeCache } from "./watchmodeCache";
+
 export interface AppInfo {
   version: string;
   /** Commit the image was built from; empty when built outside CI. */
@@ -77,6 +79,12 @@ export interface ConfigInfo {
   /** How many Watchmode keys are in the failover ring (0 when none are set). */
   watchmodeApiKeyCount: number;
   watchmodePlan: string | null;
+  /**
+   * The configured Watchmode cache window in days. In a bug report about credit
+   * usage this is the first number worth knowing, and on a free plan it is the
+   * only thing rationing the budget.
+   */
+  watchmodeCacheDays: number;
   countries: number;
   serviceIds: number;
   /** Which provider answers movie availability ("TMDB" | "WATCHMODE"). */
@@ -296,7 +304,8 @@ export function buildDiagnosticsText(info: SystemInfo): string {
     row(
       "Watchmode",
       `${watchmodeKeySummary(cfg)}, plan ${cfg.watchmodePlan ?? "unknown"}, ` +
-        `${cfg.countries} country/ies, ${cfg.serviceIds} service(s)`
+        `${cfg.countries} country/ies, ${cfg.serviceIds} service(s), ` +
+        `${describeWatchmodeCache(cfg.watchmodeCacheDays)} cache`
     );
     row("Movie availability", cfg.movieProvider === "WATCHMODE" ? "Watchmode" : "TheMovieDB");
     row(

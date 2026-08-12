@@ -132,7 +132,14 @@ vi.mock("./titlemap", () => ({
 }));
 
 import { prisma } from "@/lib/db";
-import { runSync, MOVIE_TTL_MS, WATCHMODE_MOVIE_TTL_MS } from "@/lib/sync";
+import { runSync, MOVIE_TTL_MS } from "@/lib/sync";
+import {
+  DEFAULT_WATCHMODE_CACHE_DAYS,
+  watchmodeCacheTtlMs,
+} from "@/lib/watchmodeCache";
+
+/** The Watchmode cache window these tests run under (the stored default). */
+const WM_TTL_MS = watchmodeCacheTtlMs(DEFAULT_WATCHMODE_CACHE_DAYS);
 import { resetDatabase, makeSettings, makeConnection, makeMediaItem } from "@/test/dbHelpers";
 
 const NETFLIX = 8;
@@ -537,12 +544,52 @@ describe("syncRadarr — Watchmode as the movie provider", () => {
       arrId: 1,
       tmdbId: 1001,
       watchmodeId: 55501,
-      providerSyncedAt: new Date(Date.now() - WATCHMODE_MOVIE_TTL_MS - 1000),
+      providerSyncedAt: new Date(Date.now() - WM_TTL_MS - 1000),
     });
 
     const result = await runSync();
     expect(result.movieSkipped).toBe(0);
     expect(watchmodeSourceCalls).toEqual([55501]);
+  });
+
+  it("re-checks sooner when the cache window is shortened", async () => {
+    await watchmodeMovieSettings();
+    await makeSettings({ watchmodeCacheDays: 1 });
+    const conn = await makeConnection();
+    radarrMovies = [movie(1)];
+    watchmodeIds = { 1001: 55501 };
+    watchmodeSources = { 55501: wmOnNetflix };
+    // Two days old: inside the 7-day default, outside the configured one.
+    await makeMediaItem(conn.id, {
+      arrId: 1,
+      tmdbId: 1001,
+      watchmodeId: 55501,
+      providerSyncedAt: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000),
+    });
+
+    const result = await runSync();
+    expect(result.movieSkipped).toBe(0);
+    expect(watchmodeSourceCalls).toEqual([55501]);
+  });
+
+  it("holds an answer longer when the cache window is lengthened", async () => {
+    await watchmodeMovieSettings();
+    await makeSettings({ watchmodeCacheDays: 30 });
+    const conn = await makeConnection();
+    radarrMovies = [movie(1)];
+    watchmodeIds = { 1001: 55501 };
+    watchmodeSources = { 55501: wmOnNetflix };
+    // Past the 7-day default, so this only skips because the window was raised.
+    await makeMediaItem(conn.id, {
+      arrId: 1,
+      tmdbId: 1001,
+      watchmodeId: 55501,
+      providerSyncedAt: new Date(Date.now() - WM_TTL_MS - 1000),
+    });
+
+    const result = await runSync();
+    expect(result.movieSkipped).toBe(1);
+    expect(watchmodeSourceCalls).toEqual([]);
   });
 
   it("does not probe the Watchmode plan when there is no Sonarr to use it", async () => {

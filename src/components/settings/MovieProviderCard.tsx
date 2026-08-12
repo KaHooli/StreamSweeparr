@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { sendJson } from "@/lib/fetcher";
+import { describeWatchmodeCache } from "@/lib/watchmodeCache";
 import type { CardProps, SettingsDto } from "./types";
 
 /**
@@ -74,9 +75,10 @@ export function MovieProviderCard({ settings, onChange }: CardProps) {
       )}
       {current === "WATCHMODE" && settings.watchmodeApiKeySet && (
         <div className="hint" style={{ marginTop: 12 }}>
-          A movie is re-checked at most once a week (the same window as TV), because every
-          lookup spends a credit. Your TheMovieDB settings are kept as they are, so switching
-          back needs no re-entry.
+          A movie is re-checked at most once every{" "}
+          {describeWatchmodeCache(settings.watchmodeCacheDays)} — the same window as TV, set
+          under <strong>Settings → Watchmode</strong> — because every lookup spends a credit.
+          Your TheMovieDB settings are kept as they are, so switching back needs no re-entry.
         </div>
       )}
 

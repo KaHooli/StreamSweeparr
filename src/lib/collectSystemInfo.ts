@@ -17,6 +17,7 @@ import { hasUnreadableSecret } from "./secrets";
 import { isOidcConfigured, effectiveLocalLoginEnabled } from "./loginOptions";
 import { schedulerDisabledByEnv } from "./schedule";
 import { syncConcurrency } from "./concurrency";
+import { clampWatchmodeCacheDays } from "./watchmodeCache";
 import {
   describeDatabaseUrl,
   shortPostgresVersion,
@@ -197,6 +198,7 @@ async function configInfo(): Promise<ConfigInfo | null> {
       watchmodeApiKeySet: !!s.watchmodeApiKey,
       watchmodeApiKeyCount: s.watchmodeApiKeys.length,
       watchmodePlan: s.watchmodePlan ?? null,
+      watchmodeCacheDays: clampWatchmodeCacheDays(s.watchmodeCacheDays),
       countries: s.countries.length,
       serviceIds: s.serviceIds.length,
       movieProvider: s.movieProvider,

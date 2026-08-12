@@ -24,6 +24,13 @@ export interface SettingsDto {
   watchmodeApiKeyCount: number;
   watchmodeApiKeyMax: number;
   watchmodePlan: "paid" | "free" | "unknown" | null;
+  /**
+   * How many days a Watchmode answer is kept before that title is looked up
+   * again — the main lever on how many credits a sync spends, and the only one
+   * on a free / developer key (no Changes API to shortcut the work).
+   */
+  watchmodeCacheDays: number;
+  watchmodeCacheChoices: number[];
   seerrUrl: string;
   seerrApiKeySet: boolean;
   countries: string[];

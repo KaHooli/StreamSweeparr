@@ -119,10 +119,18 @@ model Settings {
 
   // --- Watchmode plan detection ---
   // Whether the Watchmode account can use the premium Changes API.
-  // "paid" -> change-detection enabled; "free"/"unknown" -> 7-day TTL fallback.
+  // "paid" -> change-detection enabled; "free"/"unknown" -> the TTL below is
+  // the only thing rationing credits.
   // Auto-detected by probing the changes endpoint; re-checked periodically.
   watchmodePlan          String?   // "paid" | "free" | "unknown" | null (unchecked)
   watchmodePlanCheckedAt DateTime?
+
+  // How many days a Watchmode answer is kept before that title is looked up
+  // again — episodes, provider deep links, and movies when `movieProvider` is
+  // WATCHMODE. The default of 7 is what a free / developer key's monthly credit
+  // budget is sized for; a paid key already has change detection and can afford
+  // a shorter window. Bounds and clamping live in lib/watchmodeCache.ts.
+  watchmodeCacheDays     Int      @default(7)
 
   // Whether the username/password form is offered on the login page. This can
   // only be turned off while OIDC is enabled and configured (otherwise there
