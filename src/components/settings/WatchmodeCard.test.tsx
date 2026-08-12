@@ -19,7 +19,7 @@ const settings = (over: Partial<SettingsDto> = {}): SettingsDto =>
     watchmodeApiKeyMax: 10,
     watchmodePlan: null,
     watchmodeCacheDays: 7,
-    watchmodeCacheChoices: [1, 2, 3, 5, 7, 14, 30, 60, 90],
+    watchmodeCacheChoices: [0, 1, 2, 3, 5, 7, 14, 30, 60, 90],
     seerrUrl: "",
     seerrApiKeySet: false,
     countries: [],
@@ -200,6 +200,57 @@ describe("WatchmodeCard", () => {
     // No key test: the window is not a credential, so there is nothing to verify.
     expect(calls).toEqual([{ url: "/api/settings", body: { watchmodeCacheDays: 30 } }]);
     expect(screen.getByText(/re-checked after 30 days/)).toBeTruthy();
+  });
+
+  it("offers Disabled at the top of the window list, and warns once it is chosen", async () => {
+    const calls = mockApi([]);
+    const onChange = vi.fn();
+    const { rerender } = render(
+      <WatchmodeCard
+        settings={settings({ watchmodeApiKeySet: true, watchmodeApiKeyCount: 1 })}
+        onChange={onChange}
+      />
+    );
+
+    const select = screen.getByLabelText(/cache lookups for/i) as HTMLSelectElement;
+    expect(select.options[0].value).toBe("0");
+    expect(select.options[0].text).toMatch(/^Disabled/);
+    // Not warned about until it is actually the setting in force.
+    expect(screen.queryByText(/every sync spends a credit on every title/)).toBeNull();
+
+    fireEvent.change(select, { target: { value: "0" } });
+
+    await waitFor(() => expect(onChange).toHaveBeenCalled());
+    expect(calls).toEqual([{ url: "/api/settings", body: { watchmodeCacheDays: 0 } }]);
+    expect(screen.getByText(/every sync will look up every title again/)).toBeTruthy();
+
+    rerender(
+      <WatchmodeCard
+        settings={settings({
+          watchmodeApiKeySet: true,
+          watchmodeApiKeyCount: 1,
+          watchmodeCacheDays: 0,
+        })}
+        onChange={onChange}
+      />
+    );
+    expect(screen.getByText(/every sync spends a credit on every title/)).toBeTruthy();
+  });
+
+  it("says neither cache nor change-detection helps while caching is off", () => {
+    render(
+      <WatchmodeCard
+        settings={settings({
+          watchmodeApiKeySet: true,
+          watchmodeApiKeyCount: 1,
+          watchmodePlan: "paid",
+          watchmodeCacheDays: 0,
+        })}
+        onChange={() => {}}
+      />
+    );
+
+    expect(screen.getByText(/neither this nor change-detection reduces usage/)).toBeTruthy();
   });
 
   it("shows the configured window as what limits usage on a free plan", () => {

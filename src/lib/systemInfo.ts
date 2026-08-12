@@ -11,7 +11,7 @@
  * is where the password stops.
  */
 
-import { describeWatchmodeCache } from "./watchmodeCache";
+import { watchmodeCacheSummary } from "./watchmodeCache";
 
 export interface AppInfo {
   version: string;
@@ -305,7 +305,7 @@ export function buildDiagnosticsText(info: SystemInfo): string {
       "Watchmode",
       `${watchmodeKeySummary(cfg)}, plan ${cfg.watchmodePlan ?? "unknown"}, ` +
         `${cfg.countries} country/ies, ${cfg.serviceIds} service(s), ` +
-        `${describeWatchmodeCache(cfg.watchmodeCacheDays)} cache`
+        watchmodeCacheSummary(cfg.watchmodeCacheDays)
     );
     row("Movie availability", cfg.movieProvider === "WATCHMODE" ? "Watchmode" : "TheMovieDB");
     row(

@@ -53,12 +53,13 @@ const settingsSchema = z.object({
   // can refer to a stored key by position instead of carrying its value.
   watchmodeApiKeys: watchmodeKeyEntriesSchema.optional(),
   // How long a Watchmode answer is cached before that title is asked about
-  // again. Rejected rather than clamped here, so a UI sending nonsense is a
-  // visible error instead of a silently different setting.
+  // again, with 0 meaning "don't cache at all". Rejected rather than clamped
+  // here, so a UI sending nonsense is a visible error instead of a silently
+  // different setting.
   watchmodeCacheDays: z
     .number()
     .int("Cache window must be a whole number of days.")
-    .min(MIN_WATCHMODE_CACHE_DAYS, `Cache window must be at least ${MIN_WATCHMODE_CACHE_DAYS} day.`)
+    .min(MIN_WATCHMODE_CACHE_DAYS, "Cache window cannot be negative (0 disables caching).")
     .max(MAX_WATCHMODE_CACHE_DAYS, `Cache window must be at most ${MAX_WATCHMODE_CACHE_DAYS} days.`)
     .optional(),
   seerrUrl: urlOrEmpty,

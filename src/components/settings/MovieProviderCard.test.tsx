@@ -20,7 +20,7 @@ const settings = (over: Partial<SettingsDto> = {}): SettingsDto =>
     watchmodeApiKeyMax: 10,
     watchmodePlan: null,
     watchmodeCacheDays: 7,
-    watchmodeCacheChoices: [1, 2, 3, 5, 7, 14, 30, 60, 90],
+    watchmodeCacheChoices: [0, 1, 2, 3, 5, 7, 14, 30, 60, 90],
     seerrUrl: "",
     seerrApiKeySet: false,
     countries: ["US"],
@@ -120,5 +120,17 @@ describe("MovieProviderCard", () => {
     );
 
     expect(screen.getByText(/re-checked at most once every 30 days/)).toBeTruthy();
+  });
+
+  it("says every movie is looked up when Watchmode caching is off", () => {
+    render(
+      <MovieProviderCard
+        settings={settings({ movieProvider: "WATCHMODE", watchmodeCacheDays: 0 })}
+        onChange={() => {}}
+      />
+    );
+
+    expect(screen.getByText(/every movie is looked up/)).toBeTruthy();
+    expect(screen.queryByText(/re-checked at most once every/)).toBeNull();
   });
 });

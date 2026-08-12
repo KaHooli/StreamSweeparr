@@ -268,6 +268,14 @@ paid plan the changes feed already keeps usage near zero and this window is just
 its safety net, so a shorter one costs little there. It takes effect on the next
 sync, and the run log says which window that sync used.
 
+The first option in the list is **Disabled**, which turns caching off
+altogether: every sync looks up every title again — one credit per series, plus
+one per movie if Watchmode is answering for movies — and change detection stops
+saving anything, because nothing is eligible to be skipped. The card warns you
+while it's set. It's there for a paid key with credits to spare, or for the
+afternoon you're chasing a snapshot you think has gone stale; it is not a
+setting to leave on.
+
 Then pick:
 - **Countries** you stream in (alphabetical, with flags), and
 - **Streaming services** you subscribe to (alphabetical, with logos), including
@@ -1050,7 +1058,9 @@ small:
    within the window isn't pulled again — the safety net when the changes feed
    isn't available, and the *only* rationing there is on a free / developer key,
    which has no changes feed. **Settings → Watchmode → Cache lookups for**,
-   default **7 days**, anywhere from 1 to 90.
+   default **7 days**, anywhere from 1 to 90 — or **Disabled**, which switches
+   this layer off and, with it, any benefit from layer 2: every title is looked
+   up on every sync.
 
 A LIVE sweep also **doesn't re-sync afterwards** — the snapshot is updated in
 place as changes are applied. The run log reports how many episode fetches were

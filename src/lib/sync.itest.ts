@@ -592,6 +592,26 @@ describe("syncRadarr — Watchmode as the movie provider", () => {
     expect(watchmodeSourceCalls).toEqual([]);
   });
 
+  it("looks every movie up again when caching is switched off", async () => {
+    await watchmodeMovieSettings();
+    await makeSettings({ watchmodeCacheDays: 0 });
+    const conn = await makeConnection();
+    radarrMovies = [movie(1)];
+    watchmodeIds = { 1001: 55501 };
+    watchmodeSources = { 55501: wmOnNetflix };
+    // Looked up a moment ago: fresh under any window except no window at all.
+    await makeMediaItem(conn.id, {
+      arrId: 1,
+      tmdbId: 1001,
+      watchmodeId: 55501,
+      providerSyncedAt: new Date(),
+    });
+
+    const result = await runSync();
+    expect(result.movieSkipped).toBe(0);
+    expect(watchmodeSourceCalls).toEqual([55501]);
+  });
+
   it("does not probe the Watchmode plan when there is no Sonarr to use it", async () => {
     await watchmodeMovieSettings();
     await makeConnection();
