@@ -376,6 +376,17 @@ export async function runSync(
             (next ? ` — switching to key ${next}.` : " — no keys left.")
         );
       },
+      // Only the escalations are logged. Every request held up by a burst
+      // reports it, so logging each one would bury the run log in lines that
+      // all describe the same moment; the pacing changing is the part that
+      // says something new about the run.
+      onRateLimited: ({ intervalMs, escalated }) => {
+        if (!escalated) return;
+        progress(
+          "info",
+          `Watchmode is rate limiting requests — pacing them ${intervalMs}ms apart for the rest of this sync.`
+        );
+      },
     });
     if (wm.keyCount > 1) {
       progress("info", `Using ${wm.keyCount} Watchmode API keys, starting with key 1.`);
