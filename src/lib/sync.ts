@@ -39,6 +39,7 @@ import {
 import {
   clampWatchmodeCacheDays,
   describeWatchmodeCache,
+  watchmodeCacheDisabled,
   watchmodeCacheTtlMs,
 } from "./watchmodeCache";
 
@@ -315,6 +316,11 @@ export async function runSync(
   const wmCacheDays = clampWatchmodeCacheDays(settings.watchmodeCacheDays);
   const wmTtlMs = watchmodeCacheTtlMs(wmCacheDays);
   const wmCacheLabel = describeWatchmodeCache(wmCacheDays);
+  // Zero days: nothing is ever fresh. The freshness checks need no special case
+  // — a zero window fails every `age < ttl` test on its own — but the run log
+  // and the changes feed do, because with nothing skippable the feed's answer
+  // has nowhere to be used.
+  const wmCacheOff = watchmodeCacheDisabled(wmCacheDays);
   // TV is Watchmode by necessity; movies follow the configured provider.
   const watchmodeMovies = settings.movieProvider === "WATCHMODE";
   // One client and one key ring serve both media types, so Watchmode is set up
@@ -407,6 +413,15 @@ export async function runSync(
       // No series to ask about — see the plan probe above. Movies fall back to
       // their freshness window exactly as they do on TMDB.
       changedIds = null;
+    } else if (wmCacheOff) {
+      // With caching off nothing can be skipped, so knowing what changed buys
+      // nothing and the feed's paginated calls would be spent for an answer
+      // with nowhere to go.
+      changedIds = null;
+      progress(
+        "info",
+        "Watchmode caching is disabled — every series is looked up again this sync."
+      );
     } else if (watchmodePlan === "paid") {
       // Ask Watchmode which titles changed since our last sync. A few paginated
       // calls cover the whole feed regardless of library size.
@@ -429,7 +444,7 @@ export async function runSync(
       changedIds = null;
       progress(
         "info",
-        `Watchmode plan is "${watchmodePlan}" — Changes API unavailable; using the ${wmCacheLabel} refresh cache.`
+        `Watchmode plan is "${watchmodePlan}" — Changes API unavailable; relying on the ${wmCacheLabel} refresh cache.`
       );
     }
   }
@@ -530,7 +545,11 @@ export async function runSync(
     });
   }
 
-  const movieWindow = watchmodeMovies ? wmCacheLabel : `${MOVIE_TTL_HOURS}h`;
+  const movieWindow = watchmodeMovies
+    ? wmCacheOff
+      ? "no"
+      : wmCacheLabel
+    : `${MOVIE_TTL_HOURS}h`;
   progress(
     "info",
     `Watchmode calls this sync: ${result.tvProviderCalls} episode fetch(es) across ${result.series} series ` +

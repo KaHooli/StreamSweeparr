@@ -23,10 +23,36 @@
  * import it.
  */
 
-/** Windows offered in the UI, in days. */
-export const WATCHMODE_CACHE_CHOICES = [1, 2, 3, 5, 7, 14, 30, 60, 90] as const;
+/**
+ * Caching off: every sync looks every title up again.
+ *
+ * Zero is the sentinel rather than a separate boolean column because it is
+ * already what the arithmetic says — a window of zero milliseconds means no
+ * stored answer is ever young enough — so the freshness checks need no special
+ * case and cannot disagree with a flag.
+ *
+ * It is a real choice (a paid plan with credits to spare, or a debugging
+ * session where a stale snapshot is the thing being chased), but an expensive
+ * one, so the UI warns rather than merely offering it.
+ */
+export const WATCHMODE_CACHE_DISABLED = 0;
 
-export const MIN_WATCHMODE_CACHE_DAYS = 1;
+/** Windows offered in the UI, in days; 0 (disabled) leads the list. */
+export const WATCHMODE_CACHE_CHOICES = [
+  WATCHMODE_CACHE_DISABLED,
+  1,
+  2,
+  3,
+  5,
+  7,
+  14,
+  30,
+  60,
+  90,
+] as const;
+
+/** The floor is "disabled"; 1 day is the shortest window that still caches. */
+export const MIN_WATCHMODE_CACHE_DAYS = WATCHMODE_CACHE_DISABLED;
 /** Three months. Past this the snapshot is stale enough to be misleading. */
 export const MAX_WATCHMODE_CACHE_DAYS = 90;
 
@@ -44,7 +70,9 @@ const DAY_MS = 24 * 60 * 60 * 1000;
  *
  * Reads go through this as well as writes: a row written by an older build (or
  * by hand) must not be able to turn the freshness check into `NaN`, which would
- * make every title look stale and re-spend the whole budget on one sync.
+ * make every title look stale and re-spend the whole budget on one sync. Note
+ * that a *deliberate* zero does exactly that — the difference is that it was
+ * asked for.
  */
 export function clampWatchmodeCacheDays(days: number | null | undefined): number {
   if (typeof days !== "number" || !Number.isFinite(days)) return DEFAULT_WATCHMODE_CACHE_DAYS;
@@ -54,13 +82,41 @@ export function clampWatchmodeCacheDays(days: number | null | undefined): number
   return whole;
 }
 
-/** The configured window in milliseconds, ready for a freshness comparison. */
+/** Whether caching is switched off, i.e. every sync re-looks-up everything. */
+export function watchmodeCacheDisabled(days: number | null | undefined): boolean {
+  return clampWatchmodeCacheDays(days) === WATCHMODE_CACHE_DISABLED;
+}
+
+/**
+ * The configured window in milliseconds, ready for a freshness comparison.
+ *
+ * Zero when caching is off, which every `age < ttl` test reads as "not fresh"
+ * without being told about the setting.
+ */
 export function watchmodeCacheTtlMs(days: number | null | undefined): number {
   return clampWatchmodeCacheDays(days) * DAY_MS;
 }
 
-/** "1 day" / "7 days" — for hints and run logs. */
+/**
+ * "1 day" / "7 days" / "disabled" — for hints and run logs, where it appears
+ * mid-sentence, so it is lower case.
+ */
 export function describeWatchmodeCache(days: number): string {
   const whole = clampWatchmodeCacheDays(days);
+  if (whole === WATCHMODE_CACHE_DISABLED) return "disabled";
   return whole === 1 ? "1 day" : `${whole} days`;
+}
+
+/** The same, as a dropdown option: "Disabled" / "1 day" / "7 days". */
+export function watchmodeCacheOptionLabel(days: number): string {
+  const described = describeWatchmodeCache(days);
+  return described === "disabled" ? "Disabled" : described;
+}
+
+/**
+ * "7 days cache" / "cache disabled" — for the diagnostics line, where the
+ * setting is one field among many rather than part of a sentence.
+ */
+export function watchmodeCacheSummary(days: number): string {
+  return watchmodeCacheDisabled(days) ? "cache disabled" : `${describeWatchmodeCache(days)} cache`;
 }

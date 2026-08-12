@@ -7,6 +7,8 @@ import {
   WATCHMODE_CACHE_CHOICES,
   DEFAULT_WATCHMODE_CACHE_DAYS,
   describeWatchmodeCache,
+  watchmodeCacheDisabled,
+  watchmodeCacheOptionLabel,
 } from "@/lib/watchmodeCache";
 import type { CardProps } from "./types";
 
@@ -137,7 +139,9 @@ export function WatchmodeCard({ settings, onChange }: CardProps) {
       await sendJson("PATCH", "/api/settings", { watchmodeCacheDays: days });
       setMsg({
         kind: "ok",
-        text: `Watchmode answers will now be re-checked after ${describeWatchmodeCache(days)}.`,
+        text: watchmodeCacheDisabled(days)
+          ? "Caching is off — every sync will look up every title again."
+          : `Watchmode answers will now be re-checked after ${describeWatchmodeCache(days)}.`,
       });
       onChange();
     } catch (e) {
@@ -152,6 +156,7 @@ export function WatchmodeCard({ settings, onChange }: CardProps) {
     ? settings.watchmodeCacheChoices
     : [...WATCHMODE_CACHE_CHOICES];
   const cacheDays = settings.watchmodeCacheDays ?? DEFAULT_WATCHMODE_CACHE_DAYS;
+  const cacheOff = watchmodeCacheDisabled(cacheDays);
 
   return (
     <div className="card" style={{ marginBottom: 20 }}>
@@ -247,7 +252,7 @@ export function WatchmodeCard({ settings, onChange }: CardProps) {
         >
           {cacheChoices.map((d) => (
             <option key={d} value={d}>
-              {describeWatchmodeCache(d)}
+              {watchmodeCacheOptionLabel(d)}
               {d === DEFAULT_WATCHMODE_CACHE_DAYS ? " (default)" : ""}
             </option>
           ))}
@@ -262,6 +267,15 @@ export function WatchmodeCard({ settings, onChange }: CardProps) {
         </div>
       </div>
 
+      {cacheOff && (
+        <div className="banner warn" style={{ marginTop: 12 }}>
+          Caching is off, so <strong>every sync spends a credit on every title</strong> — one
+          per series, plus one per movie if Watchmode is answering for movies. Change
+          detection can&rsquo;t save anything either, because nothing is eligible to be
+          skipped. Use this only with credits to spare, or while chasing a stale snapshot.
+        </div>
+      )}
+
       {count > 0 && settings.watchmodePlan && (
         <div className="hint" style={{ marginTop: 12 }}>
           Detected plan:{" "}
@@ -272,7 +286,9 @@ export function WatchmodeCard({ settings, onChange }: CardProps) {
               ? "Free / Developer"
               : "Unknown"}
           </strong>
-          {settings.watchmodePlan === "paid"
+          {cacheOff
+            ? " — with caching off, neither this nor change-detection reduces usage: every title is looked up on every sync."
+            : settings.watchmodePlan === "paid"
             ? ` — change-detection is enabled, minimising API usage; the ${describeWatchmodeCache(
                 cacheDays
               )} cache above is its safety net.`

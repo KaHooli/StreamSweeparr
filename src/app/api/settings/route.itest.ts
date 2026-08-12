@@ -216,6 +216,8 @@ describe("PATCH /api/settings — Watchmode cache window", () => {
     const body = await (await GET()).json();
     expect(body.watchmodeCacheDays).toBe(7);
     expect(body.watchmodeCacheChoices).toContain(7);
+    // "Disabled" leads the list the card renders.
+    expect(body.watchmodeCacheChoices[0]).toBe(0);
   });
 
   it("stores a new window", async () => {
@@ -228,13 +230,23 @@ describe("PATCH /api/settings — Watchmode cache window", () => {
     expect((await getSettings()).watchmodeCacheDays).toBe(30);
   });
 
+  it("accepts zero, which switches caching off", async () => {
+    await signInAsAdmin();
+    await makeSettings();
+
+    const res = await patch({ watchmodeCacheDays: 0 });
+    expect(res.status).toBe(200);
+    expect((await res.json()).watchmodeCacheDays).toBe(0);
+    expect((await getSettings()).watchmodeCacheDays).toBe(0);
+  });
+
   it("rejects a window outside the accepted range instead of clamping it", async () => {
     await signInAsAdmin();
     await makeSettings({ watchmodeCacheDays: 14 });
 
     // Silently storing something else would leave the card showing one window
     // and the sync engine using another.
-    expect((await patch({ watchmodeCacheDays: 0 })).status).toBe(400);
+    expect((await patch({ watchmodeCacheDays: -1 })).status).toBe(400);
     expect((await patch({ watchmodeCacheDays: 365 })).status).toBe(400);
     expect((await patch({ watchmodeCacheDays: 2.5 })).status).toBe(400);
     expect((await getSettings()).watchmodeCacheDays).toBe(14);
