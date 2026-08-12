@@ -258,6 +258,16 @@ the only expensive one. **Test &amp; save** reports each key's quota separately,
 so you can see which ones still have credit. A key that's already spent is still
 worth keeping: it comes back when Watchmode resets your monthly quota.
 
+Below the keys, **Cache lookups for** sets how long an answer is kept before
+that title is looked up again — series episodes, provider links, and movies too
+if Watchmode is answering those. It defaults to **7 days**, the window a free /
+developer key's monthly credit budget is sized for. Shorten it (down to 1 day)
+to notice a title arriving on streaming sooner at the cost of more credits;
+lengthen it (up to 90 days) to fit a large library into a small budget. On a
+paid plan the changes feed already keeps usage near zero and this window is just
+its safety net, so a shorter one costs little there. It takes effect on the next
+sync, and the run log says which window that sync used.
+
 Then pick:
 - **Countries** you stream in (alphabetical, with flags), and
 - **Streaming services** you subscribe to (alphabetical, with logos), including
@@ -290,8 +300,8 @@ that cannot avoid spending them.
 
 Pick **Watchmode** if you'd rather configure one provider than two, or if you
 want the provider logos on movie tiles to link straight to the film. A movie is
-then re-checked at most once a week (the same window as a series) instead of
-daily, because each lookup costs a credit.
+then re-checked on the **Watchmode cache window** (7 days by default, the same
+window as a series) instead of daily, because each lookup costs a credit.
 
 Switching either way takes effect on the next sync, and nothing is thrown away:
 your TMDB key, regions and providers stay stored while Watchmode is answering,
@@ -375,9 +385,9 @@ available for that title:
 1. **A deep link to the title on that service**, when Watchmode has one.
    Watchmode only returns *per-episode* deep links on paid plans; free plans get
    a placeholder string, which the app discards. So for TV it fetches
-   **show-level** links instead, on their own 7-day schedule and only for shows
-   that are actually missing one — a show doesn't sit on second-best links for a
-   week just because its availability is still fresh.
+   **show-level** links instead, on their own copy of the Watchmode cache
+   window and only for shows that are actually missing one — a show doesn't sit
+   on second-best links for a week just because its availability is still fresh.
 2. **That service's own search page for the title**, when there's no deep link.
    One click further from the title, but still on the service the logo claims
    it's streaming on. This is what movies and free-plan TV shows normally get,
@@ -723,11 +733,12 @@ See [Choosing who answers for movies](#choosing-who-answers-for-movies).
 <summary><b>Will this burn through my free Watchmode credits?</b></summary>
 
 It's built not to. The metered search endpoint is essentially never used (ids
-are resolved from a locally imported map), availability is cached for 7 days,
-and on paid plans a changes feed means unchanged shows aren't re-fetched at all.
+are resolved from a locally imported map), availability is cached for 7 days by
+default — you can set that window yourself under **Settings → Watchmode** — and
+on paid plans a changes feed means unchanged shows aren't re-fetched at all.
 Movies don't touch that budget at all unless you
 [ask them to](#choosing-who-answers-for-movies), and when you do they're cached
-for the same 7 days.
+for the same window.
 And if one key isn't enough for the first pass over a big library, you can save
 several — they're used in order, each one taking over when the one before it
 runs out. Full detail in [Keeping API usage low](#-keeping-api-usage-low).
@@ -1035,9 +1046,11 @@ small:
    ongoing usage from *one call per series* to *near zero*. The app **detects
    your plan automatically** (cached, re-checked weekly), so a free key never
    makes a failing call; the result is shown under **Settings → Watchmode**.
-3. **A 7-day freshness window.** Independent of the above, a series pulled
-   within the last 7 days isn't pulled again — the safety net when the changes
-   feed isn't available.
+3. **A freshness window you set.** Independent of the above, a series pulled
+   within the window isn't pulled again — the safety net when the changes feed
+   isn't available, and the *only* rationing there is on a free / developer key,
+   which has no changes feed. **Settings → Watchmode → Cache lookups for**,
+   default **7 days**, anywhere from 1 to 90.
 
 A LIVE sweep also **doesn't re-sync afterwards** — the snapshot is updated in
 place as changes are applied. The run log reports how many episode fetches were
@@ -1055,10 +1068,10 @@ cache. On a 12-hourly schedule that halves TMDB traffic. Anything whose lookup
 failed — or that just had its `ss-skip` tag removed — is always re-checked.
 
 **Movies on Watchmode** — if you [chose that](#choosing-who-answers-for-movies) —
-are held for **7 days** instead, the same window as a series. What makes the
-24-hour window affordable is that TMDB calls are free; every Watchmode call
-spends a credit, so a daily re-check would cost more per film than a whole TV
-library costs per week. Each movie also keeps the Watchmode id it resolved to,
+are held for the **Watchmode cache window** instead (7 days by default), the same
+window as a series. What makes the 24-hour window affordable is that TMDB calls
+are free; every Watchmode call spends a credit, so a daily re-check would cost
+more per film than a whole TV library costs per week. Each movie also keeps the Watchmode id it resolved to,
 so the metered search endpoint stays out of steady-state syncs, and an install
 that uses Watchmode for *movies only* never probes for the Changes API — the
 feed is episode-shaped, so there would be nothing to do with the answer.

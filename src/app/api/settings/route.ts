@@ -16,6 +16,12 @@ import {
   MAX_WATCHMODE_KEYS,
 } from "@/lib/watchmodeKeys";
 import {
+  MIN_WATCHMODE_CACHE_DAYS,
+  MAX_WATCHMODE_CACHE_DAYS,
+  WATCHMODE_CACHE_CHOICES,
+  clampWatchmodeCacheDays,
+} from "@/lib/watchmodeCache";
+import {
   MIN_SWEEP_INTERVAL_HOURS,
   MAX_SWEEP_INTERVAL_HOURS,
   SWEEP_INTERVAL_CHOICES,
@@ -46,6 +52,15 @@ const settingsSchema = z.object({
   // The Watchmode key ring in full — see lib/watchmodeKeys.ts for why an entry
   // can refer to a stored key by position instead of carrying its value.
   watchmodeApiKeys: watchmodeKeyEntriesSchema.optional(),
+  // How long a Watchmode answer is cached before that title is asked about
+  // again. Rejected rather than clamped here, so a UI sending nonsense is a
+  // visible error instead of a silently different setting.
+  watchmodeCacheDays: z
+    .number()
+    .int("Cache window must be a whole number of days.")
+    .min(MIN_WATCHMODE_CACHE_DAYS, `Cache window must be at least ${MIN_WATCHMODE_CACHE_DAYS} day.`)
+    .max(MAX_WATCHMODE_CACHE_DAYS, `Cache window must be at most ${MAX_WATCHMODE_CACHE_DAYS} days.`)
+    .optional(),
   seerrUrl: urlOrEmpty,
   seerrApiKey: z.string().nullable().optional(),
   countries: z.array(z.string().regex(/^[A-Za-z]{2}$/, "Invalid country code.")).optional(),
@@ -108,6 +123,11 @@ function serialize(
     watchmodeApiKeyCount: s.watchmodeApiKeys.length,
     watchmodeApiKeyMax: MAX_WATCHMODE_KEYS,
     watchmodePlan: s.watchmodePlan ?? null,
+    // The freshness window every metered Watchmode lookup obeys, clamped on the
+    // way out so an out-of-range stored value shows as the value actually in
+    // force rather than one the sync engine will ignore.
+    watchmodeCacheDays: clampWatchmodeCacheDays(s.watchmodeCacheDays),
+    watchmodeCacheChoices: [...WATCHMODE_CACHE_CHOICES],
     seerrUrl: s.seerrUrl ?? "",
     seerrApiKeySet: !!s.seerrApiKey,
     countries: s.countries,
@@ -203,6 +223,7 @@ export const PATCH = withGuard(requireAdmin, async (_session, req: NextRequest) 
     data.watchmodeApiKeys = keys;
     data.watchmodeApiKey = keys[0];
   }
+  if (p.watchmodeCacheDays !== undefined) data.watchmodeCacheDays = p.watchmodeCacheDays;
   if (p.seerrUrl !== undefined) data.seerrUrl = p.seerrUrl || null;
   if (p.seerrApiKey !== undefined && p.seerrApiKey !== null && p.seerrApiKey !== "")
     data.seerrApiKey = p.seerrApiKey;

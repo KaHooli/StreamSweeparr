@@ -19,6 +19,8 @@ const settings = (over: Partial<SettingsDto> = {}): SettingsDto =>
     watchmodeApiKeyCount: 1,
     watchmodeApiKeyMax: 10,
     watchmodePlan: null,
+    watchmodeCacheDays: 7,
+    watchmodeCacheChoices: [1, 2, 3, 5, 7, 14, 30, 60, 90],
     seerrUrl: "",
     seerrApiKeySet: false,
     countries: ["US"],
@@ -105,7 +107,18 @@ describe("MovieProviderCard", () => {
       <MovieProviderCard settings={settings({ movieProvider: "WATCHMODE" })} onChange={() => {}} />
     );
 
-    expect(screen.getByText(/re-checked at most once a week/)).toBeTruthy();
+    expect(screen.getByText(/re-checked at most once every 7 days/)).toBeTruthy();
     expect(screen.queryByText(/No Watchmode API key is set/)).toBeNull();
+  });
+
+  it("quotes the window actually configured, not the default", () => {
+    render(
+      <MovieProviderCard
+        settings={settings({ movieProvider: "WATCHMODE", watchmodeCacheDays: 30 })}
+        onChange={() => {}}
+      />
+    );
+
+    expect(screen.getByText(/re-checked at most once every 30 days/)).toBeTruthy();
   });
 });

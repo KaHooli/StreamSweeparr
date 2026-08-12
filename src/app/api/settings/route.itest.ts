@@ -207,3 +207,45 @@ describe("PATCH /api/settings — movie availability provider", () => {
     expect((await getSettings()).movieProvider).toBe("TMDB");
   });
 });
+
+describe("PATCH /api/settings — Watchmode cache window", () => {
+  it("defaults to the 7 days a free / developer key is sized for", async () => {
+    await signInAsAdmin();
+    await makeSettings();
+
+    const body = await (await GET()).json();
+    expect(body.watchmodeCacheDays).toBe(7);
+    expect(body.watchmodeCacheChoices).toContain(7);
+  });
+
+  it("stores a new window", async () => {
+    await signInAsAdmin();
+    await makeSettings();
+
+    const res = await patch({ watchmodeCacheDays: 30 });
+    expect(res.status).toBe(200);
+    expect((await res.json()).watchmodeCacheDays).toBe(30);
+    expect((await getSettings()).watchmodeCacheDays).toBe(30);
+  });
+
+  it("rejects a window outside the accepted range instead of clamping it", async () => {
+    await signInAsAdmin();
+    await makeSettings({ watchmodeCacheDays: 14 });
+
+    // Silently storing something else would leave the card showing one window
+    // and the sync engine using another.
+    expect((await patch({ watchmodeCacheDays: 0 })).status).toBe(400);
+    expect((await patch({ watchmodeCacheDays: 365 })).status).toBe(400);
+    expect((await patch({ watchmodeCacheDays: 2.5 })).status).toBe(400);
+    expect((await getSettings()).watchmodeCacheDays).toBe(14);
+  });
+
+  it("reports an out-of-range stored value as the one actually in force", async () => {
+    await signInAsAdmin();
+    // Only reachable by editing the row by hand; the sync engine clamps it, so
+    // the card must show the same number rather than the stored one.
+    await makeSettings({ watchmodeCacheDays: 400 });
+
+    expect((await (await GET()).json()).watchmodeCacheDays).toBe(90);
+  });
+});

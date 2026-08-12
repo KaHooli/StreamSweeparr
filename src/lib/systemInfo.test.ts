@@ -162,6 +162,7 @@ const info: SystemInfo = {
     watchmodeApiKeySet: true,
     watchmodeApiKeyCount: 2,
     watchmodePlan: "free",
+    watchmodeCacheDays: 7,
     countries: 1,
     serviceIds: 4,
     movieProvider: "TMDB",

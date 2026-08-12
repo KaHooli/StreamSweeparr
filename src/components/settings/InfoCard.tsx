@@ -12,6 +12,7 @@ import {
   yesNo,
   type SystemInfo,
 } from "@/lib/systemInfo";
+import { describeWatchmodeCache } from "@/lib/watchmodeCache";
 
 /**
  * Settings → Info: what's running, what it's talking to, and how it's set up.
@@ -214,7 +215,9 @@ export function InfoCard() {
               label="Watchmode"
               value={`${watchmodeKeySummary(cfg)} · plan ${
                 cfg.watchmodePlan ?? "unknown"
-              } · ${cfg.countries} country/ies · ${cfg.serviceIds} service(s)`}
+              } · ${cfg.countries} country/ies · ${cfg.serviceIds} service(s) · ${describeWatchmodeCache(
+                cfg.watchmodeCacheDays
+              )} cache`}
             />
             <Row
               label="TMDB"
