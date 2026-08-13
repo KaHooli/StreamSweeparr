@@ -1,10 +1,12 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import {
   matchTmdbProviders,
   isTmdbNotFound,
+  TmdbClient,
   TmdbError,
   type TmdbRegionAvailability,
 } from "./tmdb";
+import { ProviderThrottle } from "./providerThrottle";
 
 const prov = (provider_id: number, provider_name = `p${provider_id}`) => ({
   provider_id,
@@ -80,7 +82,7 @@ describe("isTmdbNotFound", () => {
   });
 
   it("is false for transient failures we must not act on", () => {
-    expect(isTmdbNotFound(new TmdbError("TMDB rate limit exceeded.", 429))).toBe(false);
+    expect(isTmdbNotFound(new TmdbError("TMDB is rate limiting requests.", 429))).toBe(false);
     expect(isTmdbNotFound(new TmdbError("TMDB request timed out.", 408))).toBe(false);
     expect(isTmdbNotFound(new TmdbError("server error", 500))).toBe(false);
     expect(isTmdbNotFound(new TmdbError("no status"))).toBe(false);
@@ -90,5 +92,109 @@ describe("isTmdbNotFound", () => {
     expect(isTmdbNotFound(new Error("404"))).toBe(false);
     expect(isTmdbNotFound(null)).toBe(false);
     expect(isTmdbNotFound("404")).toBe(false);
+  });
+});
+
+/**
+ * Rate limits.
+ *
+ * TMDB has no key ring and its calls are free, so the only thing a 429 can cost
+ * is the answer itself: refused once and given up on, the movie is recorded as
+ * `streamingUnknown` for that sync even though TMDB would have answered a second
+ * later. Retrying it — and pacing what follows, so the queue behind it does not
+ * trip the same limit — is the whole of the fix.
+ *
+ * Responses are cached in-process, so each test uses its own movie id.
+ */
+describe("TmdbClient rate limits", () => {
+  let nextMovieId = 5000;
+  const movieId = () => nextMovieId++;
+
+  /**
+   * Answer with each status in turn; the last entry answers every call after it.
+   */
+  const mockFetch = (statuses: number[], headers: Record<string, string> = {}) => {
+    let n = 0;
+    const fetchMock = vi.fn(async () => {
+      const status = statuses[Math.min(n++, statuses.length - 1)];
+      return new Response(status === 200 ? JSON.stringify({ results: { US: {} } }) : "nope", {
+        status,
+        headers: status === 429 ? headers : undefined,
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  };
+
+  /** A throttle whose waiting advances a fake clock rather than real time. */
+  const fakeThrottle = () => {
+    let clock = 1_000_000;
+    const throttle = new ProviderThrottle({
+      now: () => clock,
+      sleep: async (ms) => {
+        clock += ms;
+      },
+    });
+    return { throttle, elapsed: () => clock - 1_000_000 };
+  };
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("waits and retries rather than losing the title to one refusal", async () => {
+    const fetchMock = mockFetch([429, 200]);
+    const { throttle, elapsed } = fakeThrottle();
+    const tmdb = new TmdbClient("key", { throttle });
+
+    await expect(tmdb.movieWatchProviders(movieId())).resolves.toEqual({ US: {} });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(elapsed()).toBe(1_000);
+  });
+
+  it("honours Retry-After instead of its own backoff", async () => {
+    mockFetch([429, 200], { "retry-after": "3" });
+    const { throttle, elapsed } = fakeThrottle();
+    const tmdb = new TmdbClient("key", { throttle });
+
+    await tmdb.movieWatchProviders(movieId());
+    expect(elapsed()).toBe(3_000);
+  });
+
+  it("paces the requests that follow, and reports that it is doing so", async () => {
+    mockFetch([429, 200]);
+    const { throttle } = fakeThrottle();
+    const paced: number[] = [];
+    const tmdb = new TmdbClient("key", {
+      throttle,
+      onRateLimited: ({ intervalMs, escalated }) => {
+        if (escalated) paced.push(intervalMs);
+      },
+    });
+
+    await tmdb.movieWatchProviders(movieId());
+    expect(paced).toEqual([250]);
+    expect(throttle.intervalMs).toBe(250);
+  });
+
+  it("gives up after a bounded number of attempts, saying what would help", async () => {
+    const fetchMock = mockFetch([429]);
+    const { throttle } = fakeThrottle();
+    const tmdb = new TmdbClient("key", { throttle });
+
+    await expect(tmdb.movieWatchProviders(movieId())).rejects.toThrow(/SYNC_CONCURRENCY/);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+  });
+
+  it("does not retry anything that isn't a rate limit", async () => {
+    const fetchMock = mockFetch([404]);
+    const { throttle } = fakeThrottle();
+    const tmdb = new TmdbClient("key", { throttle });
+
+    // A dead TMDB id is an answer, not a hiccup — Radarr keeps them around and
+    // re-asking three more times would only slow every sync down.
+    await expect(tmdb.movieWatchProviders(movieId())).rejects.toSatisfy(isTmdbNotFound);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });

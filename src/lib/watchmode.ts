@@ -14,9 +14,14 @@
  * starts at key 1; a key that is rejected or out of quota is retired for the
  * lifetime of the client and the request is retried on the next key. See
  * `lib/watchmodeKeys.ts` for the ring itself.
+ *
+ * Rate limiting (429) is deliberately *not* part of that: it is a "you are going
+ * too fast" answer rather than anything about the key, so it is waited out and
+ * paced against instead — see `lib/providerThrottle.ts`.
  */
 
 import { normalizeWatchmodeKeys } from "./watchmodeKeys";
+import { ProviderThrottle, parseRetryAfter } from "./providerThrottle";
 
 const BASE = "https://api.watchmode.com/v1";
 
@@ -76,7 +81,12 @@ export interface WatchmodeEpisode {
 }
 
 export class WatchmodeError extends Error {
-  constructor(message: string, public status?: number) {
+  constructor(
+    message: string,
+    public status?: number,
+    /** Milliseconds Watchmode asked us to wait, from `Retry-After` on a 429. */
+    public retryAfterMs?: number
+  ) {
     super(message);
     this.name = "WatchmodeError";
   }
@@ -110,33 +120,75 @@ export interface WatchmodeKeyExhaustedInfo {
   error: WatchmodeError;
 }
 
+/** Notified when a request is rate limited, so a sync can say so in its log. */
+export interface WatchmodeRateLimitInfo {
+  /** Which attempt at this request was refused (1-based). */
+  attempt: number;
+  /** How long the whole client now pauses before trying again. */
+  waitMs: number;
+  /** The gap now kept between requests; 0 while none has been needed. */
+  intervalMs: number;
+  /** Whether this 429 moved the pacing along, or echoed one already answered. */
+  escalated: boolean;
+}
+
 export interface WatchmodeClientOptions {
   onKeyExhausted?: (info: WatchmodeKeyExhaustedInfo) => void;
+  onRateLimited?: (info: WatchmodeRateLimitInfo) => void;
+  /** Test seam: injects the throttle's clock so backoff needn't be waited out. */
+  throttle?: ProviderThrottle;
 }
 
 /**
- * A status that means "this key is done": 401/403 are Watchmode's answer for an
- * invalid key *and* for one that has spent its credits, 429 for a key that is
- * being rate limited. All three are reasons to move to the next key rather than
- * to fail the request.
+ * A status that means "this key is done": 401/403 are Watchmode's answer both
+ * for an invalid key and for one that has spent its credits, and either is a
+ * reason to move to the next key rather than to fail the request.
+ *
+ * 429 is **not** on this list, though it used to be. A rate limit is a statement
+ * about how fast requests are arriving, not about the key — on a free key, a
+ * default sync (four titles at a time, and every title looked up when the cache
+ * window is disabled) trips one routinely with the whole monthly budget still
+ * unspent. Retiring the key on that answer meant one burst retired key 1, the
+ * next retired key 2, and the rest of the library came back `streamingUnknown`
+ * with a run log claiming the quota was gone. Rate limits are waited out; see
+ * `rateLimited` below.
  */
-function isKeyExhausted(e: unknown): e is WatchmodeError {
+function isKeyRejected(e: unknown): e is WatchmodeError {
   const status = e instanceof WatchmodeError ? e.status : undefined;
-  return status === 401 || status === 403 || status === 429;
+  return status === 401 || status === 403;
 }
+
+function isRateLimited(e: unknown): e is WatchmodeError {
+  return e instanceof WatchmodeError && e.status === 429;
+}
+
+/**
+ * How many times a rate-limited request is tried again after the first refusal.
+ *
+ * Each round walks the live keys once and then waits (`Retry-After`, or the
+ * backoff ladder), so four attempts is a handful of seconds — long enough to
+ * ride out a burst, short enough that a title which cannot be looked up is
+ * declared unknown rather than holding the sync's run lock open.
+ */
+const MAX_RATE_LIMIT_ROUNDS = 3;
 
 export class WatchmodeClient {
   private readonly keys: string[];
   private readonly onKeyExhausted?: (info: WatchmodeKeyExhaustedInfo) => void;
+  private readonly onRateLimited?: (info: WatchmodeRateLimitInfo) => void;
   /** Indices of keys retired during this client's lifetime. */
   private readonly exhausted = new Set<number>();
   /** Why the last key was retired — the error reported once all keys are gone. */
   private lastExhaustedError: WatchmodeError | null = null;
+  /** Shared pacing for every request this client makes. */
+  private readonly throttle: ProviderThrottle;
 
   constructor(apiKey: string | readonly string[], opts: WatchmodeClientOptions = {}) {
     this.keys = normalizeWatchmodeKeys(Array.isArray(apiKey) ? apiKey : [apiKey as string]);
     if (!this.keys.length) throw new WatchmodeError("Watchmode API key is not configured.");
     this.onKeyExhausted = opts.onKeyExhausted;
+    this.onRateLimited = opts.onRateLimited;
+    this.throttle = opts.throttle ?? new ProviderThrottle();
   }
 
   /** How many keys this client can draw on. */
@@ -177,19 +229,49 @@ export class WatchmodeClient {
     }
 
     const rotate = opts.rotate !== false;
-    for (const index of this.liveKeys()) {
-      try {
-        const data = await this.fetchWith<T>(this.keys[index], index, href, timeoutMs);
-        if (ttlMs > 0) cacheSet(href, data, ttlMs);
-        return data;
-      } catch (e) {
-        // Anything that isn't "this key is spent" is a real failure: retrying it
-        // on another key would burn credits to get the same answer.
-        if (!rotate || !isKeyExhausted(e)) throw e;
-        this.exhausted.add(index);
-        this.lastExhaustedError = e;
-        this.onKeyExhausted?.({ number: index + 1, total: this.keys.length, error: e });
+
+    // A "round" is one walk of the live keys. A round that ends rate limited is
+    // followed by a wait and then another round — the ring is not consumed by a
+    // 429, so key 1 is tried again once the pause has passed.
+    for (let round = 0; ; round++) {
+      let rateLimited: WatchmodeError | null = null;
+
+      for (const index of this.liveKeys()) {
+        await this.throttle.acquire();
+        try {
+          const data = await this.fetchWith<T>(this.keys[index], index, href, timeoutMs);
+          if (ttlMs > 0) cacheSet(href, data, ttlMs);
+          return data;
+        } catch (e) {
+          if (isRateLimited(e)) {
+            // Limits are usually account-wide, but they need not be: trying the
+            // next key costs nothing extra (a refused request spends no credit)
+            // and answers immediately when the limit was this key's alone.
+            rateLimited = e;
+            if (!rotate) break;
+            continue;
+          }
+          // Anything that isn't "this key is spent" is a real failure: retrying
+          // it on another key would burn credits to get the same answer.
+          if (!rotate || !isKeyRejected(e)) throw e;
+          this.exhausted.add(index);
+          this.lastExhaustedError = e;
+          this.onKeyExhausted?.({ number: index + 1, total: this.keys.length, error: e });
+        }
       }
+
+      if (!rateLimited) break; // Every live key is spent — report that instead.
+      if (round >= MAX_RATE_LIMIT_ROUNDS) {
+        throw new WatchmodeError(
+          `Watchmode is rate limiting requests — still refused after ${MAX_RATE_LIMIT_ROUNDS + 1} attempts. ` +
+            "Lower SYNC_CONCURRENCY or lengthen the Watchmode cache window.",
+          429
+        );
+      }
+      // The wait itself is enforced by the next round's acquire(), so every
+      // other in-flight request holds off too rather than filling the gap.
+      const step = this.throttle.rateLimited(round, rateLimited.retryAfterMs ?? null);
+      this.onRateLimited?.({ attempt: round + 1, ...step });
     }
 
     throw (
@@ -234,7 +316,11 @@ export class WatchmodeClient {
       );
     }
     if (res.status === 429) {
-      throw new WatchmodeError(`Watchmode rate limit / quota exceeded on API key${which}.`, 429);
+      throw new WatchmodeError(
+        `Watchmode is rate limiting API key${which}.`,
+        429,
+        parseRetryAfter(res.headers.get("retry-after")) ?? undefined
+      );
     }
     if (!res.ok) {
       const body = await res.text().catch(() => "");

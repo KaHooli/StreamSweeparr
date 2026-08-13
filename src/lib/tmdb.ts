@@ -11,7 +11,13 @@
  *
  * Auth: v3 API key sent as the `api_key` query parameter. (TMDB also accepts a
  * v4 bearer token, but the classic v3 key is what most users have.)
+ *
+ * TMDB's calls are free, so nothing here rations them — the one limit that
+ * bites is how *fast* they arrive, which is waited out and paced against rather
+ * than failed on. See `lib/providerThrottle.ts`.
  */
+
+import { ProviderThrottle, parseRetryAfter } from "./providerThrottle";
 
 const BASE = "https://api.themoviedb.org/3";
 export const TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p/original";
@@ -48,7 +54,12 @@ export interface TmdbRegionAvailability {
 }
 
 export class TmdbError extends Error {
-  constructor(message: string, public status?: number) {
+  constructor(
+    message: string,
+    public status?: number,
+    /** Milliseconds TMDB asked us to wait, from `Retry-After` on a 429. */
+    public retryAfterMs?: number
+  ) {
     super(message);
     this.name = "TmdbError";
   }
@@ -80,16 +91,86 @@ function cacheSet(key: string, value: unknown, ttlMs: number) {
   cache.set(key, { value, expires: Date.now() + ttlMs });
 }
 
+/** Notified when a request is rate limited, so a sync can say so in its log. */
+export interface TmdbRateLimitInfo {
+  /** Which attempt at this request was refused (1-based). */
+  attempt: number;
+  /** How long the whole client now pauses before trying again. */
+  waitMs: number;
+  /** The gap now kept between requests; 0 while none has been needed. */
+  intervalMs: number;
+  /** Whether this 429 moved the pacing along, or echoed one already answered. */
+  escalated: boolean;
+}
+
+export interface TmdbClientOptions {
+  onRateLimited?: (info: TmdbRateLimitInfo) => void;
+  /** Test seam: injects the throttle's clock so backoff needn't be waited out. */
+  throttle?: ProviderThrottle;
+}
+
+/**
+ * How many times a rate-limited request is tried again.
+ *
+ * Same budget as the Watchmode client, for the same reason: long enough to ride
+ * out a burst, short enough that a movie which cannot be looked up is left
+ * unknown rather than the sync holding its run lock open waiting for it.
+ */
+const MAX_RATE_LIMIT_ATTEMPTS = 4;
+
 export class TmdbClient {
-  constructor(private apiKey: string) {
+  private readonly onRateLimited?: (info: TmdbRateLimitInfo) => void;
+  /** Shared pacing for every request this client makes. */
+  private readonly throttle: ProviderThrottle;
+
+  constructor(private apiKey: string, opts: TmdbClientOptions = {}) {
     if (!apiKey) throw new TmdbError("TMDB API key is not configured.");
+    this.onRateLimited = opts.onRateLimited;
+    this.throttle = opts.throttle ?? new ProviderThrottle();
   }
 
+  /**
+   * One request, retried while TMDB says it is arriving too fast.
+   *
+   * A 429 is not a fact about the movie — retried a moment later the same call
+   * succeeds — so failing the title on the first refusal both lost an answer
+   * TMDB was willing to give and left the titles behind it going just as fast,
+   * to trip the same limit again. The pause is held on the throttle rather than
+   * slept on here, so the other `SYNC_CONCURRENCY` workers hold off too instead
+   * of filling the gap this one just left.
+   */
   private async get<T>(
     path: string,
     params: Record<string, string | number | undefined> = {},
     ttlMs = 0,
     timeoutMs = 20_000
+  ): Promise<T> {
+    for (let attempt = 0; ; attempt++) {
+      await this.throttle.acquire();
+      try {
+        return await this.fetchOnce<T>(path, params, ttlMs, timeoutMs);
+      } catch (e) {
+        if (!(e instanceof TmdbError) || e.status !== 429) throw e;
+        if (attempt >= MAX_RATE_LIMIT_ATTEMPTS - 1) {
+          // Still 429 with the pacing already widened: say what would help,
+          // since the run log line is all the user has to go on.
+          throw new TmdbError(
+            `TMDB is rate limiting requests — still refused after ${MAX_RATE_LIMIT_ATTEMPTS} attempts. ` +
+              "Lower SYNC_CONCURRENCY if it keeps happening.",
+            429
+          );
+        }
+        const step = this.throttle.rateLimited(attempt, e.retryAfterMs ?? null);
+        this.onRateLimited?.({ attempt: attempt + 1, ...step });
+      }
+    }
+  }
+
+  private async fetchOnce<T>(
+    path: string,
+    params: Record<string, string | number | undefined>,
+    ttlMs: number,
+    timeoutMs: number
   ): Promise<T> {
     const url = new URL(`${BASE}${path}`);
     url.searchParams.set("api_key", this.apiKey);
@@ -125,7 +206,13 @@ export class TmdbClient {
     }
 
     if (res.status === 401) throw new TmdbError("TMDB rejected the API key (invalid).", 401);
-    if (res.status === 429) throw new TmdbError("TMDB rate limit exceeded.", 429);
+    if (res.status === 429) {
+      throw new TmdbError(
+        "TMDB is rate limiting requests.",
+        429,
+        parseRetryAfter(res.headers.get("retry-after")) ?? undefined
+      );
+    }
     if (!res.ok) {
       const body = await res.text().catch(() => "");
       throw new TmdbError(`TMDB request failed (${res.status}): ${body.slice(0, 200)}`, res.status);
