@@ -481,7 +481,17 @@ export async function runSync(
   // is left alone rather than cleared, so switching back needs no re-entry.
   const tmdb =
     hasRadarr && !watchmodeMovies && settings.tmdbApiKey
-      ? new TmdbClient(settings.tmdbApiKey)
+      ? new TmdbClient(settings.tmdbApiKey, {
+          // As for Watchmode: only the escalations, since every request caught
+          // by one burst reports it and they all describe the same moment.
+          onRateLimited: ({ intervalMs, escalated }) => {
+            if (!escalated) return;
+            progress(
+              "info",
+              `TMDB is rate limiting requests — pacing them ${intervalMs}ms apart for the rest of this sync.`
+            );
+          },
+        })
       : null;
   const movieLookup: MovieLookup | null = !hasRadarr
     ? null

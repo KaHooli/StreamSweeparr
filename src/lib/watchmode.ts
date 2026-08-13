@@ -17,11 +17,11 @@
  *
  * Rate limiting (429) is deliberately *not* part of that: it is a "you are going
  * too fast" answer rather than anything about the key, so it is waited out and
- * paced against instead — see `lib/watchmodeThrottle.ts`.
+ * paced against instead — see `lib/providerThrottle.ts`.
  */
 
 import { normalizeWatchmodeKeys } from "./watchmodeKeys";
-import { WatchmodeThrottle, parseRetryAfter } from "./watchmodeThrottle";
+import { ProviderThrottle, parseRetryAfter } from "./providerThrottle";
 
 const BASE = "https://api.watchmode.com/v1";
 
@@ -136,7 +136,7 @@ export interface WatchmodeClientOptions {
   onKeyExhausted?: (info: WatchmodeKeyExhaustedInfo) => void;
   onRateLimited?: (info: WatchmodeRateLimitInfo) => void;
   /** Test seam: injects the throttle's clock so backoff needn't be waited out. */
-  throttle?: WatchmodeThrottle;
+  throttle?: ProviderThrottle;
 }
 
 /**
@@ -181,14 +181,14 @@ export class WatchmodeClient {
   /** Why the last key was retired — the error reported once all keys are gone. */
   private lastExhaustedError: WatchmodeError | null = null;
   /** Shared pacing for every request this client makes. */
-  private readonly throttle: WatchmodeThrottle;
+  private readonly throttle: ProviderThrottle;
 
   constructor(apiKey: string | readonly string[], opts: WatchmodeClientOptions = {}) {
     this.keys = normalizeWatchmodeKeys(Array.isArray(apiKey) ? apiKey : [apiKey as string]);
     if (!this.keys.length) throw new WatchmodeError("Watchmode API key is not configured.");
     this.onKeyExhausted = opts.onKeyExhausted;
     this.onRateLimited = opts.onRateLimited;
-    this.throttle = opts.throttle ?? new WatchmodeThrottle();
+    this.throttle = opts.throttle ?? new ProviderThrottle();
   }
 
   /** How many keys this client can draw on. */

@@ -6,7 +6,7 @@
  * same: start at key 1 and move to the next key only once the current one is
  * rejected or out of quota (`WatchmodeClient` implements that failover). Being
  * rate limited is not one of those reasons — it says nothing about the key, so
- * it is waited out with the ring intact (`lib/watchmodeThrottle.ts`).
+ * it is waited out with the ring intact (`lib/providerThrottle.ts`).
  *
  * This module owns the shape of that list — how it is normalised, how the
  * legacy single-key column folds into it, and how the settings UI describes an

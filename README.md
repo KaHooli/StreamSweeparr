@@ -687,7 +687,7 @@ The tab is **administrators only**, and so is the endpoint behind it.
 | **A provider logo opens a search page, not the title** | Free Watchmode plans don't include per-episode deep links, and TMDB has none for movies | Working as intended — [what each link is](#what-the-dashboard-shows-you) |
 | **A title I want to keep keeps getting swept** | It's genuinely on one of your selected services | Tag it **`ss-skip`** — [how](#-keeping-titles-out-of-the-sweep) |
 | **The first sync is slow** | Nothing is cached yet, so every title gets looked up once | Normal. Every sync after that is far cheaper — [why](#-keeping-api-usage-low) |
-| **The run log says Watchmode is rate limiting requests** | Requests are arriving faster than the key allows — not the same as running out of credit | The sync paces itself and carries on. If it keeps happening, lengthen the cache window or lower `SYNC_CONCURRENCY` — [detail](#-keeping-api-usage-low) |
+| **The run log says Watchmode or TMDB is rate limiting requests** | Requests are arriving faster than the provider allows — not the same as running out of credit | The sync paces itself and carries on. If it keeps happening, lengthen the cache window or lower `SYNC_CONCURRENCY` — [detail](#-keeping-api-usage-low) |
 | **Sonarr's webhook Test fails with 503** | Webhook sweeps are switched off in StreamSweeparr | Turn on **Settings → Run options → Sweep new titles as they're added** |
 | **Sonarr's webhook Test fails with 401** | Wrong or missing token — usually a URL copied before the token was regenerated | Re-copy the URL from the settings card into every *arr |
 | **Sonarr's webhook Test fails with 409** | You have several Sonarrs and the URL doesn't say which | Use the per-connection URL from the card; it ends with `&connection=<id>` |
@@ -1101,6 +1101,11 @@ requests for the rest of that sync, widening it if it happens again. The run log
 says so once, when the pacing changes. Your keys are left alone — only a key
 that is *rejected* (invalid, or out of credit) is set aside. If you see it
 often, lengthen the cache window or lower `SYNC_CONCURRENCY`.
+
+**TMDB is treated the same way**, for a different reason: its calls are free, so
+a 429 there costs nothing but the answer — and a movie given up on is recorded
+as unknown for that sync, which means it is neither unmonitored nor
+re-monitored. It too is retried and then paced, and the run log says so.
 
 **[Sweeping on add](#-sweeping-new-titles-as-theyre-added) is the cheapest run
 there is.** It looks at only the titles Sonarr/Radarr just told it about, so it

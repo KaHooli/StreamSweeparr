@@ -3,14 +3,14 @@ import {
   MAX_RETRY_AFTER_MS,
   PACE_LADDER_MS,
   parseRetryAfter,
-  WatchmodeThrottle,
-} from "./watchmodeThrottle";
+  ProviderThrottle,
+} from "./providerThrottle";
 
 /** A throttle whose waiting advances a fake clock rather than real time. */
 function harness(start = 1_000_000) {
   let clock = start;
   const slept: number[] = [];
-  const throttle = new WatchmodeThrottle({
+  const throttle = new ProviderThrottle({
     now: () => clock,
     sleep: async (ms) => {
       slept.push(ms);
@@ -58,7 +58,7 @@ describe("parseRetryAfter", () => {
   });
 });
 
-describe("WatchmodeThrottle", () => {
+describe("ProviderThrottle", () => {
   it("does not wait at all until something has been rate limited", async () => {
     const h = harness();
     await h.throttle.acquire();

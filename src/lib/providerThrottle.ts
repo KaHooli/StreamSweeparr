@@ -1,6 +1,7 @@
 /**
- * How the Watchmode client behaves once the API answers **429 Too Many
- * Requests**.
+ * How a provider client behaves once its API answers **429 Too Many Requests**.
+ * Shared by the Watchmode and TMDB clients, one instance each — the limits are
+ * separate, so the pacing learned against one must not slow the other.
  *
  * Watchmode rations two different things and says so with two different status
  * codes: a key that is invalid or has spent its monthly credits is refused with
@@ -9,6 +10,9 @@
  * whereas a rate limit clears on its own if you simply wait. Treating 429 as
  * "this key is finished" is what turned one burst into a run where every
  * remaining title reported an exhausted key and came back `streamingUnknown`.
+ * TMDB has no key ring to damage, but did the other half of the same thing:
+ * one refusal failed the title outright, and nothing slowed down afterwards, so
+ * the titles behind it queued up to trip the same limit again.
  *
  * So this module is the "wait" half. It holds two pieces of state, both shared
  * by every in-flight request on a client (sync looks titles up `SYNC_CONCURRENCY`
@@ -66,7 +70,7 @@ const ESCALATION_COOLDOWN_MS = 1_000;
 
 const sleepReal = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
-export interface WatchmodeThrottleOptions {
+export interface ProviderThrottleOptions {
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
 }
@@ -97,7 +101,7 @@ export function parseRetryAfter(header: string | null | undefined, now = Date.no
 }
 
 /** What one 429 did to the throttle, so the caller can say so in the run log. */
-export interface WatchmodeThrottleStep {
+export interface ProviderThrottleStep {
   /** How long this request will wait before it is retried. */
   waitMs: number;
   /** The spacing now applied between requests; 0 while none has been needed. */
@@ -107,13 +111,13 @@ export interface WatchmodeThrottleStep {
 }
 
 /**
- * A shared pacer for one `WatchmodeClient`.
+ * A shared pacer for one provider client.
  *
  * `acquire()` is called before every request and `rateLimited()` after every
  * 429. Both are cheap and, while nothing has been rate limited, `acquire()`
  * neither sleeps nor allocates.
  */
-export class WatchmodeThrottle {
+export class ProviderThrottle {
   private readonly now: () => number;
   private readonly sleep: (ms: number) => Promise<void>;
 
@@ -126,7 +130,7 @@ export class WatchmodeThrottle {
   /** When the spacing may next step down the ladder. */
   private escalationAllowedAt = 0;
 
-  constructor(opts: WatchmodeThrottleOptions = {}) {
+  constructor(opts: ProviderThrottleOptions = {}) {
     this.now = opts.now ?? Date.now;
     this.sleep = opts.sleep ?? sleepReal;
   }
@@ -160,7 +164,7 @@ export class WatchmodeThrottle {
    * not sleep on the returned `waitMs` themselves — the next `acquire()` will
    * not return until it has passed.
    */
-  rateLimited(attempt: number, retryAfterMs: number | null): WatchmodeThrottleStep {
+  rateLimited(attempt: number, retryAfterMs: number | null): ProviderThrottleStep {
     const now = this.now();
     const step = RETRY_BACKOFF_MS[Math.min(Math.max(attempt, 0), RETRY_BACKOFF_MS.length - 1)];
     const waitMs = retryAfterMs ?? step;

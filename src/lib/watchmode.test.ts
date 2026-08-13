@@ -5,7 +5,7 @@ import {
   WatchmodeError,
   type WatchmodeTitleSource,
 } from "./watchmode";
-import { WatchmodeThrottle } from "./watchmodeThrottle";
+import { ProviderThrottle } from "./providerThrottle";
 
 const src = (source_id: number, type: string, region = "US"): WatchmodeTitleSource => ({
   source_id,
@@ -101,7 +101,7 @@ describe("WatchmodeClient key failover", () => {
    */
   const fakeThrottle = () => {
     let clock = 1_000_000;
-    const throttle = new WatchmodeThrottle({
+    const throttle = new ProviderThrottle({
       now: () => clock,
       sleep: async (ms) => {
         clock += ms;
