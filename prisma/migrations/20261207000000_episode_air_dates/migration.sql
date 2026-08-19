@@ -1,0 +1,14 @@
+-- Record each episode's air date alongside the rest of the snapshot.
+--
+-- The sweep uses it to decide when a whole season can be marked unmonitored in
+-- Sonarr: a season qualifies once every episode that has *aired* is unmonitored,
+-- which is a question the snapshot could not previously answer. Without an air
+-- date a currently-airing season never qualifies (its unaired episodes are still
+-- monitored), and marking one unmonitored on the strength of its aired episodes
+-- alone would be indistinguishable from marking a season that has not started.
+--
+-- Nullable and left NULL for existing rows: Sonarr genuinely has episodes with
+-- no announced date, so "unknown" is a real value rather than a gap to backfill,
+-- and planSeasons() treats it as not-yet-aired. The next sync populates every
+-- row it touches, so no backfill is needed here.
+ALTER TABLE "Episode" ADD COLUMN "airDateUtc" TIMESTAMP(3);

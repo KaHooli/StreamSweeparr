@@ -90,6 +90,7 @@ export async function makeEpisode(
     monitored: boolean;
     hasFile: boolean;
     episodeFileId: number | null;
+    airDateUtc: Date | null;
     onStreaming: boolean;
     streamingUnknown: boolean;
   }> = {}
@@ -100,6 +101,9 @@ export async function makeEpisode(
       arrEpisodeId: over.arrEpisodeId ?? 1,
       seasonNumber: over.seasonNumber ?? 1,
       episodeNumber: over.episodeNumber ?? 1,
+      // Long enough ago to count as aired, so a test that does not care about
+      // air dates still describes a season the sweep is allowed to act on.
+      airDateUtc: over.airDateUtc === undefined ? new Date("2020-01-01T00:00:00Z") : over.airDateUtc,
       monitored: over.monitored ?? true,
       hasFile: over.hasFile ?? true,
       episodeFileId: over.episodeFileId === undefined ? 900 : over.episodeFileId,

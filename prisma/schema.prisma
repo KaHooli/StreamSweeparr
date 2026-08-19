@@ -357,6 +357,11 @@ model Episode {
   seasonNumber  Int
   episodeNumber Int
   title         String?
+  // When the episode aired (UTC), as Sonarr reports it. Null for an episode
+  // with no announced date. The sweep needs this to tell "this season is done
+  // with and every episode of it is on streaming" apart from "this season is
+  // still airing" — see planSeasons() in lib/sweep.ts.
+  airDateUtc    DateTime?
   monitored     Boolean  @default(false)
   hasFile       Boolean  @default(false)
   episodeFileId Int?
