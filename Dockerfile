@@ -49,7 +49,37 @@ RUN apk add --no-cache libc6-compat openssl
 COPY package.json package-lock.json* ./
 COPY prisma ./prisma
 COPY prisma.config.ts ./prisma.config.ts
-RUN npm ci --omit=dev
+# The install and the trim are one layer on purpose. Deleting in a later `RUN`
+# would leave every byte sitting in the layer underneath, so the image would
+# carry the files and the tombstones both.
+#
+# Two things come out, and nothing else — the rest of what looks like dead
+# weight in here is load-bearing. `prisma` is a runtime dependency because the
+# entrypoint migrates, and the CLI eagerly requires most of its own tree:
+# @prisma/studio-core (43MB of Studio's web UI) and @prisma/dev are both pulled
+# in by `migrate deploy` itself, and @prisma/config reaches `effect`, which
+# reaches `fast-check`. Removing any of those breaks migrations at boot.
+#
+#   1. Query compilers for other databases. Prisma 7 ships a WASM compiler per
+#      engine — postgresql, mysql, sqlite, sqlserver, cockroachdb — about 71MB
+#      in total, of which this app can only ever load postgresql: the provider
+#      is fixed in schema.prisma. That is ~21MB of the compressed image.
+#   2. `typescript`, a real dependency of @prisma/client and prisma. The app is
+#      built by the time this tree is assembled, and loading prisma.config.ts
+#      does not need it — Prisma's config loader brings its own transpiler.
+#
+# Both assertions below matter more than the saving. A future Prisma may start
+# reaching for something trimmed here, and the failure would otherwise be an
+# image that builds cleanly and dies on boot on somebody else's install.
+# `prisma -v` walks the same eager require graph as `migrate deploy` without
+# needing a database, so it fails the *build* instead. The find guards against
+# a rename: if the compiler files are ever called something else, the pattern
+# would quietly match everything or nothing, and this catches both.
+RUN npm ci --omit=dev \
+    && find node_modules/@prisma/client/runtime -name 'query_compiler_*' ! -name '*postgresql*' -delete \
+    && rm -rf node_modules/typescript \
+    && [ "$(find node_modules/@prisma/client/runtime -name 'query_compiler_*postgresql*' | wc -l)" -gt 0 ] \
+    && CHECKPOINT_DISABLE=1 npx prisma -v > /dev/null
 
 FROM node:24-alpine AS builder
 WORKDIR /app
