@@ -47,7 +47,7 @@ Single-tenant: `Settings` is one row, always `id = 1`.
 |---|---|
 | Framework | Next.js 16 (App Router), React 19 |
 | Language | TypeScript, `strict: true` |
-| Database | PostgreSQL via Prisma 5 (`@prisma/client`), plus raw `pg` for `COPY` |
+| Database | PostgreSQL via Prisma 6 (`@prisma/client`), plus raw `pg` for `COPY` |
 | Validation | zod |
 | Client data | SWR |
 | Tests | Vitest (+ React Testing Library, jsdom) |

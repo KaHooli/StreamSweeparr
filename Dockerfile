@@ -54,6 +54,28 @@ RUN npx prisma generate && npm run build
 FROM node:24-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV=production
+
+# Both tools in the entrypoint check for a newer version of themselves on every
+# container start, and both do it over the network.
+#
+# CHECKPOINT_DISABLE is the one that matters: without it `prisma migrate deploy`
+# calls out to checkpoint.prisma.io before applying migrations, so a
+# self-hosted install makes an outbound request to a third party every time it
+# boots. The "Update available 5.22.0 -> 7.9.1" box in the logs is that
+# request's reply, not a local computation. PRISMA_HIDE_UPDATE_MESSAGE only
+# suppresses the box; it is set as well so the banner stays gone if Prisma ever
+# changes which of the two controls the output.
+#
+# The npm notice is cosmetic by comparison — npm's version is whatever
+# node:24-alpine bundles, and nothing here can act on the advice — but it lands
+# in the middle of the migration output and makes a boot log harder to read.
+#
+# Neither disables anything the app uses. Both are runner-stage only: the build
+# stages are allowed to be noisy because a human is reading that output.
+ENV CHECKPOINT_DISABLE=1
+ENV PRISMA_HIDE_UPDATE_MESSAGE=true
+ENV NPM_CONFIG_UPDATE_NOTIFIER=false
+
 RUN apk add --no-cache openssl
 
 # Copy the built app. Ownership is set to the built-in unprivileged `node` user.
