@@ -26,7 +26,7 @@ import type { MediaType } from "@/generated/prisma/client";
 import { prisma, getSettings } from "./db";
 import { logger } from "./logger";
 import { runTargetedSweep, type SweepTarget } from "./sweep";
-import { RunLockError, hasLiveRun } from "./jobs";
+import { RunAbortedError, RunLockError, hasLiveRun } from "./jobs";
 import { schedulerDisabledByEnv } from "./schedule";
 
 const log = logger("webhook");
@@ -249,6 +249,20 @@ export async function drainSweepQueue(now: Date = new Date()): Promise<DrainResu
 async function settleClaim(claimedBy: string, ok: boolean, error?: Error): Promise<void> {
   if (ok) {
     await prisma.queuedSweep.deleteMany({ where: { claimedBy } });
+    return;
+  }
+  // An admin stopping the sweep is the one failure that must not be retried:
+  // the titles would go back on the queue and the next tick — seconds later —
+  // would start the very sweep that was just stopped. Drop them; the next full
+  // sweep covers them, which is the same fallback an exhausted title gets.
+  if (error instanceof RunAbortedError) {
+    const dropped = await prisma.queuedSweep.deleteMany({ where: { claimedBy } });
+    if (dropped.count) {
+      log.info(
+        `targeted sweep was stopped by an administrator; dropped ${dropped.count} queued ` +
+          `title(s) rather than re-queueing them. The next full sweep will cover them.`
+      );
+    }
     return;
   }
   log.warn(`targeted sweep failed: ${error?.message ?? "unknown error"}`);

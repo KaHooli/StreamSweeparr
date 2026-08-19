@@ -302,6 +302,30 @@ run. `runTargetedSweep`'s `onFinished` is how a caller learns the outcome of a
 body that is otherwise detached — the queue uses it to drop the titles it handed
 over, or to put them back.
 
+Detached also means there is no handle to cancel, so **stopping a run is
+co-operative**. `requestRunAbort()` records `RunLog.abortRequestedAt`;
+`RunContext.checkAbort()` polls it (throttled to `ABORT_POLL_MS`) and throws
+`RunAbortedError`, which unwinds to `startRun` and ends the run `ABORTED`.
+Three things follow, and all three are load-bearing:
+
+- **The request goes through the database, not a process-local flag.** The click
+  can land on a replica that is not running the sweep. It is also why a run
+  whose heartbeat has gone stale is finalised by `requestRunAbort` itself —
+  nothing is left to read the request.
+- **`checkAbort` goes *between* units of work**, never inside one. A batch is an
+  *arr call plus the snapshot write that records it; stopping between those
+  leaves the database describing a library it no longer matches. In sync it also
+  has to sit before the prune, or a pass that stopped early would read every
+  title it never reached as gone from Sonarr/Radarr.
+- **Everything that swallows errors has to let this one past** —
+  `ErrorCollector.attempt` and sync's per-connection `catch` both re-throw it.
+  Filed as an item failure, an abort would be logged and the run would carry on.
+
+`ABORTED` is its own `RunStatus` for the same reason `FAILED` is not `SUCCESS`:
+a deliberate stop is not a broken instance, and a half-swept library is not a
+clean sweep. An aborted webhook sweep's titles are **dropped** from the queue
+rather than released, or the next tick would restart the sweep just stopped.
+
 ### 8. Destructive-by-default is guarded
 
 Anything that deletes or mutates Sonarr/Radarr must respect:

@@ -12,7 +12,9 @@ export const POST = withGuard(requireAdmin, async () => {
   try {
     const runId = await startRun("SYNC", true, async (ctx) => {
       ctx.push("info", "Starting sync…");
-      const result = await runSync((level, msg) => ctx.push(level, msg));
+      const result = await runSync((level, msg) => ctx.push(level, msg), {
+        checkAbort: () => ctx.checkAbort(),
+      });
       ctx.push(
         "info",
         `Synced ${result.movies} movies (${result.onStreamingMovies} on streaming), ` +

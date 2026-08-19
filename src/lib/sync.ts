@@ -30,6 +30,7 @@ import { WatchmodeClient, matchSources, type WatchmodeTitleSource } from "./watc
 import { lookupWatchmodeId, refreshTitleMap } from "./titlemap";
 import { sanitizeExternalUrl } from "./urls";
 import { mapWithConcurrency, syncConcurrency } from "./concurrency";
+import { RunAbortedError, type CheckAbort } from "./jobs";
 import {
   TmdbClient,
   matchTmdbProviders,
@@ -71,6 +72,9 @@ export interface SyncResult {
 export type ProgressFn = (level: "info" | "action" | "warn", msg: string) => void;
 const noopProgress: ProgressFn = () => {};
 
+/** A sync driven outside a run has nothing that could ask it to stop. */
+const noopCheckAbort: CheckAbort = async () => {};
+
 /** One title a scoped sync should refresh, instead of the whole library. */
 export interface SyncTarget {
   connectionId: number;
@@ -93,6 +97,17 @@ export interface SyncOptions {
    * wrong one to act on.
    */
   force?: boolean;
+  /**
+   * Called between titles and between connections; throws if an admin has asked
+   * the run to stop. Optional because a sync can be driven outside a run (tests,
+   * a direct call), where there is nothing to stop.
+   *
+   * A sync that stops part-way must never prune, and does not: the throw leaves
+   * `syncRadarr`/`syncSonarr` before the "anything untouched has left the
+   * instance" delete, which would otherwise read every title the pass had not
+   * reached yet as gone from Sonarr/Radarr.
+   */
+  checkAbort?: CheckAbort;
 }
 
 /** How much of one connection a sync pass should cover. */
@@ -314,6 +329,8 @@ export async function runSync(
     errors,
   };
 
+  const checkAbort: CheckAbort = options.checkAbort ?? noopCheckAbort;
+
   // A scoped sync narrows the work twice over: to the connections the targets
   // live on, and within each of those to the target ids.
   const scopes = options.targets ? scopeByConnection(options.targets, !!options.force) : null;
@@ -532,6 +549,7 @@ export async function runSync(
     : null;
 
   for (const conn of connections) {
+    await checkAbort();
     const scope = scopes?.get(conn.id) ?? FULL_SCOPE;
     try {
       progress(
@@ -545,7 +563,7 @@ export async function runSync(
           throw new Error(
             `${watchmodeMovies ? "Watchmode" : "TMDB"} is not configured (needed for movies).`
           );
-        await syncRadarr(conn, movieLookup, result, errors, progress, scope);
+        await syncRadarr(conn, movieLookup, result, errors, progress, checkAbort, scope);
       } else {
         if (!wm) throw new Error("Watchmode is not configured.");
         await syncSonarr(
@@ -559,10 +577,15 @@ export async function runSync(
           changedIds,
           wmLogos,
           wmTtlMs,
+          checkAbort,
           scope
         );
       }
     } catch (e) {
+      // One unreachable instance is a recorded error and the next connection is
+      // still worth syncing — but an abort is the run being told to stop, so it
+      // has to escape this catch rather than be filed as a connection failure.
+      if (e instanceof RunAbortedError) throw e;
       errors.push(`[${conn.name}] ${(e as Error).message}`);
     }
   }
@@ -612,6 +635,7 @@ async function syncRadarr(
   result: SyncResult,
   errors: string[],
   progress: ProgressFn,
+  checkAbort: CheckAbort,
   scope: SyncScope = FULL_SCOPE
 ) {
   const client = new RadarrClient(conn.baseUrl, conn.apiKey);
@@ -654,6 +678,10 @@ async function syncRadarr(
   const now = syncedAt.getTime();
 
   await mapWithConcurrency(movies, syncConcurrency(), async (movie) => {
+    // Per title, before any work on it: the throw leaves `mapWithConcurrency`
+    // and, crucially, skips the prune below — a pass that stopped early has no
+    // standing to say the titles it never reached are gone from Radarr.
+    await checkAbort();
     const base = {
       title: movie.title,
       year: movie.year ?? null,
@@ -914,6 +942,7 @@ async function syncSonarr(
   logos: Map<number, string | null>,
   // Configured Watchmode cache window, already clamped (lib/watchmodeCache.ts).
   ttlMs: number,
+  checkAbort: CheckAbort,
   scope: SyncScope = FULL_SCOPE
 ) {
   const client = new SonarrClient(conn.baseUrl, conn.apiKey);
@@ -949,6 +978,9 @@ async function syncSonarr(
   const now = syncedAt.getTime();
 
   await mapWithConcurrency(seriesList, syncConcurrency(), async (series) => {
+    // See syncRadarr: per title, and before the prune this pass would otherwise
+    // reach with only part of the library looked at.
+    await checkAbort();
     if (hasSkipTag(series.tags, skipIds)) {
       // Leave the show entirely alone: no Watchmode call, no availability
       // recorded, and its episode rows are dropped so the sweep can't act on

@@ -19,6 +19,13 @@ const arrCalls: ArrCall[] = [];
 /** Methods set here throw when called, to simulate a failing instance. */
 const failing = new Set<string>();
 /**
+ * Methods parked here block until the test releases them. A sweep body runs
+ * detached and a test-sized library is swept in milliseconds, so holding one
+ * *arr call open is the only way to catch a run in flight — which is what
+ * asking it to stop mid-run requires.
+ */
+const held = new Map<string, Promise<void>>();
+/**
  * What `getSeriesById` reports, keyed by Sonarr series id. Season monitoring
  * lives on the series resource, so the season tests need a Sonarr with an
  * opinion about it rather than the blanket `undefined` everything else gets.
@@ -28,6 +35,8 @@ const sonarrSeries = new Map<number, { id: number; seasons: { seasonNumber: numb
 function record(client: "sonarr" | "radarr", method: string, result?: (args: unknown[]) => unknown) {
   return async (...args: unknown[]) => {
     arrCalls.push({ client, method, args });
+    const hold = held.get(`${client}.${method}`);
+    if (hold) await hold;
     if (failing.has(`${client}.${method}`)) throw new Error(`${method} failed`);
     return result ? result(args) : undefined;
   };
@@ -78,6 +87,7 @@ vi.mock("./sync", () => ({
 
 import { prisma } from "@/lib/db";
 import { runSweep, runTargetedSweep, type SweepTarget } from "@/lib/sweep";
+import { requestRunAbort, ABORT_POLL_MS } from "@/lib/jobs";
 import {
   resetDatabase,
   makeSettings,
@@ -92,6 +102,7 @@ beforeEach(async () => {
   arrCalls.length = 0;
   syncOptions.length = 0;
   failing.clear();
+  held.clear();
   sonarrSeries.clear();
 });
 afterAll(async () => {
@@ -615,10 +626,29 @@ describe("targeted sweep", () => {
       { connectionId: conn.id, type: "MOVIE", arrId: 1, title: "Just Added" },
     ]);
 
-    expect(syncOptions[0]).toEqual({
+    // toMatchObject, not toEqual: the sweep also hands sync its abort check,
+    // which is not what this test is about.
+    expect(syncOptions[0]).toMatchObject({
       targets: [{ connectionId: conn.id, type: "MOVIE", arrId: 1 }],
       force: true,
     });
+  });
+
+  it("gives sync a way to be stopped, on a full sweep as well as a targeted one", async () => {
+    await makeSettings({ applyChanges: true, searchAtEnd: false });
+    const conn = await makeConnection();
+    await makeMediaItem(conn.id, { arrId: 1, monitored: true, onStreaming: true });
+
+    await sweepAndWait();
+    await targetedSweepAndWait([
+      { connectionId: conn.id, type: "MOVIE", arrId: 1, title: "Just Added" },
+    ]);
+
+    // The sync phase is the long half of a sweep, so "Abort" that only took
+    // effect once it was over would be no use on the run most worth stopping.
+    for (const options of syncOptions) {
+      expect((options as { checkAbort?: unknown }).checkAbort).toBeTypeOf("function");
+    }
   });
 
   it("searches only the titles it covered", async () => {
@@ -728,5 +758,77 @@ describe("targeted sweep", () => {
   it("refuses a targeted sweep with nothing to target", async () => {
     await makeSettings();
     await expect(runTargetedSweep([])).rejects.toThrow(/at least one title/);
+  });
+});
+
+describe("aborting a sweep in flight", () => {
+  it("stops at the next title instead of filing the abort as an item failure", async () => {
+    await makeSettings({ applyChanges: true, removeMissingTmdbMovies: true, searchAtEnd: true });
+    const conn = await makeConnection();
+    // The first title takes the one-at-a-time removal path, which runs inside
+    // ErrorCollector.attempt — so the abort is noticed where every other error
+    // is recorded and swallowed. If it were swallowed too, the sweep would carry
+    // straight on to the second title.
+    await makeMediaItem(conn.id, { arrId: 7, title: "Gone from TMDB", tmdbMissing: true });
+    await makeMediaItem(conn.id, { arrId: 8, title: "On Netflix", monitored: true, onStreaming: true });
+
+    let release!: () => void;
+    held.set("radarr.deleteMovie", new Promise<void>((r) => (release = r)));
+
+    const id = await runSweep();
+    await waitFor(async () => callsTo("deleteMovie").length === 1);
+    expect(await requestRunAbort(id)).toEqual({ status: "requested" });
+    // Checkpoints poll no more often than this, so the next one to actually look
+    // is the first one this far past the last.
+    await new Promise((r) => setTimeout(r, ABORT_POLL_MS + 200));
+    release();
+
+    const run = await awaitRun(id);
+    expect(run.status).toBe("ABORTED");
+    expect(run.error).toMatch(/stopped from the runs page/i);
+    // The abort travelled past the collector rather than being logged as one
+    // more broken title and counted into a partial-failure summary.
+    expect(run.error).not.toMatch(/error\(s\)/i);
+
+    // The first title's removal stands; the second was never touched, and the
+    // end-of-run search — several checkpoints later — never started.
+    expect(run.removedMovies).toBe(1);
+    expect(callsTo("setMoviesMonitored")).toHaveLength(0);
+    expect(callsTo("searchMovies")).toHaveLength(0);
+    expect(await prisma.mediaItem.findFirst({ where: { arrId: 8 } })).toMatchObject({
+      monitored: true,
+    });
+  });
+
+  it("drops the queued titles of an aborted webhook sweep instead of re-queueing them", async () => {
+    // Releasing the claim would put them straight back, and the queue worker
+    // would start the very sweep the admin just stopped.
+    await makeSettings({ applyChanges: true, removeMissingTmdbMovies: true, searchAtEnd: false });
+    const conn = await makeConnection();
+    await makeMediaItem(conn.id, { arrId: 7, title: "Gone from TMDB", tmdbMissing: true });
+    await makeMediaItem(conn.id, { arrId: 8, title: "On Netflix", monitored: true, onStreaming: true });
+
+    const outcomes: { ok: boolean; error?: Error }[] = [];
+    let release!: () => void;
+    held.set("radarr.deleteMovie", new Promise<void>((r) => (release = r)));
+
+    const id = await runTargetedSweep(
+      [
+        { connectionId: conn.id, type: "MOVIE", arrId: 7, title: "Gone from TMDB" },
+        { connectionId: conn.id, type: "MOVIE", arrId: 8, title: "On Netflix" },
+      ],
+      { onFinished: async (o) => void outcomes.push(o) }
+    );
+    await waitFor(async () => callsTo("deleteMovie").length === 1);
+    await requestRunAbort(id);
+    await new Promise((r) => setTimeout(r, ABORT_POLL_MS + 200));
+    release();
+
+    expect((await awaitRun(id)).status).toBe("ABORTED");
+    await waitFor(async () => outcomes.length > 0);
+    // The queue is told it failed — and told *why*, which is what lets it tell
+    // "stopped on purpose" apart from "this sweep is worth another go".
+    expect(outcomes[0].ok).toBe(false);
+    expect(outcomes[0].error?.name).toBe("RunAbortedError");
   });
 });
