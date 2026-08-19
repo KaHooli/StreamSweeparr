@@ -1,4 +1,7 @@
 import { NextRequest } from "next/server";
+import { logger } from "./logger";
+
+const log = logger("request");
 
 /**
  * Whether `X-Forwarded-*` headers may be believed.
@@ -75,6 +78,46 @@ export function publicOrigin(req: NextRequest): string {
 
   if (host) return `${proto}://${host}`;
   return req.nextUrl.origin;
+}
+
+/**
+ * `PUBLIC_URL` as a parsed URL, for the callers that have no request to derive
+ * an origin from — currently the root layout's `metadata` export, which Next
+ * evaluates once when the module loads rather than per request.
+ *
+ * This is step 1 of `publicOrigin`'s resolution order and nothing else: the
+ * remaining steps all read headers. Callers therefore have to supply their own
+ * fallback for the (common) case of PUBLIC_URL being unset.
+ *
+ * The whole URL is returned, not just `.origin`, because PUBLIC_URL may point
+ * at a subpath when the app is proxied under one — and Next resolves relative
+ * metadata URLs against `metadataBase`'s pathname, so dropping it would produce
+ * links that skip the prefix.
+ *
+ * A value that is not a parseable http(s) URL is ignored rather than thrown on.
+ * This runs at module scope, where a typo would otherwise take the entire app
+ * down at boot instead of degrading one `<meta>` tag — and `publicOrigin` is
+ * deliberately left to make its own, request-aware decision about the same
+ * variable, so an OIDC redirect never silently changes shape because of a fix
+ * made for social images.
+ */
+export function configuredPublicUrl(): URL | null {
+  const explicit = process.env.PUBLIC_URL?.trim();
+  if (!explicit) return null;
+
+  let parsed: URL;
+  try {
+    parsed = new URL(explicit);
+  } catch {
+    log.warn(`PUBLIC_URL is not a valid absolute URL and was ignored: ${explicit}`);
+    return null;
+  }
+
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    log.warn(`PUBLIC_URL must be an http(s) URL and was ignored: ${explicit}`);
+    return null;
+  }
+  return parsed;
 }
 
 function firstHeader(req: NextRequest, name: string): string | null {
