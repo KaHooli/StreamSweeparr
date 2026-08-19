@@ -23,11 +23,11 @@
     "test:all": "npm run test && npm run test:integration"
   },
   "dependencies": {
-    "@prisma/client": "^5.18.0",
+    "@prisma/client": "^6.19.2",
     "next": "16.3.0",
     "pg": "^8.23.0",
     "pg-copy-streams": "^6.0.6",
-    "prisma": "^5.18.0",
+    "prisma": "^6.19.2",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "swr": "^2.5.0",
