@@ -455,16 +455,30 @@ describe("sweepSonarr — season monitoring", () => {
     expect(streaming.monitored).toBe(false);
   });
 
-  it("does not turn a season on merely because an episode is monitored", async () => {
+  it("turns a stale season on even when this sweep changed no episode", async () => {
     await makeSettings({ applyChanges: true, searchAtEnd: false });
     const conn = await makeConnection({ type: "SONARR" });
     const show = await makeMediaItem(conn.id, { type: "TV", arrId: 7 });
-    // Monitored and not on streaming: the sweep leaves it alone, so there is no
-    // re-monitor to justify overriding a season the user unmonitored by hand.
+    // Monitored and not on streaming, so the sweep leaves the episode alone.
+    // The season flag still disagrees with it, and that is what gets fixed.
     await makeEpisode(show.id, { arrEpisodeId: 101, monitored: true, onStreaming: false });
     sonarrHasOffSeasons(7, 1);
 
     await sweepAndWait();
+    expect(putSeasons()).toEqual([{ seasonNumber: 1, monitored: true }]);
+    expect(callsTo("setEpisodeMonitored")).toHaveLength(0);
+  });
+
+  it("writes nothing when Sonarr already has a monitored season monitored", async () => {
+    // The steady state for most of a library: one read, no write, no churn.
+    await makeSettings({ applyChanges: true, searchAtEnd: false });
+    const conn = await makeConnection({ type: "SONARR" });
+    const show = await makeMediaItem(conn.id, { type: "TV", arrId: 7 });
+    await makeEpisode(show.id, { arrEpisodeId: 101, monitored: true, onStreaming: false });
+    sonarrHasSeasons(7, 1);
+
+    await sweepAndWait();
+    expect(callsTo("getSeriesById")).toHaveLength(1);
     expect(callsTo("updateSeries")).toHaveLength(0);
   });
 

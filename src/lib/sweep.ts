@@ -13,7 +13,7 @@
  *      an unmonitored back-catalogue. Items re-monitored by 2 are never purged.
  *   4. SEASONS (Sonarr only): Sonarr's own season flag is brought into line with
  *      the episodes underneath it — off once every *aired* episode of the season
- *      is unmonitored, back on when this sweep re-monitors one. That flag is
+ *      is unmonitored, on while it still holds a monitored one. That flag is
  *      what a newly aired episode inherits, so leaving it wrong is what decides
  *      whether a season keeps collecting episodes for a show the user streams.
  *   5. SEARCH: at the end, trigger a search for every monitored movie/episode.
@@ -334,8 +334,6 @@ export interface SeasonEpisode {
   arrEpisodeId: number;
   /** Monitored state once this sweep's episode changes are applied. */
   monitored: boolean;
-  /** Whether this sweep is the thing that re-monitored it. */
-  remonitored: boolean;
   /** Null when Sonarr has no announced date — treated as "not aired yet". */
   airDateUtc: Date | null;
 }
@@ -376,17 +374,19 @@ export interface SeasonPlan {
  * currently-airing season could never qualify — which is the case the user hits
  * most, because it is the one where Sonarr keeps adding episodes.
  *
- * **Monitor** a season when this sweep re-monitored an episode in it — the show
- * has left streaming, so the season is wanted again. It is deliberately tied to
- * the sweep's own action rather than to "some episode is monitored": the latter
- * would also reach into seasons the user unmonitored by hand and nothing has
- * changed about, overriding a deliberate choice every run.
+ * **Monitor** a season that ends the sweep holding any monitored episode. That
+ * covers the show which has left streaming and had its episodes re-monitored,
+ * but it is deliberately not limited to it: the flag is meant to describe the
+ * episodes, so a season holding something monitored is monitored however it got
+ * that way. Hand-set monitoring is not a reason to hold back — `planItem`
+ * already re-monitors an episode the user unmonitored by hand, and `ss-skip` is
+ * how a title opts out of all of it.
  *
  * The unmonitor rule wins when both fit, which happens when a still-streaming
- * season has an unaired episode that `planItem` re-monitors for want of
- * availability data. Nothing is lost by that: Sonarr grabs an episode on its
- * own monitored flag, not its season's, so the unaired episode is still picked
- * up — and letting the two rules alternate would flip the flag every sweep.
+ * season has unaired episodes left monitored. Nothing is lost by that: Sonarr
+ * grabs an episode on its own monitored flag, not its season's, so those are
+ * still picked up — and letting the two rules alternate would flip the flag on
+ * every sweep.
  *
  * Season 0 is never considered: sync drops specials from the snapshot, so
  * "every aired episode is unmonitored" would be vacuously true for a season we
@@ -408,7 +408,7 @@ export function planSeasons(episodes: SeasonEpisode[], now: Date): SeasonPlan[] 
   for (const [seasonNumber, eps] of bySeason) {
     const aired = eps.filter(hasAired);
     const spent = aired.length > 0 && !aired.some((e) => e.monitored);
-    const monitored = spent ? false : eps.some((e) => e.remonitored) ? true : null;
+    const monitored = spent ? false : eps.some((e) => e.monitored) ? true : null;
     if (monitored === null) continue;
     plans.push({
       seasonNumber,
@@ -670,7 +670,6 @@ async function sweepSonarr(
         // the sweep is done", and in a dry-run that is the whole answer.
         monitored:
           plan.monitor === "none" ? ep.monitored : plan.monitor === "remonitor",
-        remonitored: plan.monitor === "remonitor",
         airDateUtc: ep.airDateUtc,
       });
 
@@ -745,7 +744,7 @@ async function sweepSonarr(
 /** Why a season flag is being written, for the run log. */
 const SEASON_REASON = {
   false: "every aired episode is unmonitored",
-  true: "an episode was re-monitored",
+  true: "it still holds monitored episodes",
 } as const;
 
 /**

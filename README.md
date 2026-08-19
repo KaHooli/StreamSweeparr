@@ -491,7 +491,7 @@ with the episodes underneath it, in both directions:
 | The season is marked | When |
 |---|---|
 | **Unmonitored** | Every episode of it that has **aired** ends up unmonitored |
-| **Monitored** | This sweep **re-monitored** an episode in it — the show has left streaming, so the season is wanted again |
+| **Monitored** | It still holds a monitored episode — so a show that left streaming gets its season back the moment its episodes return |
 
 - **Only aired episodes count for turning a season off.** A season still airing
   has future episodes monitored on purpose, so that Sonarr grabs them. Waiting
@@ -503,9 +503,11 @@ with the episodes underneath it, in both directions:
 - **Turning a season back on never re-monitors what's still streaming.**
   Episodes that are on one of your services stay unmonitored, which is the
   whole point of the sweep. The run log names how many were held back.
-- **A season you unmonitored by hand stays that way** unless the sweep itself
-  re-monitors something in it. Nothing changing this run means nothing is
-  overridden.
+- **The flag describes the episodes, not who set it.** A season you unmonitored
+  by hand is turned back on if it still holds monitored episodes — the same way
+  the sweep already re-monitors an episode you unmonitored by hand. Tag the show
+  [`ss-skip`](#-keeping-titles-out-of-the-sweep) to keep StreamSweeparr out of
+  it entirely.
 - **Specials (season 0) are never touched** — the sweep doesn't track them.
 - **Nothing is deleted by this**, in either direction. It only moves the season
   flag and keeps the episodes underneath where the sweep put them.
