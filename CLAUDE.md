@@ -383,6 +383,22 @@ platform-specific binary, and `prisma migrate deploy` uses it on every container
 start. That is why the Dockerfile still builds `prod-deps` on the runner's own
 Alpine base, and why that stage must keep running install scripts.
 
+Prisma 7 is also **bigger** than 6, not smaller. Losing the Rust query engine
+sounds like a saving and is not one: the WASM query compilers that replaced it
+ship one per database engine — five of them, ~71MB — and `prisma` being a
+runtime dependency drags Prisma Studio's entire browser UI (`@prisma/studio-core`,
+`@visx`, `elkjs`) into the production tree. The Dockerfile's `prod-deps` stage
+trims the two pieces that are provably unreachable here — the non-postgresql
+compilers, and `typescript` — in the *same* `RUN` as `npm ci`, because deleting
+in a later layer saves nothing.
+
+Most of the rest only looks like dead weight. `migrate deploy` eagerly requires
+`@prisma/studio-core` and `@prisma/dev`, and `@prisma/config` reaches `effect`,
+which reaches `fast-check`; removing any of them breaks migrations at boot, not
+at build. If you extend that trim, keep the two assertions chained onto it:
+`prisma -v` walks the same require graph as `migrate deploy` without needing a
+database, so a wrong guess fails the build instead of somebody's container.
+
 ---
 
 ## Migrations
