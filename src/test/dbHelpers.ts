@@ -5,7 +5,7 @@
  * about, so a failure points at one behaviour rather than at shared state.
  */
 import { prisma } from "@/lib/db";
-import type { ArrType, MediaType } from "@prisma/client";
+import type { ArrType, MediaType } from "@/generated/prisma/client";
 
 /** Empty every table the suite touches. */
 export async function resetDatabase() {

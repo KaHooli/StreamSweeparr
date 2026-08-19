@@ -13,6 +13,11 @@ const config = [
       ".next/**",
       "node_modules/**",
       "public/**",
+      // The Prisma client. Generated, gitignored, and carrying its own
+      // `eslint-disable` header — which this repo's config then reports as an
+      // unused directive, so linting it produces nothing but noise about code
+      // nobody can edit.
+      "src/generated/**",
       "next-env.d.ts",
       "prisma/migrations/**",
     ],

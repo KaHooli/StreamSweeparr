@@ -6,6 +6,7 @@ import { fetcher } from "@/lib/fetcher";
 import {
   buildDiagnosticsText,
   formatBytes,
+  formatPool,
   formatUptime,
   formatWhen,
   watchmodeKeySummary,
@@ -151,9 +152,9 @@ export function InfoCard() {
           }
         />
         <Row
-          label="Prisma pool"
-          hint="connection_limit / pool_timeout from DATABASE_URL"
-          value={`${db.connectionLimit ?? "default"} / ${db.poolTimeout ?? "default"}`}
+          label="Pool"
+          hint="sized by connection_limit / pool_timeout in DATABASE_URL"
+          value={formatPool(db)}
         />
         <Row
           label="Migrations"
