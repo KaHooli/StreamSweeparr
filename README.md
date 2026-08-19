@@ -480,31 +480,45 @@ it was wrong you can simply re-add the title. Removals are counted on the
 ### 📺 Seasons follow their episodes
 
 Sonarr keeps a monitored flag on the **season** as well as on each episode, and
-unmonitoring episodes leaves it untouched. So a series you already stream would
-show every episode unmonitored under a season still marked monitored — and,
-more than a cosmetic wrinkle, that flag is what Sonarr gives a **newly aired
-episode**, so the season would quietly start collecting them again.
+changing episode monitoring leaves it untouched. So a series you already stream
+would show every episode unmonitored under a season still marked monitored —
+and, more than a cosmetic wrinkle, that flag is what Sonarr gives a **newly
+aired episode**, so the season would quietly start collecting them again.
 
-A sweep therefore finishes each Sonarr series by marking a season unmonitored
-once **every episode of it that has aired** ends up unmonitored.
+A sweep therefore finishes each Sonarr series by bringing that flag into line
+with the episodes underneath it, in both directions:
 
-- **Only aired episodes count.** A season still airing has future episodes
-  monitored on purpose, so that Sonarr grabs them. Waiting for those would mean
-  a currently-airing season could never be marked — which is the case you hit
-  most, because it's the one Sonarr keeps adding episodes to. Those unaired
-  episodes stay monitored, and the run log says so.
+| The season is marked | When |
+|---|---|
+| **Unmonitored** | Every episode of it that has **aired** ends up unmonitored |
+| **Monitored** | This sweep **re-monitored** an episode in it — the show has left streaming, so the season is wanted again |
+
+- **Only aired episodes count for turning a season off.** A season still airing
+  has future episodes monitored on purpose, so that Sonarr grabs them. Waiting
+  for those would mean a currently-airing season could never be marked — which
+  is the case you hit most, because it's the one Sonarr keeps adding episodes
+  to. Those unaired episodes stay monitored, and the run log says so.
 - **A season that hasn't started is never touched.** With nothing aired there's
   nothing to go on.
+- **Turning a season back on never re-monitors what's still streaming.**
+  Episodes that are on one of your services stay unmonitored, which is the
+  whole point of the sweep. The run log names how many were held back.
+- **A season you unmonitored by hand stays that way** unless the sweep itself
+  re-monitors something in it. Nothing changing this run means nothing is
+  overridden.
 - **Specials (season 0) are never touched** — the sweep doesn't track them.
-- **Nothing is deleted and nothing is searched** by this. It only brings
-  Sonarr's own season flag into line with the episodes underneath it.
+- **Nothing is deleted by this**, in either direction. It only moves the season
+  flag and keeps the episodes underneath where the sweep put them.
 - It's **LIVE-mode only**, like everything else — a dry-run prints
   `Would mark season S2 of "…" unmonitored`.
 
-Seasons are only ever turned **off** this way, never back on. When a show later
-leaves streaming the sweep re-monitors its episodes and Sonarr searches for them
-normally; the season flag stays off until you flip it yourself, and any new
-episode that arrives unmonitored is re-monitored by the next sweep.
+> [!NOTE]
+> Sonarr applies a season's monitored flag to **every episode in that season**
+> when it changes — there's no way to set one without the other. StreamSweeparr
+> puts the affected episodes straight back, so a season change never quietly
+> undoes what the sweep just decided. If that repair can't be made (Sonarr goes
+> away mid-write) the run ends **FAILED** rather than reporting success, and the
+> next sweep settles it.
 
 ### ⏱ Scheduled sweeps
 

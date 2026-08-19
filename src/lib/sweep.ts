@@ -11,10 +11,11 @@
  *      that is still unmonitored once 1 and 2 are decided. Unlike `deleteFiles`
  *      — which only covers titles this sweep just unmonitored — this also clears
  *      an unmonitored back-catalogue. Items re-monitored by 2 are never purged.
- *   4. SEASONS (Sonarr only): a season whose every *aired* episode ends up
- *      unmonitored is marked unmonitored on the series itself, so Sonarr's own
- *      season flag agrees with its episodes — and so newly aired episodes stop
- *      inheriting "monitored" for a show the user already streams.
+ *   4. SEASONS (Sonarr only): Sonarr's own season flag is brought into line with
+ *      the episodes underneath it — off once every *aired* episode of the season
+ *      is unmonitored, back on when this sweep re-monitors one. That flag is
+ *      what a newly aired episode inherits, so leaving it wrong is what decides
+ *      whether a season keeps collecting episodes for a show the user streams.
  *   5. SEARCH: at the end, trigger a search for every monitored movie/episode.
  *
  * A run always syncs first so decisions are based on fresh data. When
@@ -333,31 +334,37 @@ export interface SeasonEpisode {
   arrEpisodeId: number;
   /** Monitored state once this sweep's episode changes are applied. */
   monitored: boolean;
+  /** Whether this sweep is the thing that re-monitored it. */
+  remonitored: boolean;
   /** Null when Sonarr has no announced date — treated as "not aired yet". */
   airDateUtc: Date | null;
 }
 
-/** A season this sweep should mark unmonitored in Sonarr. */
+/** A season flag this sweep should bring into line with its episodes. */
 export interface SeasonPlan {
   seasonNumber: number;
+  /** What to write to Sonarr's season flag. */
+  monitored: boolean;
   /**
-   * Unaired episodes in the season that are monitored and must be put back
-   * afterwards, because setting the season flag rewrites every episode in it.
+   * Episodes whose settled state is the *opposite* of `monitored`. Writing the
+   * season flattens every episode in it to `monitored`, so these have to be set
+   * back immediately afterwards or the write undoes the sweep's own decisions.
    */
-  restore: number[];
+  correct: number[];
 }
 
 /**
- * Decide which seasons can be marked unmonitored. Pure, like `planItem`, so the
- * matrix is unit-testable without a Sonarr.
+ * Decide which season flags to write. Pure, like `planItem`, so the matrix is
+ * unit-testable without a Sonarr.
  *
- * Unmonitoring every episode of a season leaves Sonarr's own season flag still
- * showing "monitored" — the episode endpoint does not touch it. That is not
- * merely cosmetic: the season flag is what new episodes inherit when Sonarr
- * refreshes the series, so a season StreamSweeparr has emptied would keep
- * acquiring monitored episodes for a show the user already streams.
+ * Sonarr keeps a monitored flag on the season as well as on each episode, and
+ * the episode endpoint does not touch it — so a sweep that unmonitors episodes
+ * leaves the two disagreeing. That is not merely cosmetic: the season flag is
+ * what a newly aired episode inherits when Sonarr refreshes the series, so the
+ * disagreement decides whether the season quietly starts collecting episodes
+ * again.
  *
- * A season qualifies when:
+ * **Unmonitor** a season when:
  *   - it has at least one **aired** episode — a season that has not started
  *     carries no evidence either way, and marking it unmonitored would be a
  *     guess about a show the user may well still want; and
@@ -368,6 +375,18 @@ export interface SeasonPlan {
  * monitored precisely so Sonarr grabs them, and waiting for those would mean a
  * currently-airing season could never qualify — which is the case the user hits
  * most, because it is the one where Sonarr keeps adding episodes.
+ *
+ * **Monitor** a season when this sweep re-monitored an episode in it — the show
+ * has left streaming, so the season is wanted again. It is deliberately tied to
+ * the sweep's own action rather than to "some episode is monitored": the latter
+ * would also reach into seasons the user unmonitored by hand and nothing has
+ * changed about, overriding a deliberate choice every run.
+ *
+ * The unmonitor rule wins when both fit, which happens when a still-streaming
+ * season has an unaired episode that `planItem` re-monitors for want of
+ * availability data. Nothing is lost by that: Sonarr grabs an episode on its
+ * own monitored flag, not its season's, so the unaired episode is still picked
+ * up — and letting the two rules alternate would flip the flag every sweep.
  *
  * Season 0 is never considered: sync drops specials from the snapshot, so
  * "every aired episode is unmonitored" would be vacuously true for a season we
@@ -388,12 +407,13 @@ export function planSeasons(episodes: SeasonEpisode[], now: Date): SeasonPlan[] 
   const plans: SeasonPlan[] = [];
   for (const [seasonNumber, eps] of bySeason) {
     const aired = eps.filter(hasAired);
-    if (!aired.length || aired.some((e) => e.monitored)) continue;
-    // Every monitored episode left in the season is therefore an unaired one,
-    // which is exactly what the season write would clear.
+    const spent = aired.length > 0 && !aired.some((e) => e.monitored);
+    const monitored = spent ? false : eps.some((e) => e.remonitored) ? true : null;
+    if (monitored === null) continue;
     plans.push({
       seasonNumber,
-      restore: eps.filter((e) => e.monitored && !hasAired(e)).map((e) => e.arrEpisodeId),
+      monitored,
+      correct: eps.filter((e) => e.monitored !== monitored).map((e) => e.arrEpisodeId),
     });
   }
   // Sorted so the run log reads in season order rather than snapshot order.
@@ -650,6 +670,7 @@ async function sweepSonarr(
         // the sweep is done", and in a dry-run that is the whole answer.
         monitored:
           plan.monitor === "none" ? ep.monitored : plan.monitor === "remonitor",
+        remonitored: plan.monitor === "remonitor",
         airDateUtc: ep.airDateUtc,
       });
 
@@ -721,20 +742,39 @@ async function sweepSonarr(
   }
 }
 
+/** Why a season flag is being written, for the run log. */
+const SEASON_REASON = {
+  false: "every aired episode is unmonitored",
+  true: "an episode was re-monitored",
+} as const;
+
 /**
- * Mark `plans`' seasons unmonitored in Sonarr.
+ * Write `plans`' season flags to Sonarr and repair what the write flattens.
  *
  * Costs one GET per series that has a qualifying season, plus a PUT when
  * anything actually changes — local *arr calls, not metered provider ones. The
  * GET is unavoidable: `seasons[]` lives on the series resource and Sonarr wants
  * the whole resource back, so there is nothing to write without reading first.
- * It also tells us which seasons Sonarr still has monitored, which is what keeps
- * a steady-state sweep down to that single read.
+ * It also tells us which seasons already hold the value we were going to write,
+ * which is what keeps a steady-state sweep down to that single read.
  *
- * The write cascades — see `SonarrClient.updateSeries` — so every episode of a
- * changed season is rewritten to unmonitored. For the aired episodes that is
- * exactly the state they are already in. The unaired ones are the reason
- * `restore` exists: they are monitored on purpose, and are put straight back.
+ * The write cascades — see `SonarrClient.updateSeries` — rewriting every episode
+ * of a changed season to the season's new value. `correct` is every episode the
+ * sweep settled on the other value, and putting those back is the whole reason
+ * this is safe to do in both directions:
+ *
+ *   - Turning a season **off** would clear the unaired episodes that are
+ *     monitored on purpose. They go straight back.
+ *   - Turning one **on** would monitor the episodes that are on streaming —
+ *     undoing the sweep's entire point. They are unmonitored straight back.
+ *
+ * The second is the riskier way round, because between the two calls Sonarr
+ * could grab something the user already streams. It is one request wide, it
+ * ends the run FAILED if it does not land (the caller collects the throw), and
+ * the next sweep unmonitors those episodes again — a monitored episode that is
+ * on streaming is exactly what `planItem` unmonitors. The end-of-run search
+ * cannot widen it either: that reads the snapshot, where those episodes are
+ * still unmonitored.
  */
 async function reconcileSeasons(
   client: SonarrClient,
@@ -746,44 +786,49 @@ async function reconcileSeasons(
 ) {
   const series = await client.getSeriesById(s.arrId);
 
-  // Only seasons Sonarr still has monitored are worth writing — and only a real
-  // change cascades, so filtering here is also what keeps the restore honest.
+  // Only a season Sonarr disagrees with is worth writing — and only a real
+  // change cascades, so filtering here is also what keeps `correct` honest.
   const changing = plans.filter((p) =>
-    series.seasons?.some((sea) => sea.seasonNumber === p.seasonNumber && sea.monitored)
+    series.seasons?.some(
+      (sea) => sea.seasonNumber === p.seasonNumber && sea.monitored !== p.monitored
+    )
   );
   if (!changing.length) return;
 
-  const label = changing.map((p) => `S${p.seasonNumber}`).join(", ");
-  push(
-    "action",
-    `[${conn.name}] ${dryRun ? "Would mark" : "Mark"} season ${label} of "${s.title}" ` +
-      `unmonitored (every aired episode is unmonitored).`
-  );
+  for (const monitored of [false, true] as const) {
+    const group = changing.filter((p) => p.monitored === monitored);
+    if (!group.length) continue;
+    push(
+      "action",
+      `[${conn.name}] ${dryRun ? "Would mark" : "Mark"} season ` +
+        `${group.map((p) => `S${p.seasonNumber}`).join(", ")} of "${s.title}" ` +
+        `${monitored ? "monitored" : "unmonitored"} (${SEASON_REASON[`${monitored}`]}).`
+    );
+  }
   if (dryRun) return;
 
-  const numbers = new Set(changing.map((p) => p.seasonNumber));
+  const wanted = new Map(changing.map((p) => [p.seasonNumber, p.monitored]));
   for (const sea of series.seasons ?? []) {
-    if (numbers.has(sea.seasonNumber)) sea.monitored = false;
+    const want = wanted.get(sea.seasonNumber);
+    if (want !== undefined) sea.monitored = want;
   }
   await client.updateSeries(series);
 
-  // Put back what the cascade just cleared. Sonarr is the only thing that
-  // changed — these rows are already monitored in the snapshot and stay that
-  // way — so a failure here shows up as an episode Sonarr has unmonitored and
-  // the database thinks is monitored. The next sync corrects the snapshot and
-  // the sweep after it re-monitors the episode, since an unmonitored episode
-  // that is not on streaming is precisely what `planItem` re-monitors. That
-  // leaves the library briefly under-monitored, which is the direction this
-  // tool is allowed to be wrong in.
-  const restore = changing.flatMap((p) => p.restore);
-  if (!restore.length) return;
-  push(
-    "info",
-    `[${conn.name}] Re-monitoring ${restore.length} unaired episode(s) of "${s.title}" that ` +
-      `the season change cleared.`
-  );
-  for (const batch of chunk(restore, BATCH)) {
-    await client.setEpisodeMonitored(batch, true);
+  // Repair the cascade. No snapshot write goes with this: these episodes are
+  // already recorded at the value being restored, because the sweep either put
+  // them there itself or left them alone. A failure therefore shows up as
+  // Sonarr and the database disagreeing, which the next sync and sweep settle.
+  for (const monitored of [false, true] as const) {
+    const ids = changing.filter((p) => p.monitored !== monitored).flatMap((p) => p.correct);
+    if (!ids.length) continue;
+    push(
+      "info",
+      `[${conn.name}] Putting ${ids.length} episode(s) of "${s.title}" back to ` +
+        `${monitored ? "monitored" : "unmonitored"} after the season change.`
+    );
+    for (const batch of chunk(ids, BATCH)) {
+      await client.setEpisodeMonitored(batch, monitored);
+    }
   }
 }
 

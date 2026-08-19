@@ -108,6 +108,7 @@ describe("planItem — purgeUnmonitoredFiles", () => {
   });
 });
 
+
 /* ---------------------------- planSeasons ------------------------------ */
 
 const NOW = new Date("2026-06-15T00:00:00Z");
@@ -121,55 +122,51 @@ const ep = (over: Partial<SeasonEpisode> = {}): SeasonEpisode => ({
   seasonNumber: 1,
   arrEpisodeId: nextEpisodeId++,
   monitored: false,
+  remonitored: false,
   airDateUtc: AIRED,
   ...over,
 });
 
-/** Just the season numbers a plan covers, which is what most cases care about. */
-const seasons = (eps: SeasonEpisode[]) => planSeasons(eps, NOW).map((p) => p.seasonNumber);
+/** An episode this sweep re-monitored, which is what asks for a season back on. */
+const reEp = (over: Partial<SeasonEpisode> = {}): SeasonEpisode =>
+  ep({ monitored: true, remonitored: true, ...over });
 
-describe("planSeasons — when a season may be marked unmonitored", () => {
+/** Season number -> flag written, which is what most cases care about. */
+const flags = (eps: SeasonEpisode[]) =>
+  planSeasons(eps, NOW).map((p) => [p.seasonNumber, p.monitored]);
+
+describe("planSeasons — turning a season off", () => {
   it("unmonitors a season whose every aired episode is unmonitored", () => {
-    expect(seasons([ep(), ep(), ep()])).toEqual([1]);
+    expect(flags([ep(), ep(), ep()])).toEqual([[1, false]]);
   });
 
   it("leaves a season alone while any aired episode is still monitored", () => {
-    expect(seasons([ep(), ep({ monitored: true }), ep()])).toEqual([]);
+    expect(flags([ep(), ep({ monitored: true }), ep()])).toEqual([]);
   });
 
   it("ignores unaired episodes, so a currently-airing season still qualifies", () => {
-    // The case the whole feature turns on: the aired half is on streaming and
+    // The case the feature turns on: the aired half is on streaming and
     // unmonitored, the unaired half is monitored so Sonarr keeps grabbing it.
-    expect(seasons([ep(), ep(), ep({ monitored: true, airDateUtc: UNAIRED })])).toEqual([1]);
+    expect(flags([ep(), ep(), ep({ monitored: true, airDateUtc: UNAIRED })])).toEqual([[1, false]]);
   });
 
   it("requires at least one aired episode, so a future season is never touched", () => {
-    expect(seasons([ep({ airDateUtc: UNAIRED }), ep({ airDateUtc: UNAIRED })])).toEqual([]);
+    expect(flags([ep({ airDateUtc: UNAIRED }), ep({ airDateUtc: UNAIRED })])).toEqual([]);
   });
 
   it("treats an episode with no announced date as not yet aired", () => {
-    expect(seasons([ep({ airDateUtc: null }), ep({ airDateUtc: null })])).toEqual([]);
-    expect(seasons([ep(), ep({ monitored: true, airDateUtc: null })])).toEqual([1]);
+    expect(flags([ep({ airDateUtc: null }), ep({ airDateUtc: null })])).toEqual([]);
+    expect(flags([ep(), ep({ monitored: true, airDateUtc: null })])).toEqual([[1, false]]);
   });
 
   it("counts an episode airing exactly now as aired", () => {
-    expect(seasons([ep({ airDateUtc: NOW })])).toEqual([1]);
-    expect(seasons([ep({ monitored: true, airDateUtc: NOW })])).toEqual([]);
+    expect(flags([ep({ airDateUtc: NOW })])).toEqual([[1, false]]);
+    expect(flags([ep({ monitored: true, airDateUtc: NOW })])).toEqual([]);
   });
 
   it("never considers season 0, whose specials sync does not record", () => {
     // Every episode we hold for season 0 is unmonitored because we hold none.
-    expect(seasons([ep({ seasonNumber: 0 }), ep({ seasonNumber: 2 })])).toEqual([2]);
-  });
-
-  it("judges each season on its own episodes, in season order", () => {
-    expect(
-      seasons([
-        ep({ seasonNumber: 3 }),
-        ep({ seasonNumber: 1 }),
-        ep({ seasonNumber: 2, monitored: true }),
-      ])
-    ).toEqual([1, 3]);
+    expect(flags([ep({ seasonNumber: 0 }), ep({ seasonNumber: 2 })])).toEqual([[2, false]]);
   });
 
   it("returns nothing for a series with no episodes", () => {
@@ -177,31 +174,76 @@ describe("planSeasons — when a season may be marked unmonitored", () => {
   });
 });
 
-describe("planSeasons — episodes the season change must not clear", () => {
-  it("lists the monitored unaired episodes Sonarr's cascade would unmonitor", () => {
+describe("planSeasons — turning a season back on", () => {
+  it("monitors a season this sweep re-monitored an episode in", () => {
+    expect(flags([reEp(), ep({ monitored: true })])).toEqual([[1, true]]);
+  });
+
+  it("does not monitor a season merely because an episode is monitored", () => {
+    // The user unmonitored this season by hand and nothing changed this run;
+    // overriding that every sweep is the behaviour being avoided.
+    expect(flags([ep({ monitored: true }), ep({ monitored: true })])).toEqual([]);
+  });
+
+  it("monitors a season where only some episodes came back", () => {
+    // The rest are still on streaming, and stay unmonitored.
+    expect(flags([reEp(), ep(), ep()])).toEqual([[1, true]]);
+  });
+
+  it("prefers off when a spent season also has an unaired episode re-monitored", () => {
+    // planItem re-monitors an unaired episode for want of availability data.
+    // Letting that turn the season back on would flip the flag every sweep,
+    // and the episode is grabbed on its own flag regardless.
+    expect(flags([ep(), ep(), reEp({ airDateUtc: UNAIRED })])).toEqual([[1, false]]);
+  });
+
+  it("judges each season on its own episodes, in season order", () => {
+    expect(
+      flags([
+        ep({ seasonNumber: 3 }),
+        reEp({ seasonNumber: 1 }),
+        ep({ seasonNumber: 2, monitored: true }),
+      ])
+    ).toEqual([
+      [1, true],
+      [3, false],
+    ]);
+  });
+});
+
+describe("planSeasons — episodes the season write must not flatten", () => {
+  it("lists the monitored unaired episodes an off-write would clear", () => {
     const future = ep({ monitored: true, airDateUtc: UNAIRED });
     expect(planSeasons([ep(), future], NOW)).toEqual([
-      { seasonNumber: 1, restore: [future.arrEpisodeId] },
+      { seasonNumber: 1, monitored: false, correct: [future.arrEpisodeId] },
     ]);
   });
 
-  it("restores nothing when every episode of the season has aired", () => {
-    expect(planSeasons([ep(), ep()], NOW)).toEqual([{ seasonNumber: 1, restore: [] }]);
-  });
-
-  it("does not restore an unaired episode that is already unmonitored", () => {
-    // It is unmonitored either way, so the cascade costs it nothing.
-    expect(planSeasons([ep(), ep({ monitored: false, airDateUtc: UNAIRED })], NOW)).toEqual([
-      { seasonNumber: 1, restore: [] },
+  it("lists the on-streaming episodes an on-write would monitor", () => {
+    // The whole point of the sweep: these must not come back monitored.
+    const streaming = ep();
+    expect(planSeasons([reEp(), streaming], NOW)).toEqual([
+      { seasonNumber: 1, monitored: true, correct: [streaming.arrEpisodeId] },
     ]);
   });
 
-  it("keeps each season's restores to that season", () => {
-    const s1 = ep({ seasonNumber: 1, monitored: true, airDateUtc: UNAIRED });
-    const s2 = ep({ seasonNumber: 2, monitored: true, airDateUtc: UNAIRED });
-    expect(planSeasons([ep({ seasonNumber: 1 }), s1, ep({ seasonNumber: 2 }), s2], NOW)).toEqual([
-      { seasonNumber: 1, restore: [s1.arrEpisodeId] },
-      { seasonNumber: 2, restore: [s2.arrEpisodeId] },
+  it("corrects nothing when every episode already agrees with the season", () => {
+    expect(planSeasons([ep(), ep()], NOW)).toEqual([
+      { seasonNumber: 1, monitored: false, correct: [] },
+    ]);
+    expect(planSeasons([reEp(), reEp()], NOW)).toEqual([
+      { seasonNumber: 1, monitored: true, correct: [] },
+    ]);
+  });
+
+  it("keeps each season's corrections to that season", () => {
+    const future = ep({ seasonNumber: 1, monitored: true, airDateUtc: UNAIRED });
+    const streaming = ep({ seasonNumber: 2 });
+    expect(
+      planSeasons([ep({ seasonNumber: 1 }), future, reEp({ seasonNumber: 2 }), streaming], NOW)
+    ).toEqual([
+      { seasonNumber: 1, monitored: false, correct: [future.arrEpisodeId] },
+      { seasonNumber: 2, monitored: true, correct: [streaming.arrEpisodeId] },
     ]);
   });
 });
