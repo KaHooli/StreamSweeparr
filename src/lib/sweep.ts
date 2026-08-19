@@ -27,7 +27,14 @@ import type { MediaType } from "@/generated/prisma/client";
 import { prisma, getSettings } from "./db";
 import { SonarrClient, RadarrClient } from "./arr";
 import { runSync, type SyncTarget } from "./sync";
-import { startRun, RunContext, type LogLevel, type RunCounts } from "./jobs";
+import {
+  startRun,
+  RunAbortedError,
+  RunContext,
+  type CheckAbort,
+  type LogLevel,
+  type RunCounts,
+} from "./jobs";
 import { describeSchedule } from "./schedule";
 
 type Push = (level: LogLevel, msg: string) => void;
@@ -52,6 +59,11 @@ class ErrorCollector {
     try {
       return await fn();
     } catch (e) {
+      // An abort is not an item failure — it is the run being told to stop, so
+      // it has to travel straight through the collector. Recorded and swallowed
+      // like anything else, it would be logged as a broken title and the sweep
+      // would carry on to the next one, which is the opposite of what was asked.
+      if (e instanceof RunAbortedError) throw e;
       this.record(what, e);
       return undefined;
     }
@@ -167,6 +179,9 @@ async function sweepBody(
 ): Promise<void> {
   const settings = await getSettings();
   const push: Push = (level, msg) => ctx.push(level, msg);
+  // Handed to every phase so an admin's "Abort" lands between titles rather
+  // than only between whole connections.
+  const checkAbort: CheckAbort = () => ctx.checkAbort();
   const counts = ctx.counts;
   const mode = dryRun ? "DRY-RUN" : "LIVE";
 
@@ -189,10 +204,10 @@ async function sweepBody(
   // is running *because* something just changed for these titles, so a cached
   // answer is the wrong one to act on.
   push("info", "Syncing latest state from Sonarr/Radarr + Watchmode…");
-  const sync = await runSync(
-    push,
-    targets ? { targets: targets.map(toSyncTarget), force: true } : {}
-  );
+  const sync = await runSync(push, {
+    ...(targets ? { targets: targets.map(toSyncTarget), force: true } : {}),
+    checkAbort,
+  });
   push(
     "info",
     `Synced ${sync.movies} movies (${sync.onStreamingMovies} on streaming), ${sync.series} series (${sync.onStreamingSeries} on streaming).`
@@ -204,13 +219,14 @@ async function sweepBody(
   );
 
   for (const conn of connections) {
+    await checkAbort();
     const arrIds = scope?.get(conn.id);
     // A connection that falls over (unreachable instance, bad API key) must not
     // take the other connections down with it.
     await errors.attempt(`[${conn.name}] sweep`, () =>
       conn.type === "RADARR"
-        ? sweepRadarr(conn, settings, dryRun, counts, push, errors, arrIds)
-        : sweepSonarr(conn, settings, dryRun, counts, push, errors, arrIds)
+        ? sweepRadarr(conn, settings, dryRun, counts, push, errors, checkAbort, arrIds)
+        : sweepSonarr(conn, settings, dryRun, counts, push, errors, checkAbort, arrIds)
     );
   }
 
@@ -223,6 +239,7 @@ async function sweepBody(
         : "Triggering search for all monitored items…"
     );
     for (const conn of connections) {
+      await checkAbort();
       const arrIds = scope?.get(conn.id);
       await errors.attempt(`[${conn.name}] search`, () =>
         conn.type === "RADARR"
@@ -454,6 +471,7 @@ async function sweepRadarr(
   counts: RunCounts,
   push: Push,
   errors: ErrorCollector,
+  checkAbort: CheckAbort,
   arrIds?: number[]
 ) {
   const client = new RadarrClient(conn.baseUrl, conn.apiKey);
@@ -470,6 +488,7 @@ async function sweepRadarr(
   const missingFileId: string[] = [];
 
   for (const m of movies) {
+    await checkAbort();
     // Case 0: TMDB no longer knows this id, so we can never manage the title.
     // Remove it from Radarr (media files are kept) when enabled.
     if (m.tmdbMissing) {
@@ -548,10 +567,11 @@ async function sweepRadarr(
 
   if (dryRun) return;
 
-  await applyRadarrMonitoring(client, conn, toUnmonitor, false, errors);
-  await applyRadarrMonitoring(client, conn, toRemonitor, true, errors);
+  await applyRadarrMonitoring(client, conn, toUnmonitor, false, errors, checkAbort);
+  await applyRadarrMonitoring(client, conn, toRemonitor, true, errors, checkAbort);
 
   for (const batch of chunk(filesToDelete, BATCH)) {
+    await checkAbort();
     await errors.attempt(`[${conn.name}] delete ${batch.length} movie file(s)`, async () => {
       await client.deleteMovieFiles(batch.map((f) => f.fileId));
       await prisma.mediaItem.updateMany({
@@ -577,10 +597,15 @@ async function applyRadarrMonitoring(
   conn: { name: string },
   items: { rowId: number; arrId: number }[],
   monitored: boolean,
-  errors: ErrorCollector
+  errors: ErrorCollector,
+  checkAbort: CheckAbort
 ) {
   const verb = monitored ? "re-monitor" : "unmonitor";
   for (const batch of chunk(items, BATCH)) {
+    // Between batches, never inside one: a batch is a single Radarr call plus
+    // the snapshot write that records it, and stopping between those two would
+    // leave the database describing a library it no longer matches.
+    await checkAbort();
     await errors.attempt(`[${conn.name}] ${verb} ${batch.length} movie(s)`, async () => {
       await client.setMoviesMonitored(
         batch.map((m) => m.arrId),
@@ -601,6 +626,7 @@ async function sweepSonarr(
   counts: RunCounts,
   push: Push,
   errors: ErrorCollector,
+  checkAbort: CheckAbort,
   arrIds?: number[]
 ) {
   const client = new SonarrClient(conn.baseUrl, conn.apiKey);
@@ -651,6 +677,10 @@ async function sweepSonarr(
   const now = new Date();
 
   for (const s of series) {
+    // One series is one unit of work: it is planned, applied and has its season
+    // flags reconciled before the next one starts, so this is the point where
+    // stopping leaves nothing half-done.
+    await checkAbort();
     const toUnmonitor: number[] = [];
     const toRemonitor: number[] = [];
     const filesToDelete: PendingFileDelete[] = [];

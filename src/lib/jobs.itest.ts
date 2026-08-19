@@ -1,6 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll } from "vitest";
 import { prisma } from "@/lib/db";
-import { startRun, RunLockError, RunContext, MAX_LOG_LINES } from "@/lib/jobs";
+import {
+  startRun,
+  requestRunAbort,
+  RunAbortedError,
+  RunLockError,
+  RunContext,
+  MAX_LOG_LINES,
+} from "@/lib/jobs";
 import { resetDatabase, waitFor } from "@/test/dbHelpers";
 
 /**
@@ -296,5 +303,128 @@ describe("RunContext logging", () => {
     const stored = await prisma.runLog.findUniqueOrThrow({ where: { id: run.id } });
     const lines = stored.log as { msg: string }[];
     expect(lines.map((l) => l.msg)).toEqual(["one", "two"]);
+  });
+});
+
+/**
+ * Aborting is co-operative and travels through the database, so all of it — the
+ * request, the run noticing, the terminal status — only exists against real
+ * Postgres. What matters is that the run stops, says it was stopped rather than
+ * that it broke, keeps what it had already done, and hands the lock back.
+ */
+describe("aborting a run", () => {
+  /**
+   * A body that stops as soon as it is told to. `checkAbort` takes the current
+   * time so the poll throttle can be stepped past deliberately instead of the
+   * test sleeping through it.
+   */
+  const abortableBody = (onStarted: () => void) => async (ctx: RunContext) => {
+    ctx.push("info", "working");
+    ctx.counts.unmonitoredMovies = 4;
+    onStarted();
+    let clock = Date.now();
+    for (;;) {
+      await ctx.checkAbort((clock += 5_000));
+      await new Promise((r) => setTimeout(r, 20));
+    }
+  };
+
+  it("stops the run, records ABORTED, and keeps what it had already counted", async () => {
+    let started!: () => void;
+    const running = new Promise<void>((r) => (started = r));
+    const id = await startRun("SWEEP", false, abortableBody(started));
+    await running;
+
+    expect(await requestRunAbort(id)).toEqual({ status: "requested" });
+
+    await waitFor(async () => {
+      const r = await prisma.runLog.findUnique({ where: { id } });
+      return r?.status === "ABORTED";
+    });
+    const run = await prisma.runLog.findUniqueOrThrow({ where: { id } });
+    // Not FAILED: nothing went wrong, and the Runs page says so in amber.
+    expect(run.status).toBe("ABORTED");
+    expect(run.error).toMatch(/stopped from the runs page/i);
+    expect(run.finishedAt).not.toBeNull();
+    expect(run.abortRequestedAt).not.toBeNull();
+    // The work it had already decided on is still reported.
+    expect(run.unmonitoredMovies).toBe(4);
+    expect((run.log as { msg: string }[]).some((l) => /aborted/i.test(l.msg))).toBe(true);
+
+    // And the lock is free, so the next sweep can start immediately.
+    await expect(startRun("SYNC", true, async () => {})).resolves.toBeTypeOf("number");
+  });
+
+  it("throttles the abort poll so a per-title checkpoint is not a query per title", async () => {
+    const run = await prisma.runLog.create({
+      data: { kind: "SWEEP", status: "RUNNING", dryRun: true, log: [] },
+    });
+    const ctx = new RunContext(run.id);
+
+    const t0 = Date.now();
+    await ctx.checkAbort(t0); // first checkpoint: polls, finds nothing
+    await prisma.runLog.update({ where: { id: run.id }, data: { abortRequestedAt: new Date() } });
+
+    // Inside the window the request is not visible yet — that is the trade the
+    // throttle makes, and it is why the window is seconds rather than minutes.
+    await expect(ctx.checkAbort(t0 + 100)).resolves.toBeUndefined();
+    await expect(ctx.checkAbort(t0 + 5_000)).rejects.toBeInstanceOf(RunAbortedError);
+    // Latched: once seen, every later checkpoint throws without another query.
+    await expect(ctx.checkAbort(t0 + 5_001)).rejects.toBeInstanceOf(RunAbortedError);
+  });
+
+  it("closes out a run whose process is gone rather than leaving the button inert", async () => {
+    // Nothing is left to read the request, so recording one would hold the run
+    // lock until some later startRun reaped it.
+    const dead = await prisma.runLog.create({
+      data: {
+        kind: "SWEEP",
+        status: "RUNNING",
+        dryRun: false,
+        heartbeatAt: new Date(Date.now() - 10 * 60 * 1000),
+        log: [],
+      },
+    });
+
+    expect(await requestRunAbort(dead.id)).toEqual({ status: "stopped" });
+
+    const run = await prisma.runLog.findUniqueOrThrow({ where: { id: dead.id } });
+    expect(run.status).toBe("ABORTED");
+    expect(run.error).toMatch(/stopped responding/i);
+    expect(run.finishedAt).not.toBeNull();
+    await expect(startRun("SWEEP", true, async () => {})).resolves.toBeTypeOf("number");
+  });
+
+  it("treats a second request as the first one still being acted on", async () => {
+    let started!: () => void;
+    const running = new Promise<void>((r) => (started = r));
+    const id = await startRun("SWEEP", true, abortableBody(started));
+    await running;
+
+    expect(await requestRunAbort(id)).toEqual({ status: "requested" });
+    const first = await prisma.runLog.findUniqueOrThrow({ where: { id } });
+
+    expect(await requestRunAbort(id)).toEqual({ status: "already_requested" });
+    // A second click must not move the timestamp on a request already in flight.
+    const second = await prisma.runLog.findUniqueOrThrow({ where: { id } });
+    expect(second.abortRequestedAt).toEqual(first.abortRequestedAt);
+
+    await waitFor(async () => {
+      const r = await prisma.runLog.findUnique({ where: { id } });
+      return r?.status === "ABORTED";
+    });
+  });
+
+  it("says there is nothing to stop for a finished or unknown run", async () => {
+    const done = await prisma.runLog.create({
+      data: { kind: "SYNC", status: "SUCCESS", dryRun: true, finishedAt: new Date(), log: [] },
+    });
+    expect(await requestRunAbort(done.id)).toEqual({ status: "not_running" });
+    expect(await requestRunAbort(done.id + 10_000)).toEqual({ status: "not_found" });
+
+    // A finished run is left exactly as it was.
+    const after = await prisma.runLog.findUniqueOrThrow({ where: { id: done.id } });
+    expect(after.status).toBe("SUCCESS");
+    expect(after.abortRequestedAt).toBeNull();
   });
 });

@@ -359,6 +359,27 @@ automatically.
 The **Runs** page keeps the full step-by-step log and the counts for every run
 you've ever done, dry-run or live.
 
+### Stopping a run
+
+A run that is still going shows an **Abort run** button on the **Runs** page
+(administrators only). It asks you to confirm first, then:
+
+- The run stops **once it finishes the title it is working on**, so Sonarr and
+  Radarr are never left having been told half of something. On a big library
+  that is usually immediate, but a slow *arr call can hold it a few seconds.
+- **Nothing is undone.** Whatever the run had already applied — unmonitored
+  titles, deleted files, removed movies — stays applied. A dry-run has changed
+  nothing to begin with.
+- The run is recorded as **ABORTED** rather than failed, in amber, with the log
+  and counts it had reached. It is not an error, and it is not a clean sweep.
+- The next sweep simply picks up from wherever it stopped; there is nothing to
+  clean up.
+
+Abort also unsticks a run that has clearly died — one whose progress stopped
+some minutes ago — by closing it out then and there, which frees the lock the
+next sweep needs. (The app does that on its own the next time you start a run;
+the button just saves you the wait.)
+
 Neither button is the only way in. **[Scheduled sweeps](#-scheduled-sweeps)** run
 one every so often, and **[sweep on add](#-sweeping-new-titles-as-theyre-added)**
 lets Sonarr and Radarr trigger one for a single new title. Both produce the same
@@ -622,6 +643,9 @@ Each one shows up on the **Runs** page like any other, opening with
 - **Multiple replicas are safe** — each queued title is claimed by exactly one.
   `SWEEP_SCHEDULER=off` stops an instance running the queue (it still accepts
   webhooks), so leave at least one instance without it.
+- **[Aborting](#stopping-a-run) one of these sweeps means it,** so the titles it
+  covered are dropped from the queue rather than swept again a minute later.
+  The next full sweep still covers them.
 - **Settings → Info** reports whether it&rsquo;s on and how many titles are
   queued. A number that never falls means nothing is draining the queue.
 
@@ -739,6 +763,7 @@ The tab is **administrators only**, and so is the endpoint behind it.
 | **Sonarr's webhook Test fails with 409** | You have several Sonarrs and the URL doesn't say which | Use the per-connection URL from the card; it ends with `&connection=<id>` |
 | **Titles are queued but never swept** | Nothing is draining the queue — usually `SWEEP_SCHEDULER=off` on the only instance | Leave at least one instance without it. The queue depth is on **Settings → Info** |
 | **A newly added show is swept but nothing happens** | Sonarr hadn't fetched its episode list yet — the run log says so | Raise `WEBHOOK_SWEEP_DELAY_SECONDS`; the next full sweep covers it meanwhile |
+| **A sweep is doing something I didn't expect, or nothing at all** | Wrong options, or a run left over from a container that went away | **Abort run** on the **Runs** page — [what it does and doesn't undo](#stopping-a-run) |
 
 Still stuck? Turn up the detail with `LOG_LEVEL=debug`, check the run log on the
 **Runs** page — it records every decision the sweep made and why — and include

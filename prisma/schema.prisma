@@ -401,6 +401,10 @@ enum RunStatus {
   RUNNING
   SUCCESS
   FAILED
+  // An admin stopped the run part-way from the Runs page. Deliberately not
+  // FAILED: nothing went wrong, so it should not read as a broken instance —
+  // but it is not SUCCESS either, because the library was only half swept.
+  ABORTED
 }
 
 enum RunKind {
@@ -420,6 +424,11 @@ model RunLog {
   heartbeatAt        DateTime  @default(now())
   status             RunStatus @default(RUNNING)
   dryRun             Boolean   @default(true)
+  // Set when an admin asks a RUNNING run to stop. It is a request rather than a
+  // status because only the process executing the run can unwind it safely, and
+  // that may not be the replica that took the click — so the request travels
+  // through the database and the run notices it between units of work.
+  abortRequestedAt   DateTime?
 
   unmonitoredMovies  Int       @default(0)
   remonitoredMovies  Int       @default(0)

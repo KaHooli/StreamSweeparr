@@ -108,7 +108,7 @@ vi.mock("./sweep", () => ({
 }));
 
 import { drainSweepQueue, settleMs, DEFAULT_SETTLE_MS } from "./sweepQueue";
-import { RunLockError } from "./jobs";
+import { RunAbortedError, RunLockError } from "./jobs";
 
 const now = new Date("2026-08-10T12:00:00.000Z");
 const MINUTE = 60_000;
@@ -203,6 +203,16 @@ describe("drainSweepQueue", () => {
     await onFinished!({ ok: false, error: new Error("Radarr unreachable") });
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ claimedAt: null, claimedBy: null, attempts: 1 });
+  });
+
+  it("drops the titles when an admin stops their sweep, rather than retrying it", async () => {
+    rows = [row()];
+    await drainSweepQueue(now);
+    const onFinished = runTargetedSweep.mock.calls[0][1]?.onFinished;
+    await onFinished!({ ok: false, error: new RunAbortedError() });
+    // Re-queued, the next tick — seconds away — would start the very sweep that
+    // was just stopped. The next full sweep covers these titles instead.
+    expect(rows).toHaveLength(0);
   });
 
   it("gives up on a title that keeps failing", async () => {

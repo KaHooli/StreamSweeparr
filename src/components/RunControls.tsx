@@ -8,7 +8,7 @@ import { fetcher, postJson } from "@/lib/fetcher";
 interface RunProgress {
   id: number;
   kind: "SWEEP" | "SYNC";
-  status: "RUNNING" | "SUCCESS" | "FAILED";
+  status: "RUNNING" | "SUCCESS" | "FAILED" | "ABORTED";
   error: string | null;
   log: { level: string; msg: string }[] | null;
   unmonitoredMovies: number;
@@ -33,7 +33,7 @@ export function RunControls({ applyChanges }: { applyChanges: boolean }) {
   const [busy, setBusy] = useState<null | "sync" | "sweep">(null);
   const [runId, setRunId] = useState<number | null>(null);
   const [progress, setProgress] = useState<RunProgress | null>(null);
-  const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+  const [msg, setMsg] = useState<{ kind: "ok" | "warn" | "err"; text: string } | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Poll the active run for live progress.
@@ -50,9 +50,14 @@ export function RunControls({ applyChanges }: { applyChanges: boolean }) {
         if (run.status !== "RUNNING") {
           stop();
           setBusy(null);
+          const what = run.kind === "SWEEP" ? "Sweep" : "Sync";
           setMsg(
             run.status === "SUCCESS"
-              ? { kind: "ok", text: `${run.kind === "SWEEP" ? "Sweep" : "Sync"} #${run.id} finished.` }
+              ? { kind: "ok", text: `${what} #${run.id} finished.` }
+              : run.status === "ABORTED"
+              ? // Stopped from the Runs page, possibly by someone else — say so
+                // rather than reporting it as a failure of the run itself.
+                { kind: "warn", text: `${what} #${run.id} was stopped. ${run.error ?? ""}`.trim() }
               : { kind: "err", text: run.error || "Run failed." }
           );
           router.refresh();
@@ -113,7 +118,7 @@ export function RunControls({ applyChanges }: { applyChanges: boolean }) {
         )
       )}
 
-      {msg && <div className={`banner ${msg.kind === "ok" ? "ok" : "err"}`}>{msg.text}</div>}
+      {msg && <div className={`banner ${msg.kind}`}>{msg.text}</div>}
 
       {busy && progress?.status === "RUNNING" && (
         <div className="muted" style={{ marginBottom: 8 }}>
