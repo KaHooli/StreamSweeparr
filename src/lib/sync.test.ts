@@ -3,6 +3,7 @@ import {
   providerLinkMap,
   applyProviderLinks,
   providerLinksAreStale,
+  parseAirDate,
   type StreamingInfoEntry,
 } from "./sync";
 
@@ -95,5 +96,23 @@ describe("applyProviderLinks", () => {
 
   it("is a no-op for an empty provider list", () => {
     expect(applyProviderLinks([], new Map())).toBe(true);
+  });
+});
+
+describe("parseAirDate", () => {
+  it("reads an ISO timestamp from Sonarr", () => {
+    expect(parseAirDate("2026-03-04T01:00:00Z")).toEqual(new Date("2026-03-04T01:00:00Z"));
+  });
+
+  it("returns null for an episode with no announced date", () => {
+    expect(parseAirDate(undefined)).toBeNull();
+    expect(parseAirDate("")).toBeNull();
+  });
+
+  it("returns null rather than an Invalid Date", () => {
+    // The value goes straight into a timestamp column via createMany, so one
+    // unparseable date would otherwise cost the whole series' episode snapshot.
+    expect(parseAirDate("TBA")).toBeNull();
+    expect(parseAirDate("0000-00-00")).toBeNull();
   });
 });

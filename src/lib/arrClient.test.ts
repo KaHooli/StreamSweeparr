@@ -122,6 +122,25 @@ describe("SonarrClient", () => {
     await client().searchEpisodes([]);
     expect(calls).toHaveLength(0);
   });
+
+  it("writes season monitoring by putting the whole series resource back", async () => {
+    // Sonarr keeps `seasons[]` on the series, and a PUT that dropped any other
+    // field would quietly reset it — so the resource goes back as it came.
+    const series = {
+      id: 12,
+      title: "Severance",
+      monitored: true,
+      seasons: [
+        { seasonNumber: 1, monitored: false },
+        { seasonNumber: 2, monitored: true },
+      ],
+    };
+    await client().updateSeries(series);
+    const c = only();
+    expect(c.init.method).toBe("PUT");
+    expect(c.url).toBe("http://sonarr:8989/api/v3/series/12");
+    expect(body(c)).toEqual(series);
+  });
 });
 
 describe("RadarrClient", () => {

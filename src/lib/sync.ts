@@ -166,6 +166,20 @@ const PLAN_RECHECK_MS = 7 * 24 * 60 * 60 * 1000;
  *  JSON-safe objects, so cast at the boundary rather than polluting the types. */
 const asJson = (v: unknown) => v as Prisma.InputJsonValue;
 
+/**
+ * Sonarr's `airDateUtc` as a Date, or null when there isn't a usable one.
+ *
+ * Guarding the parse matters because the value lands in a `TIMESTAMP` column:
+ * `new Date("")` and `new Date("TBA")` both yield an Invalid Date, which Prisma
+ * rejects at write time — and the write is a `createMany` for the whole series,
+ * so one unparseable date would cost the entire episode snapshot.
+ */
+export function parseAirDate(raw: string | undefined): Date | null {
+  if (!raw) return null;
+  const d = new Date(raw);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
 export interface StreamingInfoEntry {
   sourceId: number;
   name: string;
@@ -1116,6 +1130,10 @@ async function syncSonarr(
         seasonNumber: ep.seasonNumber,
         episodeNumber: ep.episodeNumber,
         title: ep.title ?? null,
+        // Sonarr omits the date for an unannounced episode, and has been known
+        // to send one it cannot parse; either way "unknown" is the honest
+        // answer, and the sweep treats it as not yet aired.
+        airDateUtc: parseAirDate(ep.airDateUtc),
         monitored: ep.monitored,
         hasFile: ep.hasFile,
         episodeFileId: ep.episodeFileId ?? null,

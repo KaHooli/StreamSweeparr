@@ -91,12 +91,18 @@ export function hasSkipTag(
 
 /* ------------------------------- Sonarr -------------------------------- */
 
+export interface SonarrSeason {
+  seasonNumber: number;
+  monitored: boolean;
+}
+
 export interface SonarrSeries {
   id: number;
   title: string;
   tags?: number[];
   year?: number;
   monitored: boolean;
+  seasons?: SonarrSeason[];
   tvdbId?: number;
   imdbId?: string;
   tmdbId?: number;
@@ -110,6 +116,8 @@ export interface SonarrEpisode {
   seasonNumber: number;
   episodeNumber: number;
   title?: string;
+  /** ISO 8601, absent for an episode with no announced date. */
+  airDateUtc?: string;
   monitored: boolean;
   hasFile: boolean;
   episodeFileId?: number;
@@ -141,6 +149,28 @@ export class SonarrClient {
       this.apiKey,
       `/api/v3/episode?seriesId=${seriesId}&includeEpisodeFile=false`
     );
+  }
+
+  /**
+   * PUT a full series resource back — how season-level monitoring is changed,
+   * since Sonarr exposes `seasons[].monitored` only on the series itself.
+   *
+   * **This cascades.** For every season whose `monitored` differs from what
+   * Sonarr has stored, `SeriesService.UpdateSeries` calls
+   * `SetEpisodeMonitoredBySeason`, rewriting *every* episode in that season to
+   * match — including episodes the caller never mentioned. Turning a season off
+   * therefore unmonitors the whole season, and turning one on re-monitors the
+   * whole season, whatever the sweep decided per episode.
+   *
+   * So: read the series, change only the seasons you mean to change, and put
+   * the per-episode state back afterwards. `reconcileSeasons` in lib/sweep.ts
+   * is the one caller and does exactly that.
+   */
+  updateSeries(series: SonarrSeries) {
+    return arrFetch<SonarrSeries>(this.baseUrl, this.apiKey, `/api/v3/series/${series.id}`, {
+      method: "PUT",
+      body: JSON.stringify(series),
+    });
   }
 
   /** Bulk toggle episode monitoring. */
