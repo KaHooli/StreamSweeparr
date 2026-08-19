@@ -16,6 +16,33 @@ on:
       - "**"
   pull_request:
 
+# One CI run per branch, not two.
+#
+# `push` fires for every branch and `pull_request` fires again for any branch
+# with a PR open, so a push to a PR branch started two identical runs of the
+# whole matrix on the same commit — twice the runner minutes, and two check runs
+# per required name for branch protection to reconcile. Seen in practice: one
+# member of a pair sat queued for over half an hour without ever being picked up
+# while its twin passed in three minutes, which is exactly the shape `verify`'s
+# `timeout-minutes` comment warns about — a required check stuck pending blocks
+# the PR with nothing to read.
+#
+# The group key has to collapse both events onto the same branch, and neither
+# context alone does that: a push carries `refs/heads/<branch>` in `ref` and no
+# `head_ref` at all, while a pull_request carries `refs/pull/<n>/merge` in `ref`
+# and the branch name in `head_ref`. `head_ref || ref_name` is the pair that
+# agrees on one string, because `ref_name` is the bare branch name on a push.
+#
+# Cancelling is safe here in a way it deliberately is not in
+# docker-publish.yml: this workflow only reports, it never pushes an image, so
+# an interrupted run leaves nothing half-written to clean up. `main` is still
+# exempt — the default branch keeps a complete CI verdict for every commit
+# rather than having a merge cancel the run for the one before it. Runs there
+# queue behind each other instead, the same trade the publish workflow makes.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 jobs:
   verify:
     runs-on: ubuntu-latest

@@ -464,6 +464,15 @@ are both required**:
 `verify` passing does **not** imply the image builds, which is why `image` is
 separately required.
 
+CI is serialised per branch by a `concurrency` group keyed on
+`github.head_ref || github.ref_name` — the one expression both event types
+agree on, since a push has no `head_ref` and a `pull_request`'s `ref_name` is
+`<n>/merge`. Without it the two triggers each started a full run of the same
+commit, and a duplicate stuck queued holds a required check pending with
+nothing to read. `cancel-in-progress` is on everywhere **except `main`**, which
+keeps a complete verdict per commit; unlike `docker-publish.yml`, nothing here
+is unsafe to interrupt.
+
 `.nvmrc` is the single source of truth for the Node major. `npm run check:node`
 asserts that the Dockerfile's `FROM node:` lines, `engines.node`, and CI's
 `node-version-file` all agree — CI and the shipped image once drifted two majors
