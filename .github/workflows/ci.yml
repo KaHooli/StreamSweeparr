@@ -208,12 +208,26 @@ jobs:
   # longer reports and every PR would block. This job is what keeps that name,
   # whatever the matrix above grows to.
   #
-  # `if: always()` plus an explicit result test, rather than a bare `needs:`,
-  # because a job skipped by a failed dependency reports as *skipped* — and a
-  # skipped required check can satisfy the rule it was meant to enforce.
+  # An explicit result test plus a condition that survives a failed dependency,
+  # rather than a bare `needs:`, because a job skipped by a failed dependency
+  # reports as *skipped* — and a skipped required check can satisfy the rule it
+  # was meant to enforce.
+  #
+  # That condition has to be `!cancelled()` rather than `always()`, and the
+  # difference only became visible once the concurrency group above started
+  # cancelling superseded runs as a matter of course. `always()` is true *even
+  # when the run has been cancelled*, so this job went on to execute inside a
+  # cancelled run, read `image-build` as `cancelled`, and exited 1 — reporting
+  # the required `image` check as a hard **failure** on a run that had simply
+  # been replaced by a newer one. `!cancelled()` overrides the failed-dependency
+  # skip exactly as `always()` did, while leaving a cancelled run to be
+  # cancelled and the verdict to the run that superseded it.
+  #
+  # The `${{ }}` is not decorative: `if: !cancelled()` is invalid YAML, since a
+  # leading `!` opens a tag.
   image:
     needs: image-build
-    if: always()
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

@@ -457,9 +457,12 @@ are both required**:
   It exists purely to keep one stable required-check name: making `image` a
   matrix directly would rename the checks to `image (linux/amd64)` and
   `image (linux/arm64)`, leaving branch protection waiting on an `image` that
-  never reports again. It uses `if: always()` and an explicit result test,
-  because a job skipped by a failed dependency reports as *skipped*, and a
-  skipped required check can satisfy the rule it was meant to enforce.
+  never reports again. It uses `if: ${{ !cancelled() }}` and an explicit result
+  test, because a job skipped by a failed dependency reports as *skipped*, and a
+  skipped required check can satisfy the rule it was meant to enforce. Not
+  `always()`, which is true even inside a **cancelled** run — the aggregator
+  then read `image-build` as `cancelled` and failed the required check on a run
+  the concurrency group had merely superseded.
 
 `verify` passing does **not** imply the image builds, which is why `image` is
 separately required.
