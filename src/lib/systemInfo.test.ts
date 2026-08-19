@@ -10,7 +10,9 @@ import {
 } from "./systemInfo";
 
 describe("describeDatabaseUrl", () => {
-  it("keeps host, database, schema and pool settings", () => {
+  it("keeps host, database and schema", () => {
+    // Pool sizing is deliberately not reported from here — see dbConfig.test.ts,
+    // which pins the mapping that actually governs it.
     const d = describeDatabaseUrl(
       "postgresql://sweep:hunter2@db.internal:5433/streamsweeparr?schema=public&connection_limit=10&pool_timeout=20"
     );
@@ -18,8 +20,6 @@ describe("describeDatabaseUrl", () => {
       host: "db.internal:5433",
       database: "streamsweeparr",
       schema: "public",
-      connectionLimit: "10",
-      poolTimeout: "20",
     });
   });
 
@@ -36,8 +36,6 @@ describe("describeDatabaseUrl", () => {
       host: null,
       database: null,
       schema: null,
-      connectionLimit: null,
-      poolTimeout: null,
     };
     expect(describeDatabaseUrl(undefined)).toEqual(empty);
     expect(describeDatabaseUrl("")).toEqual(empty);
@@ -126,8 +124,10 @@ const info: SystemInfo = {
     host: "db.internal:5432",
     database: "streamsweeparr",
     schema: "public",
-    connectionLimit: null,
-    poolTimeout: null,
+    poolMax: 9,
+    poolTimeoutMs: 10_000,
+    poolMaxFromUrl: false,
+    poolTimeoutFromUrl: false,
     sizeBytes: 84_000_000,
     connectionsUsed: 4,
     connectionsMax: 100,

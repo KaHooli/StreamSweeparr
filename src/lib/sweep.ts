@@ -23,7 +23,7 @@
  * without mutating Sonarr/Radarr.
  */
 
-import type { MediaType } from "@prisma/client";
+import type { MediaType } from "@/generated/prisma/client";
 import { prisma, getSettings } from "./db";
 import { SonarrClient, RadarrClient } from "./arr";
 import { runSync, type SyncTarget } from "./sync";

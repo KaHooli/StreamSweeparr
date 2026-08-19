@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterAll } from "vitest";
-import type { Prisma } from "@prisma/client";
+import type { Prisma } from "@/generated/prisma/client";
 import { prisma } from "@/lib/db";
 import { lookupWatchmodeId } from "@/lib/titlemap";
 import { resetDatabase } from "@/test/dbHelpers";

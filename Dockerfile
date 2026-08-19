@@ -22,18 +22,33 @@ WORKDIR /app
 RUN apk add --no-cache libc6-compat openssl
 COPY package.json package-lock.json* ./
 COPY prisma ./prisma
+# `prisma.config.ts` is what the Prisma 7 CLI reads instead of the datasource
+# block that used to live in the schema. The postinstall runs `prisma generate`,
+# so it has to be here for that to resolve the same way it does in the builder.
+# Generating needs no DATABASE_URL — see the note in that file.
+COPY prisma.config.ts ./prisma.config.ts
 # Reproducible install from the lockfile.
 RUN npm ci
 
 # The runtime tree. Built in the same Alpine base as the runner so the Prisma
-# engine that `prisma generate` (the postinstall) selects is the musl one the
-# runner can actually execute — generating against a different libc produces a
-# client that fails at startup rather than at build.
+# binary that `@prisma/engines`' postinstall downloads is the musl one the
+# runner can actually execute.
+#
+# Prisma 7 narrowed what that binary is, but did not remove it. The Rust *query*
+# engine is gone — queries now go through the TypeScript query compiler and the
+# pg driver adapter, so serving a request touches no native code. The *schema*
+# engine is still a platform-specific executable, and `docker-entrypoint.sh`
+# runs `prisma migrate deploy` on every start, so a tree assembled against the
+# wrong libc still fails — now at the first boot rather than at the first query.
+# That is why this stage keeps its own Alpine base and must keep running install
+# scripts: `npm ci --omit=dev --ignore-scripts` would produce a tree that starts
+# and then cannot migrate.
 FROM node:24-alpine AS prod-deps
 WORKDIR /app
 RUN apk add --no-cache libc6-compat openssl
 COPY package.json package-lock.json* ./
 COPY prisma ./prisma
+COPY prisma.config.ts ./prisma.config.ts
 RUN npm ci --omit=dev
 
 FROM node:24-alpine AS builder
@@ -85,6 +100,10 @@ COPY --from=builder --chown=node:node /app/.next ./.next
 COPY --from=prod-deps --chown=node:node /app/node_modules ./node_modules
 COPY --from=builder --chown=node:node /app/package.json ./package.json
 COPY --from=builder --chown=node:node /app/prisma ./prisma
+# Read by `prisma migrate deploy` in the entrypoint. Since Prisma 7 the
+# connection URL lives here rather than in schema.prisma, so without it the
+# migration step has no datasource and the container never gets past boot.
+COPY --from=builder --chown=node:node /app/prisma.config.ts ./prisma.config.ts
 COPY --from=builder --chown=node:node /app/docker-entrypoint.sh ./docker-entrypoint.sh
 
 RUN chmod +x ./docker-entrypoint.sh

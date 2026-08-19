@@ -1,17 +1,60 @@
-import { PrismaClient } from "@prisma/client";
+import os from "node:os";
+import { PrismaPg } from "@prisma/adapter-pg";
+import { PrismaClient } from "@/generated/prisma/client";
 import { decryptSettingsRow, decryptConnection } from "./secrets";
 import { watchmodeKeys } from "./watchmodeKeys";
+import { resolveAdapterConfig, type AdapterConfig } from "./dbConfig";
 
-// Reuse the Prisma client across hot reloads / lambda invocations.
+/**
+ * The configuration `pg` was actually built with.
+ *
+ * Prisma 7 has no pool of its own — the driver adapter owns it — so this is the
+ * only place that knows the real numbers. Settings → Info reports them from
+ * here rather than re-reading `DATABASE_URL`, because the URL only says what
+ * was *asked for*: it is silent about the defaults that apply when the
+ * parameters are absent, which is the case on almost every install.
+ */
+export const adapterConfig: AdapterConfig = resolveAdapterConfig(
+  process.env.DATABASE_URL,
+  os.cpus().length,
+);
+
+// Reuse the Prisma client across hot reloads / lambda invocations. This matters
+// more under Prisma 7 than it did before: the client now owns a `pg` pool, so a
+// client leaked per hot reload leaks sockets to Postgres rather than just heap.
 const globalForPrisma = globalThis as unknown as {
   prisma: PrismaClient | undefined;
 };
 
-export const prisma =
-  globalForPrisma.prisma ??
-  new PrismaClient({
+/**
+ * Build the client on the pg driver adapter.
+ *
+ * Prisma 7 removed the Rust query engine, so an adapter is mandatory and the
+ * connection string is read here rather than from `schema.prisma`. Passing a
+ * config object rather than the bare URL string is what lets the pool settings
+ * above take effect — handed a string, `PrismaPg` builds a pool on `pg`'s own
+ * defaults, including waiting forever for a connection that never frees up.
+ */
+function createPrismaClient(): PrismaClient {
+  const adapter = new PrismaPg(
+    {
+      connectionString: process.env.DATABASE_URL,
+      max: adapterConfig.max,
+      connectionTimeoutMillis: adapterConfig.connectionTimeoutMillis,
+      idleTimeoutMillis: adapterConfig.idleTimeoutMillis,
+    },
+    // `schema` is the adapter's option, not the pool's: `pg` has no idea what
+    // the `?schema=` in the URL means and would leave queries on whatever the
+    // connection's search_path happens to be.
+    { schema: adapterConfig.schema },
+  );
+  return new PrismaClient({
+    adapter,
     log: process.env.NODE_ENV === "development" ? ["warn", "error"] : ["error"],
   });
+}
+
+export const prisma = globalForPrisma.prisma ?? createPrismaClient();
 
 if (process.env.NODE_ENV !== "production") globalForPrisma.prisma = prisma;
 

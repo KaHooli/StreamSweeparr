@@ -38,9 +38,17 @@ export interface DatabaseInfo {
   host: string | null;
   database: string | null;
   schema: string | null;
-  /** Prisma pool sizing from the connection string, when set explicitly. */
-  connectionLimit: string | null;
-  poolTimeout: string | null;
+  /**
+   * The pool the pg driver adapter was built with. Since Prisma 7 the adapter
+   * owns the pool, so these are the numbers actually in force — resolved from
+   * `connection_limit` / `pool_timeout` when the URL sets them and from the
+   * defaults in `lib/dbConfig.ts` when it does not.
+   */
+  poolMax: number;
+  poolTimeoutMs: number;
+  /** Whether each was set in DATABASE_URL rather than defaulted. */
+  poolMaxFromUrl: boolean;
+  poolTimeoutFromUrl: boolean;
   sizeBytes: number | null;
   connectionsUsed: number | null;
   connectionsMax: number | null;
@@ -132,23 +140,26 @@ export interface SystemInfo {
 }
 
 /**
- * Host, port, database and pool settings from a connection string — and
- * nothing else. Returns nulls rather than throwing on a malformed value, since
- * "the URL is unparseable" is itself a useful thing for this page to show.
+ * Host, port, database and schema from a connection string — and nothing else.
+ * Returns nulls rather than throwing on a malformed value, since "the URL is
+ * unparseable" is itself a useful thing for this page to show.
+ *
+ * Pool sizing deliberately does not come from here any more. `connection_limit`
+ * and `pool_timeout` are still read from the URL, but by `lib/dbConfig.ts`,
+ * which is also what decides the defaults when they are absent — and the
+ * default is what almost every install is running. Reporting the raw parameter
+ * meant showing "default / default" for the common case and saying nothing
+ * about what "default" was.
  */
 export function describeDatabaseUrl(raw: string | undefined | null): {
   host: string | null;
   database: string | null;
   schema: string | null;
-  connectionLimit: string | null;
-  poolTimeout: string | null;
 } {
   const empty = {
     host: null,
     database: null,
     schema: null,
-    connectionLimit: null,
-    poolTimeout: null,
   };
   if (!raw) return empty;
   let url: URL;
@@ -163,8 +174,6 @@ export function describeDatabaseUrl(raw: string | undefined | null): {
     host: url.host || null,
     database: url.pathname.replace(/^\//, "") || null,
     schema: url.searchParams.get("schema"),
-    connectionLimit: url.searchParams.get("connection_limit"),
-    poolTimeout: url.searchParams.get("pool_timeout"),
   };
 }
 
@@ -206,6 +215,32 @@ export function formatBytes(bytes: number | null | undefined): string {
     unit++;
   }
   return `${unit === 0 ? Math.round(value) : value.toFixed(value < 10 ? 1 : 0)} ${units[unit]}`;
+}
+
+/**
+ * The pool as one line: "10 connections, 20s wait (from DATABASE_URL)".
+ *
+ * Whether a number was chosen or defaulted is the useful half for a bug
+ * report — "9 connections" reads like a deliberate setting until you know it is
+ * just `cpus * 2 + 1`. Shared with the Info card so the page and the
+ * pasteable diagnostics never disagree.
+ */
+export function formatPool(db: {
+  poolMax: number;
+  poolTimeoutMs: number;
+  poolMaxFromUrl: boolean;
+  poolTimeoutFromUrl: boolean;
+}): string {
+  // 0 means "wait indefinitely" to both Prisma and pg, and is worth spelling
+  // out — it is the setting most likely to be behind a hung page.
+  const wait = db.poolTimeoutMs === 0 ? "no wait limit" : `${db.poolTimeoutMs / 1000}s wait`;
+  const source =
+    db.poolMaxFromUrl && db.poolTimeoutFromUrl
+      ? "from DATABASE_URL"
+      : db.poolMaxFromUrl || db.poolTimeoutFromUrl
+        ? "partly from DATABASE_URL"
+        : "defaults";
+  return `${db.poolMax} connections, ${wait} (${source})`;
 }
 
 /** ISO timestamp -> local string, or an em dash for "never". */
@@ -272,7 +307,7 @@ export function buildDiagnosticsText(info: SystemInfo): string {
     "Connections",
     db.connectionsUsed === null ? null : `${db.connectionsUsed} of ${db.connectionsMax ?? "?"}`
   );
-  row("Pool (connection_limit / pool_timeout)", `${db.connectionLimit ?? "default"} / ${db.poolTimeout ?? "default"}`);
+  row("Pool (max / wait)", formatPool(db));
   row("Migrations applied", db.migrationsApplied);
   row("Latest migration", db.latestMigration && `${db.latestMigration} (${db.latestMigrationAt ?? "?"})`);
   if (db.error) row("Error", db.error);
