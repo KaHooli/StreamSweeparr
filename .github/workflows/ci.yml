@@ -10,28 +10,47 @@ name: CI
 #
 # `verify` and `image` must both be required in branch protection; each covers
 # what the other does not. Publishing is a separate workflow, only on `main`.
+# `pull_request` covers every branch that has a PR, so `push` is left to `main`
+# — which is the only branch it still has to answer for.
+#
+# Listing every branch here as well produced *two* runs of the whole matrix
+# against the same commit, and that is not merely wasteful: it is a merge
+# blocker, whichever way the surplus run ends. Both endings were observed.
+#
+#   - Left to queue, one twin sat unstarted for over an hour while the other
+#     passed in three minutes, holding `verify` and `image` pending — the shape
+#     `verify`'s `timeout-minutes` comment warns about.
+#   - Cancelled by the concurrency group below, the surplus run's checks
+#     concluded `cancelled`, and the ruleset counts that as a violation:
+#
+#         405 Repository rule violations found
+#         2 of 2 required status checks are cancelled.
+#
+#     It reads them even though a *later* check run of each name had succeeded,
+#     so "the newest wins" is not something to rely on.
+#
+# The duplicate therefore has to not exist, rather than be raced or cancelled
+# into second place. The cost is that a branch pushed before its PR exists gets
+# no CI; opening the PR — a draft is enough — starts it.
 on:
   push:
     branches:
-      - "**"
+      - main
   pull_request:
 
-# One CI run per branch, not two.
+# One run per branch still, now only against itself.
 #
-# `push` fires for every branch and `pull_request` fires again for any branch
-# with a PR open, so a push to a PR branch started two identical runs of the
-# whole matrix on the same commit — twice the runner minutes, and two check runs
-# per required name for branch protection to reconcile. Seen in practice: one
-# member of a pair sat queued for over half an hour without ever being picked up
-# while its twin passed in three minutes, which is exactly the shape `verify`'s
-# `timeout-minutes` comment warns about — a required check stuck pending blocks
-# the PR with nothing to read.
+# With the duplicate gone this no longer has two event types to reconcile; what
+# it does is supersede an earlier push to the same PR branch, so a quick
+# follow-up commit does not leave the previous one's matrix running for nothing.
+# That is safe in a way cancelling a same-commit twin was not: those cancelled
+# checks belong to the *previous* head SHA, and branch protection only ever
+# reads the current one.
 #
-# The group key has to collapse both events onto the same branch, and neither
-# context alone does that: a push carries `refs/heads/<branch>` in `ref` and no
-# `head_ref` at all, while a pull_request carries `refs/pull/<n>/merge` in `ref`
-# and the branch name in `head_ref`. `head_ref || ref_name` is the pair that
-# agrees on one string, because `ref_name` is the bare branch name on a push.
+# The key is still `head_ref || ref_name` because the two events still name the
+# branch differently — a push carries `refs/heads/<branch>` in `ref` and no
+# `head_ref`, a pull_request carries `refs/pull/<n>/merge` and the branch in
+# `head_ref` — and a `main` push must land in the same group as nothing else.
 #
 # Cancelling is safe here in a way it deliberately is not in
 # docker-publish.yml: this workflow only reports, it never pushes an image, so
