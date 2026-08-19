@@ -219,6 +219,90 @@ For development, `npm run dev` instead of the last line.
 </details>
 
 <details>
+<summary><b>Running it on Unraid</b> — Docker tab, no Community Applications template</summary>
+
+There is no CA template yet, so this is **Docker → Add Container** filled in by
+hand. It sits naturally next to the *arr stack you already run.
+
+**Postgres first.** If you already run a Postgres container for something else —
+authentik, Seerr, Immich — reuse it rather than adding a second server. Create a
+database for StreamSweeparr in the one you have:
+
+```bash
+docker exec <your-postgres-container> \
+  psql -U postgres -c 'CREATE DATABASE streamsweeparr'
+```
+
+Otherwise add one first — Community Applications has PostgreSQL templates — and
+give it an appdata path like any other container.
+
+**Then the app.** Docker → **Add Container**, template fields:
+
+| Field | Value |
+|---|---|
+| **Repository** | `ghcr.io/kahooli/streamsweeparr:latest` |
+| **Network Type** | the same one your Sonarr/Radarr use |
+| **Port** | container `3000` → whatever host port you like |
+| **WebUI** | `http://[IP]:[PORT:3000]` |
+
+and these as **Variables**:
+
+| Variable | Value |
+|---|---|
+| `DATABASE_URL` | `postgresql://postgres:<password>@<postgres-container>:5432/streamsweeparr?schema=public&connection_limit=10&pool_timeout=20` |
+| `AUTH_SECRET` | run `openssl rand -hex 32` in the Unraid terminal — don't invent one |
+| `SSRF_ALLOW_PRIVATE` | `true`, since your *arr apps are on the LAN |
+| `AUTH_COOKIE_INSECURE` | `true` over plain HTTP; `false` behind HTTPS — see the warning above |
+
+Four things that catch people out on Unraid specifically:
+
+- **No appdata path is needed.** Everything StreamSweeparr keeps lives in
+  Postgres, so the app container writes nothing to disk. The template nudges you
+  towards adding a path anyway; you don't need one.
+- **Container names only resolve on a custom network.** Unraid's default
+  `bridge` has no DNS between containers, so `@postgres18:5432` will not connect
+  from there — either put both on the same user-defined network (`Custom: br0`
+  or similar, which is where the *arr stack usually lives) or use the host's LAN
+  IP in `DATABASE_URL`.
+- **`connection_limit` matters more here than elsewhere.** The pool is sized
+  from the CPU count, and an Unraid container often sees one core — which is
+  why it is already in the `DATABASE_URL` above. **Running on a NAS, Unraid, or
+  a 1–2 vCPU box?** just below says what happens without it.
+- **Sonarr and Radarr are reached over the LAN,** hence `SSRF_ALLOW_PRIVATE`.
+  Without it, adding a connection fails with "Connection failed" and nothing
+  else looks wrong.
+
+**Updating** is the Docker tab's **Force update** on the container (or **Check
+for Updates** at the bottom of the page first). Database migrations apply
+themselves on start — watch them land with:
+
+```bash
+docker logs -f streamsweeparr
+```
+
+**Back the database up before a version that migrates**, so you have somewhere
+to roll back to. Dump the one database rather than the whole cluster; a
+cluster-wide dump drags every other app's data along and makes a restore far
+more disruptive than the rollback it was meant to enable:
+
+```bash
+docker exec <your-postgres-container> pg_dump -U postgres -Fc streamsweeparr \
+  > /mnt/user/appdata/streamsweeparr-$(date +%Y%m%d-%H%M).dump
+```
+
+Don't add `-t` to that `docker exec` — a TTY corrupts the binary dump, and you
+would only find out at restore time. Don't back up by copying the Postgres
+appdata directory while it is running either; that gives you a torn copy.
+`pg_dump` against the live database is the safe way. To restore:
+
+```bash
+docker exec -i <your-postgres-container> \
+  pg_restore -U postgres -d streamsweeparr --clean --if-exists < your.dump
+```
+
+</details>
+
+<details>
 <summary><b>Running on a NAS, Unraid, or a 1–2 vCPU box?</b></summary>
 
 The database connection pool is sized from the CPU count — a 1-CPU container
@@ -888,8 +972,14 @@ dashboard and run history). SSO users get the `user` role by default.
 <details>
 <summary><b>How do I upgrade?</b></summary>
 
-`docker compose pull && docker compose up -d`. Database migrations are applied
-automatically on start.
+`docker compose pull && docker compose up -d`. On Unraid it's **Force update**
+on the container in the Docker tab — [more on that](#-quick-start). Database
+migrations are applied automatically on start either way.
+
+Worth taking a database backup first on a release that migrates, because
+migrations only run forwards: rolling the image back afterwards leaves the
+schema ahead of the code. [The Unraid section](#-quick-start) has the `pg_dump`
+and `pg_restore` commands, and they work anywhere Docker does.
 
 </details>
 
