@@ -3,11 +3,45 @@ import "./globals.css";
 import { ThemeProvider } from "@/components/ThemeProvider";
 import { Nav } from "@/components/Nav";
 import { ServiceWorkerRegistrar } from "@/components/ServiceWorkerRegistrar";
+import { configuredPublicUrl } from "@/lib/request";
 
 const description =
   "Unmonitor & delete Sonarr/Radarr media available on your streaming services, re-monitor what leaves streaming, then search.";
 
+/**
+ * What the relative `openGraph`/`twitter` image paths below are resolved
+ * against. Those tags have to carry absolute URLs, so Next needs a base — and
+ * without one it logs
+ *
+ *   ⚠ metadataBase property in metadata export is not set for resolving social
+ *     open graph or twitter images, using "http://localhost:3000".
+ *
+ * on every render, which is pure noise in the container log for a self-hosted
+ * app nobody is posting links to.
+ *
+ * PUBLIC_URL is the only source available here: `metadata` is a static export
+ * evaluated when the module loads, with no request to read a Host header from
+ * (that is what `publicOrigin` is for). Deriving it per request would mean
+ * turning this into an async `generateMetadata` that awaits `headers()`, which
+ * opts *every* page out of static rendering — a real cost, paid across the
+ * whole app, to perfect a preview image on a login-gated instance. Not worth it.
+ *
+ * So the fallback is the same localhost guess Next was already making: an
+ * install that has not set PUBLIC_URL is no worse off than before, it just
+ * stops being told about it once a minute. Setting PUBLIC_URL — which the
+ * README already asks for behind a reverse proxy — makes these correct.
+ *
+ * One wrinkle worth knowing: the env read stays a runtime read in the server
+ * bundle, so the dynamically rendered pages pick up whatever PUBLIC_URL the
+ * container starts with. The handful of prerendered ones (/login, /runs,
+ * /settings, /change-password) bake theirs at `next build`, which for the
+ * published image means the fallback regardless. That is only ever an image URL
+ * in a link preview, so it is not worth forcing those pages dynamic over.
+ */
+const metadataBase = configuredPublicUrl() ?? new URL("http://localhost:3000");
+
 export const metadata: Metadata = {
+  metadataBase,
   title: { default: "StreamSweeparr", template: "%s · StreamSweeparr" },
   description,
   applicationName: "StreamSweeparr",

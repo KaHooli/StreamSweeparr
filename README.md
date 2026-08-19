@@ -1027,7 +1027,7 @@ Everything else is configured in the UI. See
 
 | Variable | What it's for |
 |---|---|
-| `PUBLIC_URL` | Your public origin — fixes the OIDC `redirect_uri` |
+| `PUBLIC_URL` | Your public origin — fixes the OIDC `redirect_uri`, and the link-preview image URLs |
 | `TRUST_PROXY` | `true` to believe `X-Forwarded-For/Proto/Host` — only behind a proxy you control |
 | `OIDC_REDIRECT_URI` | Override the OIDC callback outright (rarely needed) |
 | `LOCAL_LOGIN_DISABLED` | `true` hides the password form (SSO-only); `false` forces it back on |

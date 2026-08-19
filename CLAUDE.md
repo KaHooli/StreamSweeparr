@@ -515,7 +515,7 @@ build-only tooling in `devDependencies` and expect it not to exist at runtime.
 | `DATABASE_URL` | Required. Raise `connection_limit` on low-CPU hosts. |
 | `AUTH_SECRET` | Required in production (≥16 chars); the app refuses to boot without it. Signs sessions **and** derives the at-rest encryption key. Changing it makes stored credentials unreadable. |
 | `AUTH_COOKIE_INSECURE` | `true` when served over plain HTTP, or login silently fails. |
-| `PUBLIC_URL` | Required behind a reverse proxy so the OIDC `redirect_uri` matches. |
+| `PUBLIC_URL` | Required behind a reverse proxy so the OIDC `redirect_uri` matches. Also the layout's `metadataBase`, since a static `metadata` export has no request to derive an origin from. |
 | `TRUST_PROXY` | Only with a proxy that *overwrites* `X-Forwarded-*`; it feeds the login rate limiter. |
 | `SSRF_ALLOW_PRIVATE` | `true` when the *arr apps are on a private LAN. |
 | `SYNC_CONCURRENCY` | Default 4, max 32. Raise `connection_limit` alongside it. |
