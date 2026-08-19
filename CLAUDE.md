@@ -467,14 +467,23 @@ are both required**:
 `verify` passing does **not** imply the image builds, which is why `image` is
 separately required.
 
-CI is serialised per branch by a `concurrency` group keyed on
-`github.head_ref || github.ref_name` — the one expression both event types
-agree on, since a push has no `head_ref` and a `pull_request`'s `ref_name` is
-`<n>/merge`. Without it the two triggers each started a full run of the same
-commit, and a duplicate stuck queued holds a required check pending with
-nothing to read. `cancel-in-progress` is on everywhere **except `main`**, which
-keeps a complete verdict per commit; unlike `docker-publish.yml`, nothing here
-is unsafe to interrupt.
+**`push` is restricted to `main`; `pull_request` covers everything else.** Two
+runs of the same commit is a merge blocker, not just wasted minutes, and both
+endings were seen for real: a surplus run left queued holds a required check
+pending, and a surplus run *cancelled* makes the ruleset refuse the merge with
+`2 of 2 required status checks are cancelled` — which it reports even when a
+later check run of the same name succeeded. Do not assume the newest check run
+wins. The cost is that a branch pushed before its PR exists gets no CI; opening
+the PR (a draft is enough) starts it.
+
+A `concurrency` group keyed on `github.head_ref || github.ref_name` — the one
+expression both event types agree on, since a push has no `head_ref` and a
+`pull_request`'s `ref_name` is `<n>/merge` — then supersedes an earlier push to
+the same PR branch. That is safe where cancelling a same-commit twin was not,
+because those cancelled checks belong to the previous head SHA and branch
+protection only reads the current one. `cancel-in-progress` is on everywhere
+**except `main`**, which keeps a complete verdict per commit; unlike
+`docker-publish.yml`, nothing here is unsafe to interrupt.
 
 `.nvmrc` is the single source of truth for the Node major. `npm run check:node`
 asserts that the Dockerfile's `FROM node:` lines, `engines.node`, and CI's
