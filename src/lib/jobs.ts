@@ -7,7 +7,7 @@
  * the actual work executes detached; clients poll GET /api/runs/{id}.
  */
 import { prisma } from "./db";
-import type { RunKind } from "@prisma/client";
+import type { RunKind } from "@/generated/prisma/client";
 import { logger } from "./logger";
 
 const log = logger("run");

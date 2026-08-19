@@ -11,8 +11,8 @@
  *    guarded on its own and reports its failure inline.
  */
 import os from "node:os";
-import { Prisma } from "@prisma/client";
-import { prisma, getSettings, getRawSettings } from "./db";
+import { Prisma } from "@/generated/prisma/client";
+import { prisma, adapterConfig, getSettings, getRawSettings } from "./db";
 import { hasUnreadableSecret } from "./secrets";
 import { isOidcConfigured, effectiveLocalLoginEnabled } from "./loginOptions";
 import { schedulerDisabledByEnv } from "./schedule";
@@ -64,8 +64,12 @@ async function databaseInfo(): Promise<DatabaseInfo> {
     host: fromUrl.host,
     database: fromUrl.database,
     schema: fromUrl.schema,
-    connectionLimit: fromUrl.connectionLimit,
-    poolTimeout: fromUrl.poolTimeout,
+    // Read from the client's own configuration rather than re-parsed from the
+    // URL, so the page reports the pool that exists and not the one requested.
+    poolMax: adapterConfig.max,
+    poolTimeoutMs: adapterConfig.connectionTimeoutMillis,
+    poolMaxFromUrl: adapterConfig.maxFromUrl,
+    poolTimeoutFromUrl: adapterConfig.connectionTimeoutFromUrl,
     sizeBytes: null,
     connectionsUsed: null,
     connectionsMax: null,

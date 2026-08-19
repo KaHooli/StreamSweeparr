@@ -22,7 +22,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import type { MediaType } from "@prisma/client";
+import type { MediaType } from "@/generated/prisma/client";
 import { prisma, getSettings } from "./db";
 import { logger } from "./logger";
 import { runTargetedSweep, type SweepTarget } from "./sweep";

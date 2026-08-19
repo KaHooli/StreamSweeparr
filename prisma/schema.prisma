@@ -6,13 +6,33 @@
 //   2. Caching the last-known state of media & streaming availability so the
 //      dashboard renders instantly and runs can be audited.
 
+// Prisma 7's generator. It emits TypeScript into the source tree rather than
+// into node_modules, so the client is a normal import that `next build` bundles
+// like any other module — which is also why `output` is mandatory here.
+//
+// The extension options are deliberately left at their defaults. Setting
+// `importFileExtension = "js"` makes the emitted modules import each other as
+// `./internal/class.js`, which is the shape that has given other projects
+// "cannot resolve ./internal/class.js" under webpack, since only `class.ts`
+// exists. The default emits extensionless imports, which both `tsc` (via
+// moduleResolution "bundler") and Next resolve. `generatedFileExtension` is not
+// a JavaScript switch — set to "js" it emits the client with no types at all.
+//
+// The output directory is generated, not authored — it is gitignored, and
+// `prisma generate` runs from `npm run build`, the postinstall, and the
+// Dockerfile before anything type-checks.
 generator client {
-  provider = "prisma-client-js"
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+  runtime  = "nodejs"
 }
 
+// The connection URL is deliberately absent: Prisma 7 reads it from
+// prisma.config.ts for CLI work (migrate/generate) and from the pg driver
+// adapter constructed in lib/db.ts at runtime. Two places would be two chances
+// to disagree about which database is being written to.
 datasource db {
   provider = "postgresql"
-  url      = env("DATABASE_URL")
 }
 
 // Where movie streaming availability comes from. TV has no equivalent choice:

@@ -13,7 +13,7 @@
  * two. See `MovieLookup`, chosen once in `runSync`.
  */
 
-import type { MediaType, Prisma } from "@prisma/client";
+import type { MediaType, Prisma } from "@/generated/prisma/client";
 import { prisma, getSettings } from "./db";
 import {
   ArrError,

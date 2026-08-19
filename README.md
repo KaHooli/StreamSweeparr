@@ -221,9 +221,9 @@ For development, `npm run dev` instead of the last line.
 <details>
 <summary><b>Running on a NAS, Unraid, or a 1–2 vCPU box?</b></summary>
 
-Prisma sizes its database connection pool from the CPU count — a 1-CPU
-container gets a pool of just 3, and a page that fires several requests at once
-can exhaust it and time out. Append this to your `DATABASE_URL`:
+The database connection pool is sized from the CPU count — a 1-CPU container
+gets a pool of just 3, and a page that fires several requests at once can
+exhaust it and time out. Append this to your `DATABASE_URL`:
 
 ```
 ?schema=public&connection_limit=10&pool_timeout=20
@@ -728,7 +728,7 @@ The tab is **administrators only**, and so is the endpoint behind it.
 | **SSO fails with *"invalid or mismatching redirect_uri"*** | The app is guessing its own address from behind a proxy | Set `PUBLIC_URL` to your real public URL, and register the exact redirect URI shown on the OIDC card |
 | **SSO fails with *"Single sign-on failed. Check the server log for details."*** | The detail is deliberately kept out of the URL — the login page is public | Read the app log: the line is tagged `[oidc]` and names the actual cause (a non-HTTPS endpoint, a mismatched issuer or client id, an expired token) |
 | **My API keys suddenly read as "not configured"** | `AUTH_SECRET` changed — it's also the encryption key | Restore the old secret, or re-enter the keys. [Details](#-encrypted-credentials) |
-| **Pages time out on a small NAS / VM** | Prisma's connection pool is sized from CPU count | Append `&connection_limit=10&pool_timeout=20` to `DATABASE_URL` |
+| **Pages time out on a small NAS / VM** | The connection pool is sized from CPU count | Append `&connection_limit=10&pool_timeout=20` to `DATABASE_URL` |
 | **No install option in my browser** | Service workers need a secure context | Serve over HTTPS (or test on `localhost`) |
 | **A provider logo opens a search page, not the title** | Free Watchmode plans don't include per-episode deep links, and TMDB has none for movies | Working as intended — [what each link is](#what-the-dashboard-shows-you) |
 | **A title I want to keep keeps getting swept** | It's genuinely on one of your selected services | Tag it **`ss-skip`** — [how](#-keeping-titles-out-of-the-sweep) |
@@ -1274,11 +1274,14 @@ that does not carry a session.
 <details>
 <summary><b>Dependencies</b></summary>
 
-**Runtime:** `next`, `react`, `react-dom`, `@prisma/client`, `pg`,
-`pg-copy-streams`, `swr`, `zod`
+**Runtime:** `next`, `react`, `react-dom`, `@prisma/client`,
+`@prisma/adapter-pg`, `prisma`, `pg`, `pg-copy-streams`, `swr`, `zod`
 
-**Dev/build:** `prisma`, `typescript`, `@types/*`, `eslint`,
-`eslint-config-next`, `vitest`, `@testing-library/react`, `jsdom`
+`prisma` is a runtime dependency, not a build-only one: the container runs
+`prisma migrate deploy` on every start.
+
+**Dev/build:** `typescript`, `@types/*`, `eslint`, `eslint-config-next`,
+`vitest`, `@testing-library/react`, `jsdom`
 
 </details>
 

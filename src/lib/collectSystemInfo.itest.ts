@@ -133,7 +133,12 @@ describe("collectSystemInfo", () => {
       expect(serialized).not.toContain("reportinguser");
       expect(info.database.host).toBe("db.internal:5433");
       expect(info.database.schema).toBe("reporting");
-      expect(info.database.connectionLimit).toBe("10");
+      // The pool is reported from the client's own configuration, which was
+      // fixed when the adapter was built, so it does not follow this swapped-in
+      // URL the way the parsed fields above do. That is the point: the row
+      // describes the pool that exists, not one that was never created.
+      expect(info.database.poolMax).toBeGreaterThanOrEqual(1);
+      expect(info.database.poolMaxFromUrl).toBe(false);
       // The live connection still answers, and its own database name wins over
       // the one in the (now fictional) URL.
       expect(info.database.reachable).toBe(true);
