@@ -103,6 +103,8 @@ export interface SonarrSeries {
   year?: number;
   monitored: boolean;
   seasons?: SonarrSeason[];
+  /** "continuing" | "ended" | "upcoming" | "deleted", as Sonarr reports it. */
+  status?: string;
   tvdbId?: number;
   imdbId?: string;
   tmdbId?: number;

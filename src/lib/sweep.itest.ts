@@ -25,12 +25,29 @@ const failing = new Set<string>();
  * asking it to stop mid-run requires.
  */
 const held = new Map<string, Promise<void>>();
+/** The series resource `getSeriesById` reports back. */
+interface MockSeries {
+  id: number;
+  monitored: boolean;
+  status: string;
+  seasons: { seasonNumber: number; monitored: boolean }[];
+}
+
 /**
- * What `getSeriesById` reports, keyed by Sonarr series id. Season monitoring
- * lives on the series resource, so the season tests need a Sonarr with an
- * opinion about it rather than the blanket `undefined` everything else gets.
+ * What `getSeriesById` reports, keyed by Sonarr series id. The series flag, its
+ * status and season monitoring all live on this one resource, so these tests
+ * need a Sonarr with an opinion about it rather than the blanket `undefined`
+ * everything else gets.
  */
-const sonarrSeries = new Map<number, { id: number; seasons: { seasonNumber: number; monitored: boolean }[] }>();
+const sonarrSeries = new Map<number, MockSeries>();
+
+/** A series nothing has been said about: monitored, still running, no seasons. */
+const defaultSeries = (id: number): MockSeries => ({
+  id,
+  monitored: true,
+  status: "continuing",
+  seasons: [],
+});
 
 function record(client: "sonarr" | "radarr", method: string, result?: (args: unknown[]) => unknown) {
   return async (...args: unknown[]) => {
@@ -56,7 +73,7 @@ vi.mock("./arr", () => ({
     deleteEpisodeFiles = record("sonarr", "deleteEpisodeFiles");
     searchEpisodes = record("sonarr", "searchEpisodes");
     getSeriesById = record("sonarr", "getSeriesById", ([id]) =>
-      sonarrSeries.get(id as number) ?? { id, seasons: [] }
+      sonarrSeries.get(id as number) ?? defaultSeries(id as number)
     );
     updateSeries = record("sonarr", "updateSeries");
   },
@@ -319,21 +336,22 @@ describe("sweepSonarr — season monitoring", () => {
   /** A Sonarr that reports `seasons` as monitored for series `arrId`. */
   const sonarrHasSeasons = (arrId: number, ...seasons: number[]) =>
     sonarrSeries.set(arrId, {
-      id: arrId,
+      ...defaultSeries(arrId),
       seasons: seasons.map((seasonNumber) => ({ seasonNumber, monitored: true })),
     });
 
   /** The same, with the seasons already unmonitored — the on-write's starting point. */
   const sonarrHasOffSeasons = (arrId: number, ...seasons: number[]) =>
     sonarrSeries.set(arrId, {
-      id: arrId,
+      ...defaultSeries(arrId),
       seasons: seasons.map((seasonNumber) => ({ seasonNumber, monitored: false })),
     });
 
-  /** The seasons array sent back in the one updateSeries call. */
-  const putSeasons = () =>
-    (callsTo("updateSeries")[0].args[0] as { seasons: { seasonNumber: number; monitored: boolean }[] })
-      .seasons;
+  /** The series resource sent back in the one updateSeries call. */
+  const put = () => callsTo("updateSeries")[0].args[0] as MockSeries;
+
+  /** The seasons array on it. */
+  const putSeasons = () => put().seasons;
 
   it("marks a season unmonitored once the sweep has unmonitored its whole run", async () => {
     await makeSettings({ applyChanges: true, deleteFiles: false, searchAtEnd: false });
@@ -392,7 +410,10 @@ describe("sweepSonarr — season monitoring", () => {
     const conn = await makeConnection({ type: "SONARR" });
     const show = await makeMediaItem(conn.id, { type: "TV", arrId: 7 });
     await makeEpisode(show.id, { arrEpisodeId: 101, monitored: false, onStreaming: true });
-    sonarrSeries.set(7, { id: 7, seasons: [{ seasonNumber: 1, monitored: false }] });
+    sonarrSeries.set(7, {
+      ...defaultSeries(7),
+      seasons: [{ seasonNumber: 1, monitored: false }],
+    });
 
     await sweepAndWait();
     expect(callsTo("getSeriesById")).toHaveLength(1);
@@ -500,7 +521,7 @@ describe("sweepSonarr — season monitoring", () => {
     await makeEpisode(show.id, { arrEpisodeId: 101, seasonNumber: 1, monitored: true, onStreaming: true });
     await makeEpisode(show.id, { arrEpisodeId: 201, seasonNumber: 2, monitored: false, onStreaming: false });
     sonarrSeries.set(7, {
-      id: 7,
+      ...defaultSeries(7),
       seasons: [
         { seasonNumber: 1, monitored: true },
         { seasonNumber: 2, monitored: false },
@@ -513,6 +534,139 @@ describe("sweepSonarr — season monitoring", () => {
       { seasonNumber: 1, monitored: false },
       { seasonNumber: 2, monitored: true },
     ]);
+  });
+
+  it("unmonitors an ended show once its last season goes", async () => {
+    await makeSettings({ applyChanges: true, deleteFiles: false, searchAtEnd: false });
+    const conn = await makeConnection({ type: "SONARR" });
+    const show = await makeMediaItem(conn.id, { type: "TV", arrId: 7, title: "Show", monitored: true });
+    await makeEpisode(show.id, { arrEpisodeId: 101, monitored: true, onStreaming: true });
+    sonarrSeries.set(7, {
+      id: 7,
+      monitored: true,
+      status: "ended",
+      seasons: [{ seasonNumber: 1, monitored: true }],
+    });
+
+    const run = await sweepAndWait();
+    expect(run.status).toBe("SUCCESS");
+    // The season this sweep is turning off counts towards "every season is
+    // unmonitored" — waiting for the next run would be a wasted pass.
+    expect(putSeasons()).toEqual([{ seasonNumber: 1, monitored: false }]);
+    expect(put().monitored).toBe(false);
+    // One PUT carries both flags.
+    expect(callsTo("updateSeries")).toHaveLength(1);
+    // And the snapshot follows, because the dashboard reads it.
+    expect((await prisma.mediaItem.findFirstOrThrow({ where: { arrId: 7 } })).monitored).toBe(false);
+  });
+
+  it("unmonitors an ended show whose seasons were already off", async () => {
+    // The upgrade case: a previous release turned the seasons off, and there is
+    // no episode change left to hang the series decision on.
+    await makeSettings({ applyChanges: true, searchAtEnd: false });
+    const conn = await makeConnection({ type: "SONARR" });
+    const show = await makeMediaItem(conn.id, { type: "TV", arrId: 7, title: "Show", monitored: true });
+    await makeEpisode(show.id, { arrEpisodeId: 101, monitored: false, onStreaming: true });
+    sonarrSeries.set(7, {
+      id: 7,
+      monitored: true,
+      status: "ended",
+      seasons: [{ seasonNumber: 1, monitored: false }],
+    });
+
+    await sweepAndWait();
+    expect(put().monitored).toBe(false);
+    expect(putSeasons()).toEqual([{ seasonNumber: 1, monitored: false }]);
+  });
+
+  it("leaves a continuing show monitored however spent its seasons are", async () => {
+    await makeSettings({ applyChanges: true, searchAtEnd: false });
+    const conn = await makeConnection({ type: "SONARR" });
+    const show = await makeMediaItem(conn.id, { type: "TV", arrId: 7, title: "Show", monitored: true });
+    await makeEpisode(show.id, { arrEpisodeId: 101, monitored: false, onStreaming: true });
+    sonarrSeries.set(7, {
+      id: 7,
+      monitored: true,
+      status: "continuing",
+      seasons: [{ seasonNumber: 1, monitored: false }],
+    });
+
+    await sweepAndWait();
+    expect(callsTo("updateSeries")).toHaveLength(0);
+    expect((await prisma.mediaItem.findFirstOrThrow({ where: { arrId: 7 } })).monitored).toBe(true);
+  });
+
+  it("keeps an ended show whose specials are still monitored", async () => {
+    await makeSettings({ applyChanges: true, searchAtEnd: false });
+    const conn = await makeConnection({ type: "SONARR" });
+    const show = await makeMediaItem(conn.id, { type: "TV", arrId: 7, title: "Show", monitored: true });
+    await makeEpisode(show.id, { arrEpisodeId: 101, monitored: false, onStreaming: true });
+    sonarrSeries.set(7, {
+      id: 7,
+      monitored: true,
+      status: "ended",
+      // Sync never records season 0's episodes, but Sonarr still reports its
+      // flag — and someone monitoring specials wants specials.
+      seasons: [
+        { seasonNumber: 0, monitored: true },
+        { seasonNumber: 1, monitored: false },
+      ],
+    });
+
+    await sweepAndWait();
+    expect(callsTo("updateSeries")).toHaveLength(0);
+  });
+
+  it("puts an ended show back on when a season comes back", async () => {
+    // The trap the on-direction closes: without it the re-monitored season
+    // would never be grabbed, because Sonarr checks the series flag first.
+    await makeSettings({ applyChanges: true, searchAtEnd: false });
+    const conn = await makeConnection({ type: "SONARR" });
+    const show = await makeMediaItem(conn.id, { type: "TV", arrId: 7, title: "Show", monitored: false });
+    await makeEpisode(show.id, { arrEpisodeId: 101, monitored: false, onStreaming: false });
+    sonarrSeries.set(7, {
+      id: 7,
+      monitored: false,
+      status: "ended",
+      seasons: [{ seasonNumber: 1, monitored: false }],
+    });
+
+    const run = await sweepAndWait();
+    expect(run.remonitoredEps).toBe(1);
+    expect(putSeasons()).toEqual([{ seasonNumber: 1, monitored: true }]);
+    expect(put().monitored).toBe(true);
+    expect((await prisma.mediaItem.findFirstOrThrow({ where: { arrId: 7 } })).monitored).toBe(true);
+  });
+
+  it("previews the series change in a dry-run without writing it", async () => {
+    await makeSettings({ applyChanges: false, searchAtEnd: false });
+    const conn = await makeConnection({ type: "SONARR" });
+    const show = await makeMediaItem(conn.id, { type: "TV", arrId: 7, title: "Show", monitored: true });
+    await makeEpisode(show.id, { arrEpisodeId: 101, monitored: true, onStreaming: true });
+    sonarrSeries.set(7, {
+      id: 7,
+      monitored: true,
+      status: "ended",
+      seasons: [{ seasonNumber: 1, monitored: true }],
+    });
+
+    const run = await sweepAndWait();
+    expect(callsTo("updateSeries")).toHaveLength(0);
+    const lines = (run.log as { level: string; msg: string }[]).map((l) => l.msg);
+    expect(lines.some((m) => m.includes('Would mark series "Show" unmonitored'))).toBe(true);
+    expect((await prisma.mediaItem.findFirstOrThrow({ where: { arrId: 7 } })).monitored).toBe(true);
+  });
+
+  it("says nothing about a series Sonarr lists no seasons for", async () => {
+    // Not a spent library — a series Sonarr has not finished building.
+    await makeSettings({ applyChanges: true, searchAtEnd: false });
+    const conn = await makeConnection({ type: "SONARR" });
+    const show = await makeMediaItem(conn.id, { type: "TV", arrId: 7, title: "Show", monitored: true });
+    await makeEpisode(show.id, { arrEpisodeId: 101, monitored: false, onStreaming: true });
+    sonarrSeries.set(7, { id: 7, monitored: true, status: "ended", seasons: [] });
+
+    await sweepAndWait();
+    expect(callsTo("updateSeries")).toHaveLength(0);
   });
 
   it("keeps sweeping the rest of the library when a season write fails", async () => {

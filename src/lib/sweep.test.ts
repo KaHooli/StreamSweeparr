@@ -1,5 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { planItem, planSeasons, type ItemPlan, type SeasonEpisode } from "./sweep";
+import {
+  planItem,
+  planSeasons,
+  planSeriesMonitored,
+  type ItemPlan,
+  type SeasonEpisode,
+} from "./sweep";
 
 /** Build an item, defaulting to "monitored, not on streaming, has a file". */
 const item = (over: Partial<Parameters<typeof planItem>[0]> = {}) => ({
@@ -241,5 +247,59 @@ describe("planSeasons — episodes the season write must not flatten", () => {
       { seasonNumber: 1, monitored: false, correct: [future.arrEpisodeId] },
       { seasonNumber: 2, monitored: true, correct: [streaming.arrEpisodeId] },
     ]);
+  });
+});
+
+/* ------------------------- planSeriesMonitored -------------------------- */
+
+/** Seasons as Sonarr reports them; only the flag matters here. */
+const seasons = (...monitored: boolean[]) => monitored.map((m) => ({ monitored: m }));
+
+describe("planSeriesMonitored — turning a show off", () => {
+  it("unmonitors an ended show whose every season is unmonitored", () => {
+    expect(planSeriesMonitored("ended", seasons(false, false, false))).toBe(false);
+  });
+
+  it("leaves a continuing show alone, however spent its seasons are", () => {
+    // Next season is exactly what the series flag is for.
+    expect(planSeriesMonitored("continuing", seasons(false, false))).toBeNull();
+    expect(planSeriesMonitored("upcoming", seasons(false))).toBeNull();
+  });
+
+  it("leaves a show alone when Sonarr reports no status", () => {
+    expect(planSeriesMonitored(undefined, seasons(false, false))).toBeNull();
+  });
+
+  it("matches the status case-insensitively", () => {
+    expect(planSeriesMonitored("Ended", seasons(false))).toBe(false);
+  });
+
+  it("keeps an ended show whose specials are still monitored", () => {
+    // Season 0 is not in the snapshot, so planSeasons never speaks for it — but
+    // a user monitoring specials wants specials, and unmonitoring the series
+    // would stop them.
+    expect(planSeriesMonitored("ended", seasons(true, false, false))).toBe(true);
+  });
+
+  it("says nothing about a series Sonarr lists no seasons for", () => {
+    // Not a spent library — a series Sonarr has not finished building.
+    expect(planSeriesMonitored("ended", [])).toBeNull();
+    expect(planSeriesMonitored("continuing", [])).toBeNull();
+  });
+});
+
+describe("planSeriesMonitored — turning a show back on", () => {
+  it("monitors a show that still holds a monitored season", () => {
+    expect(planSeriesMonitored("continuing", seasons(false, true))).toBe(true);
+  });
+
+  it("monitors an ended show whose seasons came back", () => {
+    // The trap this direction closes: seasons turned back on when the show left
+    // streaming would never be grabbed while the series flag stayed off.
+    expect(planSeriesMonitored("ended", seasons(true, false))).toBe(true);
+  });
+
+  it("needs no status to turn a show on", () => {
+    expect(planSeriesMonitored(undefined, seasons(true))).toBe(true);
   });
 });
