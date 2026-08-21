@@ -203,12 +203,36 @@ export class SonarrClient {
     });
   }
 
-  /** Kick off a search for the given episode ids. */
+  /**
+   * Kick off a search for the given episode ids.
+   *
+   * Batching ids into one command saves round trips to Sonarr but **not**
+   * indexer queries: `EpisodeSearchCommand` loops over `episodeIds` and runs a
+   * separate search for each, so the cost to the indexers is one query per id
+   * however few commands they arrive in. `searchSeason` is the cheaper shape
+   * where it is safe; `planEpisodeSearch` in lib/sweep.ts decides which.
+   */
   searchEpisodes(episodeIds: number[]) {
     if (!episodeIds.length) return Promise.resolve(undefined);
     return arrFetch<void>(this.baseUrl, this.apiKey, "/api/v3/command", {
       method: "POST",
       body: JSON.stringify({ name: "EpisodeSearch", episodeIds }),
+    });
+  }
+
+  /**
+   * Kick off a search for a whole season — one indexer query for the season,
+   * where the equivalent `searchEpisodes` call would be one per episode.
+   *
+   * Sonarr decides for itself what a season query may grab, and that is the
+   * catch: a season pack it accepts is imported in full, including episodes
+   * that are unmonitored. Only call this for a season whose every episode is
+   * meant to come back. See `planEpisodeSearch` in lib/sweep.ts.
+   */
+  searchSeason(seriesId: number, seasonNumber: number) {
+    return arrFetch<void>(this.baseUrl, this.apiKey, "/api/v3/command", {
+      method: "POST",
+      body: JSON.stringify({ name: "SeasonSearch", seriesId, seasonNumber }),
     });
   }
 }
