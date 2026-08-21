@@ -1,0 +1,14 @@
+-- Drop the index the end-of-run search no longer uses.
+--
+-- `Episode_mediaId_monitored_idx` was added in 20261202000000_sweep_performance
+-- for `searchSonarr`, which selected monitored episodes across the library. That
+-- query is gone: the search now needs a season's *unmonitored* episodes too —
+-- they are what decides whether the season can be searched as a season without
+-- a pack import restoring what the sweep just cleared — so it reads every
+-- episode of the in-scope series and filters in `planEpisodeSearch`.
+--
+-- Nothing else filters Episode by `monitored`; every remaining query keys on
+-- `mediaId` alone, which the `Episode_mediaId_arrEpisodeId_key` unique index
+-- already serves as a prefix. On a six-figure episode table an index no read
+-- path uses is write cost for nothing.
+DROP INDEX IF EXISTS "Episode_mediaId_monitored_idx";

@@ -527,7 +527,7 @@ All of these live under **Settings → Run options**.
 | **Delete files when unmonitoring** | ✅ on | When the sweep unmonitors a title *because it's on streaming*, delete its file too. |
 | **Remove files for all unmonitored items** | ❌ off | Wider: at the end of a sweep, delete the file for **every** unmonitored movie/episode, including a back-catalogue you unmonitored by hand years ago. See below. |
 | **Remove movies deleted from TMDB** | ✅ on | If TMDB says a movie's id no longer exists, remove it from Radarr. **Files are kept.** |
-| **Search monitored items at end of run** | ✅ on | Trigger a Sonarr/Radarr search for everything still monitored once the sweep finishes. |
+| **Search monitored items at end of run** | ✅ on | Trigger a Sonarr/Radarr search once the sweep finishes, for everything still monitored that is **missing its file**. See below. |
 | **Scheduled sweeps** | ❌ off | Run the sweep on a timer — see [below](#-scheduled-sweeps). |
 
 Every destructive option above is **LIVE-mode only**. In a dry-run they just
@@ -579,6 +579,36 @@ timeouts, never a 404): the movie is flagged during sync and the sweep removes
 it from Radarr. **Media files are kept** and no import exclusion is added, so if
 it was wrong you can simply re-add the title. Removals are counted on the
 **Runs** page.
+
+</details>
+
+<details>
+<summary><b>"Search monitored items at end of run" — what actually gets searched</b></summary>
+
+Once a sweep has finished unmonitoring and re-monitoring, it asks Sonarr and
+Radarr to go and fetch what is left. Two rules keep that from turning into a
+flood of indexer queries.
+
+**Only titles that are missing their file are searched.** A monitored episode
+you already have on disk can only be searched for a *quality upgrade*, and that
+is not what this run is for — Sonarr and Radarr do upgrades on their own
+schedule. On a library that has settled down this is the difference between a
+handful of searches and one per episode you own.
+
+**Episodes are grouped into season searches where that is safe.** Sonarr charges
+one indexer query *per episode id*, so asking it for a whole library's episodes
+individually is what gets you rate-limited by your indexers. A season search is
+one query for the lot. StreamSweeparr uses it only for a season whose episodes
+are **all** monitored — because a season pack, once accepted, is imported in
+full, and in a season where some episodes are unmonitored those are exactly the
+ones you stream and just had deleted. A mixed season is searched by episode id
+instead, which names precisely what may be fetched.
+
+The run log says which shape it used, e.g. `Search 34 monitored episode(s) with
+no file: 6 season search(es), 4 episode search(es).`
+
+Movies have no equivalent grouping — a film is one query however you ask — so on
+the Radarr side only the missing-file rule applies.
 
 </details>
 
@@ -890,7 +920,9 @@ in scope.
 
 The next sweep notices it's no longer on any of your selected services and
 **re-monitors** it. If **Search monitored items at end of run** is on, Sonarr or
-Radarr goes and gets it again in the same run.
+Radarr goes and gets it again in the same run — assuming the file was deleted
+when it was unmonitored. If you still have it on disk there is nothing to fetch,
+and the search leaves it alone.
 
 </details>
 
@@ -1392,7 +1424,7 @@ that does not carry a session.
   (auth via the `api_key` query param).
 - **Sonarr v3:** `GET /series`, `GET /series/{id}` (webhook sweeps),
   `GET /episode`, `PUT /episode/monitor`, `DELETE /episodefile/{id}`,
-  `POST /command` (`EpisodeSearch`).
+  `POST /command` (`EpisodeSearch`, `SeasonSearch`).
 - **Radarr v3:** `GET /movie`, `GET /movie/{id}`, `PUT /movie/{id}`,
   `DELETE /moviefile/{id}`, `POST /command` (`MoviesSearch`).
 - **Seerr (optional):** `GET /api/v1/settings/sonarr`, `.../radarr` to

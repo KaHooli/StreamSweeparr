@@ -3,8 +3,10 @@ import {
   planItem,
   planSeasons,
   planSeriesMonitored,
+  planEpisodeSearch,
   type ItemPlan,
   type SeasonEpisode,
+  type SearchEpisode,
 } from "./sweep";
 
 /** Build an item, defaulting to "monitored, not on streaming, has a file". */
@@ -301,5 +303,128 @@ describe("planSeriesMonitored — turning a show back on", () => {
 
   it("needs no status to turn a show on", () => {
     expect(planSeriesMonitored(undefined, seasons(true))).toBe(true);
+  });
+});
+
+/* -------------------------- planEpisodeSearch --------------------------- */
+
+/** An episode the end-of-run search wants: monitored, aired, no file. */
+const want = (over: Partial<SearchEpisode> = {}): SearchEpisode => ({
+  arrEpisodeId: nextEpisodeId++,
+  seasonNumber: 1,
+  monitored: true,
+  hasFile: false,
+  airDateUtc: AIRED,
+  ...over,
+});
+
+/** One series' worth of episodes, as the query hands them over. */
+const show = (episodes: SearchEpisode[], arrId = 1) => [{ arrId, episodes }];
+
+describe("planEpisodeSearch — what is worth searching at all", () => {
+  it("skips episodes that already have a file", () => {
+    // A search could only find an upgrade for these, which is not what the
+    // end-of-run search is for — and on a settled library it is most of them.
+    const plan = planEpisodeSearch(show([want({ hasFile: true }), want({ hasFile: true })]), NOW);
+    expect(plan).toEqual({ seasons: [], episodeIds: [], total: 0 });
+  });
+
+  it("skips unaired episodes, which have nothing to find", () => {
+    const plan = planEpisodeSearch(
+      show([want({ airDateUtc: UNAIRED }), want({ airDateUtc: null })]),
+      NOW
+    );
+    expect(plan.total).toBe(0);
+  });
+
+  it("skips unmonitored episodes, whatever else is true of them", () => {
+    expect(planEpisodeSearch(show([want({ monitored: false })]), NOW).total).toBe(0);
+  });
+
+  it("counts an episode airing exactly now as aired", () => {
+    expect(planEpisodeSearch(show([want({ airDateUtc: NOW })]), NOW).total).toBe(1);
+  });
+
+  it("returns an empty plan for a series with no episodes", () => {
+    expect(planEpisodeSearch(show([]), NOW)).toEqual({ seasons: [], episodeIds: [], total: 0 });
+  });
+});
+
+describe("planEpisodeSearch — grouping into season searches", () => {
+  it("searches a fully monitored season as one season query", () => {
+    const plan = planEpisodeSearch(show([want(), want(), want()], 7), NOW);
+    expect(plan.seasons).toEqual([{ arrId: 7, seasonNumber: 1, episodes: 3 }]);
+    expect(plan.episodeIds).toEqual([]);
+    // The episodes covered, not the one command it took to cover them.
+    expect(plan.total).toBe(3);
+  });
+
+  it("falls back to episode ids when the season holds an unmonitored episode", () => {
+    // The case that makes this stricter than Sonarr's own grouping: monitoring
+    // gates grabbing, not importing, so a season pack would restore the
+    // unmonitored episode — which is on streaming and was deleted on purpose.
+    const a = want();
+    const b = want();
+    const plan = planEpisodeSearch(show([a, b, want({ monitored: false, hasFile: true })]), NOW);
+    expect(plan.seasons).toEqual([]);
+    expect(plan.episodeIds).toEqual([a.arrEpisodeId, b.arrEpisodeId]);
+    expect(plan.total).toBe(2);
+  });
+
+  it("still groups a fully monitored season where only some episodes are missing", () => {
+    // Nothing here is unmonitored, so a pack can only bring back episodes the
+    // user is meant to have — the ones with files are simply already met.
+    const plan = planEpisodeSearch(
+      show([want(), want(), want({ hasFile: true }), want({ airDateUtc: UNAIRED })]),
+      NOW
+    );
+    expect(plan.seasons).toEqual([{ arrId: 1, seasonNumber: 1, episodes: 2 }]);
+    expect(plan.episodeIds).toEqual([]);
+  });
+
+  it("searches a lone episode individually rather than as a season", () => {
+    // One query either way, and the narrower one cannot pull in a pack.
+    const only = want();
+    const plan = planEpisodeSearch(show([only, want({ hasFile: true })]), NOW);
+    expect(plan.seasons).toEqual([]);
+    expect(plan.episodeIds).toEqual([only.arrEpisodeId]);
+  });
+
+  it("judges each season separately, in season order", () => {
+    const mixed = want({ seasonNumber: 3 });
+    const plan = planEpisodeSearch(
+      show(
+        [
+          want({ seasonNumber: 2 }),
+          want({ seasonNumber: 2 }),
+          mixed,
+          want({ seasonNumber: 3, monitored: false, hasFile: true }),
+          want({ seasonNumber: 1 }),
+          want({ seasonNumber: 1 }),
+        ],
+        4
+      ),
+      NOW
+    );
+    expect(plan.seasons).toEqual([
+      { arrId: 4, seasonNumber: 1, episodes: 2 },
+      { arrId: 4, seasonNumber: 2, episodes: 2 },
+    ]);
+    expect(plan.episodeIds).toEqual([mixed.arrEpisodeId]);
+    expect(plan.total).toBe(5);
+  });
+
+  it("keeps each series' seasons under its own id", () => {
+    const plan = planEpisodeSearch(
+      [
+        { arrId: 10, episodes: [want(), want()] },
+        { arrId: 20, episodes: [want({ seasonNumber: 2 }), want({ seasonNumber: 2 })] },
+      ],
+      NOW
+    );
+    expect(plan.seasons).toEqual([
+      { arrId: 10, seasonNumber: 1, episodes: 2 },
+      { arrId: 20, seasonNumber: 2, episodes: 2 },
+    ]);
   });
 });

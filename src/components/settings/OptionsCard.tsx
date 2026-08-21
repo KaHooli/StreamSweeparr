@@ -50,7 +50,7 @@ export function OptionsCard({ settings, onChange }: CardProps) {
       />
       <Toggle
         title="Search monitored items at end of run"
-        desc="Trigger a search for every monitored movie/episode after sweeping."
+        desc="After sweeping, trigger a search for every monitored movie/episode that is missing its file. Episodes are grouped into season searches where a season is fully monitored, to keep the load off your indexers."
         checked={settings.searchAtEnd}
         onChange={(v) => set({ searchAtEnd: v })}
       />

@@ -380,8 +380,11 @@ If you add a provider call, say in its docblock what bounds how often it runs.
   webhook that fires twice into one sweep, and `claimedBy` is what makes a claim
   exclusive between replicas. Do not relax either.
 - Indexes exist for specific queries and the schema says which (dashboard
-  filtering, sync's prune-by-timestamp, the end-of-run episode scan, the queue's
-  oldest-unclaimed scan). Keep the comment truthful if you change a query shape.
+  filtering, sync's prune-by-timestamp, the queue's oldest-unclaimed scan).
+  Keep the comment truthful if you change a query shape — `Episode` lost its
+  `(mediaId, monitored)` index when the end-of-run search stopped filtering on
+  `monitored`, and the schema says so rather than leaving the absence to be
+  rediscovered.
 
 ### 11. The Prisma client is generated into the source tree
 

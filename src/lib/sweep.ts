@@ -19,7 +19,11 @@
  *      aired episode inherits and what Sonarr checks before grabbing anything,
  *      so leaving them wrong decides whether a show the user already streams
  *      keeps collecting episodes.
- *   5. SEARCH: at the end, trigger a search for every monitored movie/episode.
+ *   5. SEARCH: at the end, trigger a search for everything left monitored that
+ *      is still missing a file, grouping episodes into season searches wherever
+ *      that cannot pull back an episode the sweep just unmonitored. Searching
+ *      per episode is what an indexer feels, so this is where the run's cost to
+ *      the outside world is decided — see `planEpisodeSearch`.
  *
  * A run always syncs first so decisions are based on fresh data. When
  * `applyChanges` is false the run is a dry-run: it records what *would* happen
@@ -477,6 +481,106 @@ export function planSeriesMonitored(
   // Sonarr has not finished building yet.
   if (!seasons.length) return null;
   return status?.toLowerCase() === ENDED ? false : null;
+}
+
+/** One episode as the end-of-run search sees it. */
+export interface SearchEpisode {
+  arrEpisodeId: number;
+  seasonNumber: number;
+  monitored: boolean;
+  hasFile: boolean;
+  /** Null when Sonarr has no announced date — treated as "not aired yet". */
+  airDateUtc: Date | null;
+}
+
+/** A season searched with one query instead of one per episode. */
+export interface SeasonSearch {
+  /** Sonarr's series id. */
+  arrId: number;
+  seasonNumber: number;
+  /** How many episodes this single query stands in for, for the run counts. */
+  episodes: number;
+}
+
+/** What the end-of-run search should ask one Sonarr instance for. */
+export interface EpisodeSearchPlan {
+  seasons: SeasonSearch[];
+  /** Episodes searched one by one, by Sonarr episode id. */
+  episodeIds: number[];
+  /** Episodes covered either way — what `searchedItems` counts. */
+  total: number;
+}
+
+/**
+ * Decide how to search the episodes a sweep leaves monitored.
+ *
+ * `EpisodeSearch` costs **one indexer query per id** — Sonarr's handler loops
+ * over `episodeIds` and searches each separately — so handing it every
+ * monitored episode in a library asks the indexers for tens of thousands of
+ * queries in one go, however few commands they are batched into. That is not a
+ * search an indexer will serve; it is a search that gets the user rate-limited.
+ * Two filters and one grouping rule cut it down.
+ *
+ * **Episodes that already have a file are not searched.** For those a search
+ * can only find an upgrade, and "go and get what is no longer on streaming" is
+ * not an upgrade run — Sonarr does upgrades on its own schedule, via
+ * `CutoffUnmetEpisodeSearch`. On a settled library this removes almost the
+ * whole list, and it is the single biggest saving here.
+ *
+ * **Unaired episodes are not searched either**, reading `airDateUtc` exactly as
+ * `planSeasons` does. Nothing exists to find yet, and Sonarr's own RSS sync
+ * picks the episode up when it airs.
+ *
+ * What survives is grouped by season, and a season is searched **as a season
+ * only when every episode of it is monitored**. That is stricter than Sonarr's
+ * own bulk search, which groups whenever a season contributes more than one
+ * episode, and the extra condition is the load-bearing part: monitoring gates
+ * *grabbing*, not *importing*, so a season pack accepted for a half-monitored
+ * season is imported in full — including the episodes this sweep unmonitored
+ * and deleted **because they are on streaming**. Grouping on Sonarr's rule
+ * would hand back the library the sweep had just cleared. A mixed season
+ * therefore falls back to episode ids, which name exactly what may be fetched.
+ *
+ * A season contributing a single episode stays an episode search too: one query
+ * either way, and the narrower one cannot pull in a pack.
+ *
+ * Season 0 never reaches this — sync drops specials before they are recorded.
+ */
+export function planEpisodeSearch(
+  series: { arrId: number; episodes: SearchEpisode[] }[],
+  now: Date
+): EpisodeSearchPlan {
+  const hasAired = (e: SearchEpisode) =>
+    e.airDateUtc !== null && e.airDateUtc.getTime() <= now.getTime();
+
+  const seasons: SeasonSearch[] = [];
+  const episodeIds: number[] = [];
+
+  for (const s of series) {
+    const bySeason = new Map<number, SearchEpisode[]>();
+    for (const ep of s.episodes) {
+      const list = bySeason.get(ep.seasonNumber);
+      if (list) list.push(ep);
+      else bySeason.set(ep.seasonNumber, [ep]);
+    }
+
+    // Season order, so the commands and the run log follow the show.
+    for (const [seasonNumber, eps] of [...bySeason.entries()].sort(([a], [b]) => a - b)) {
+      const wanted = eps.filter((e) => e.monitored && !e.hasFile && hasAired(e));
+      if (!wanted.length) continue;
+      if (wanted.length > 1 && eps.every((e) => e.monitored)) {
+        seasons.push({ arrId: s.arrId, seasonNumber, episodes: wanted.length });
+      } else {
+        for (const e of wanted) episodeIds.push(e.arrEpisodeId);
+      }
+    }
+  }
+
+  return {
+    seasons,
+    episodeIds,
+    total: episodeIds.length + seasons.reduce((n, s) => n + s.episodes, 0),
+  };
 }
 
 /**
@@ -945,11 +1049,17 @@ async function searchRadarr(
   arrIds?: number[]
 ) {
   const client = new RadarrClient(conn.baseUrl, conn.apiKey);
+  // `hasFile: false` for the reason planEpisodeSearch spells out: a movie that
+  // is already on disk can only be searched for an upgrade, which is not what
+  // this run is for. Radarr has no cheaper shape than one search per movie —
+  // a movie is one query however it is asked for — so this filter is the whole
+  // saving on this side.
   const monitored = await prisma.mediaItem.findMany({
     where: {
       connectionId: conn.id,
       type: "MOVIE",
       monitored: true,
+      hasFile: false,
       skipped: false,
       ...arrIdFilter(arrIds),
     },
@@ -957,7 +1067,7 @@ async function searchRadarr(
   });
   const ids = monitored.map((m) => m.arrId);
   if (!ids.length) return;
-  push("action", `[${conn.name}] Search ${ids.length} monitored movie(s).`);
+  push("action", `[${conn.name}] Search ${ids.length} monitored movie(s) with no file.`);
   counts.searchedItems += ids.length;
   if (!dryRun) {
     // Chunked for the same reason the episode search is: a whole library's
@@ -978,22 +1088,54 @@ async function searchSonarr(
   arrIds?: number[]
 ) {
   const client = new SonarrClient(conn.baseUrl, conn.apiKey);
-  // Read the episode ids directly rather than loading every series with its
-  // episodes attached: the search only needs the ids.
-  const episodes = await prisma.episode.findMany({
-    where: {
-      monitored: true,
-      media: { connectionId: conn.id, type: "TV", skipped: false, ...arrIdFilter(arrIds) },
+  // Every episode of every in-scope series, not only the ones being searched:
+  // whether a season may be searched as a season turns on the episodes left
+  // *out* of the search as much as on the ones in it. Still a narrow select,
+  // for the reason sweepSonarr gives — `streamingInfo` is a JSON blob per row,
+  // and none of these decisions read it.
+  //
+  // Read afresh rather than reusing what sweepSonarr loaded: the sweep has
+  // since written its own unmonitors, re-monitors and file deletions to these
+  // rows, and searching from the pre-sweep picture would ask Sonarr for
+  // episodes it was just told to stop wanting. In a dry-run nothing was
+  // written, so what is counted here is the pre-sweep answer — the same
+  // approximation every dry-run count carries.
+  const series = await prisma.mediaItem.findMany({
+    where: { connectionId: conn.id, type: "TV", skipped: false, ...arrIdFilter(arrIds) },
+    orderBy: { arrId: "asc" },
+    select: {
+      arrId: true,
+      episodes: {
+        // Ordered so a season searched by id lists its episodes in the order
+        // they aired; `planEpisodeSearch` puts the seasons themselves in order.
+        orderBy: { episodeNumber: "asc" },
+        select: {
+          arrEpisodeId: true,
+          seasonNumber: true,
+          monitored: true,
+          hasFile: true,
+          airDateUtc: true,
+        },
+      },
     },
-    select: { arrEpisodeId: true },
   });
-  const episodeIds = episodes.map((e) => e.arrEpisodeId);
-  if (!episodeIds.length) return;
-  push("action", `[${conn.name}] Search ${episodeIds.length} monitored episode(s).`);
-  counts.searchedItems += episodeIds.length;
+
+  const plan = planEpisodeSearch(series, new Date());
+  if (!plan.total) return;
+  push(
+    "action",
+    `[${conn.name}] Search ${plan.total} monitored episode(s) with no file: ` +
+      `${plan.seasons.length} season search(es), ${plan.episodeIds.length} episode search(es).`
+  );
+  // The episodes covered, not the commands sent — a season search stands in for
+  // all of its own, and counting commands would read as a collapse in coverage.
+  counts.searchedItems += plan.total;
   if (!dryRun) {
+    for (const season of plan.seasons) {
+      await client.searchSeason(season.arrId, season.seasonNumber);
+    }
     // Chunk to avoid overly large command payloads.
-    for (const batch of chunk(episodeIds, BATCH)) {
+    for (const batch of chunk(plan.episodeIds, BATCH)) {
       await client.searchEpisodes(batch);
     }
   }

@@ -72,6 +72,7 @@ vi.mock("./arr", () => ({
     setEpisodeMonitored = record("sonarr", "setEpisodeMonitored");
     deleteEpisodeFiles = record("sonarr", "deleteEpisodeFiles");
     searchEpisodes = record("sonarr", "searchEpisodes");
+    searchSeason = record("sonarr", "searchSeason");
     getSeriesById = record("sonarr", "getSeriesById", ([id]) =>
       sonarrSeries.get(id as number) ?? defaultSeries(id as number)
     );
@@ -245,6 +246,16 @@ describe("dry-run", () => {
     await makeSettings({ applyChanges: false, deleteFiles: true, searchAtEnd: true });
     const conn = await makeConnection();
     await makeMediaItem(conn.id, { arrId: 1, monitored: true, onStreaming: true, movieFileId: 11 });
+    // A second title, so the search count has something to report: the first is
+    // on streaming and would end the sweep unmonitored, and the end-of-run
+    // search only covers what is monitored and still missing a file.
+    await makeMediaItem(conn.id, {
+      arrId: 2,
+      monitored: true,
+      onStreaming: false,
+      hasFile: false,
+      movieFileId: null,
+    });
 
     const run = await sweepAndWait();
     expect(run.dryRun).toBe(true);
@@ -253,7 +264,7 @@ describe("dry-run", () => {
     expect(run.searchedItems).toBe(1);
     expect(arrCalls).toHaveLength(0);
 
-    const row = await prisma.mediaItem.findFirstOrThrow();
+    const row = await prisma.mediaItem.findFirstOrThrow({ where: { arrId: 1 } });
     expect(row.monitored).toBe(true);
     expect(row.hasFile).toBe(true);
   });
@@ -326,6 +337,129 @@ describe("sweepSonarr", () => {
     const run = await sweepAndWait();
     expect(run.deletedFiles).toBe(1);
     expect(callsTo("deleteEpisodeFiles")[0].args).toEqual([[950]]);
+  });
+});
+
+describe("end-of-run search", () => {
+  /**
+   * An episode the search should want: monitored, aired, and missing its file.
+   * `makeEpisode` defaults to having one, which is the state that is *not*
+   * searched — a search could only find an upgrade for it.
+   */
+  const missing = { monitored: true, onStreaming: false, hasFile: false, episodeFileId: null };
+
+  it("asks for a fully monitored season once instead of once per episode", async () => {
+    await makeSettings({ applyChanges: true, deleteFiles: false, searchAtEnd: true });
+    const conn = await makeConnection({ type: "SONARR" });
+    const show = await makeMediaItem(conn.id, { type: "TV", arrId: 7, title: "Show" });
+    await makeEpisode(show.id, { arrEpisodeId: 101, episodeNumber: 1, ...missing });
+    await makeEpisode(show.id, { arrEpisodeId: 102, episodeNumber: 2, ...missing });
+    await makeEpisode(show.id, { arrEpisodeId: 103, episodeNumber: 3, ...missing });
+
+    const run = await sweepAndWait();
+
+    expect(callsTo("searchSeason").map((c) => c.args)).toEqual([[7, 1]]);
+    expect(callsTo("searchEpisodes")).toHaveLength(0);
+    // Three episodes were searched — by one command, but the count is coverage.
+    expect(run.searchedItems).toBe(3);
+  });
+
+  it("names the episodes instead when the season holds an unmonitored one", async () => {
+    // The unmonitored episode is on streaming and its file is gone. A season
+    // pack would be imported whole and put it straight back, so the season is
+    // searched by id — which names exactly what may be fetched.
+    await makeSettings({ applyChanges: true, deleteFiles: false, searchAtEnd: true });
+    const conn = await makeConnection({ type: "SONARR" });
+    const show = await makeMediaItem(conn.id, { type: "TV", arrId: 7, title: "Show" });
+    await makeEpisode(show.id, { arrEpisodeId: 101, episodeNumber: 1, ...missing });
+    await makeEpisode(show.id, { arrEpisodeId: 102, episodeNumber: 2, ...missing });
+    await makeEpisode(show.id, {
+      arrEpisodeId: 103,
+      episodeNumber: 3,
+      monitored: false,
+      onStreaming: true,
+      hasFile: false,
+      episodeFileId: null,
+    });
+
+    const run = await sweepAndWait();
+
+    expect(callsTo("searchSeason")).toHaveLength(0);
+    expect(callsTo("searchEpisodes").map((c) => c.args)).toEqual([[[101, 102]]]);
+    expect(run.searchedItems).toBe(2);
+  });
+
+  it("leaves out episodes that already have a file", async () => {
+    await makeSettings({ applyChanges: true, deleteFiles: false, searchAtEnd: true });
+    const conn = await makeConnection({ type: "SONARR" });
+    const show = await makeMediaItem(conn.id, { type: "TV", arrId: 7, title: "Show" });
+    // Monitored and on disk: nothing to fetch, and this is most of a library.
+    await makeEpisode(show.id, { arrEpisodeId: 101, episodeNumber: 1, monitored: true });
+    await makeEpisode(show.id, { arrEpisodeId: 102, episodeNumber: 2, monitored: true });
+
+    const run = await sweepAndWait();
+
+    expect(callsTo("searchSeason")).toHaveLength(0);
+    expect(callsTo("searchEpisodes")).toHaveLength(0);
+    expect(run.searchedItems).toBe(0);
+  });
+
+  it("searches an episode the sweep just re-monitored and had deleted before", async () => {
+    // The case the search exists for: it left streaming, so it comes back
+    // monitored — and the file went in an earlier sweep, so it must be fetched.
+    await makeSettings({ applyChanges: true, deleteFiles: false, searchAtEnd: true });
+    const conn = await makeConnection({ type: "SONARR" });
+    const show = await makeMediaItem(conn.id, { type: "TV", arrId: 7, title: "Show" });
+    await makeEpisode(show.id, {
+      arrEpisodeId: 101,
+      episodeNumber: 1,
+      monitored: false,
+      onStreaming: false,
+      hasFile: false,
+      episodeFileId: null,
+    });
+
+    const run = await sweepAndWait();
+
+    expect(run.remonitoredEps).toBe(1);
+    expect(callsTo("searchEpisodes").map((c) => c.args)).toEqual([[[101]]]);
+    expect(run.searchedItems).toBe(1);
+  });
+
+  it("leaves out movies that already have a file", async () => {
+    await makeSettings({ applyChanges: true, deleteFiles: false, searchAtEnd: true });
+    const conn = await makeConnection();
+    await makeMediaItem(conn.id, { arrId: 1, title: "On Disk", monitored: true });
+    await makeMediaItem(conn.id, {
+      arrId: 2,
+      title: "Wanted",
+      monitored: true,
+      hasFile: false,
+      movieFileId: null,
+    });
+
+    const run = await sweepAndWait();
+
+    expect(callsTo("searchMovies").map((c) => c.args)).toEqual([[[2]]]);
+    expect(run.searchedItems).toBe(1);
+  });
+
+  it("never searches a skipped title, however wanted it looks", async () => {
+    await makeSettings({ applyChanges: true, deleteFiles: false, searchAtEnd: true });
+    const conn = await makeConnection({ type: "SONARR" });
+    const show = await makeMediaItem(conn.id, {
+      type: "TV",
+      arrId: 7,
+      title: "Opted Out",
+      skipped: true,
+    });
+    await makeEpisode(show.id, { arrEpisodeId: 101, episodeNumber: 1, ...missing });
+    await makeEpisode(show.id, { arrEpisodeId: 102, episodeNumber: 2, ...missing });
+
+    const run = await sweepAndWait();
+
+    expect(arrCalls).toHaveLength(0);
+    expect(run.searchedItems).toBe(0);
   });
 });
 
@@ -713,7 +847,13 @@ describe("error isolation", () => {
   it("still searches at the end after a sweep failure", async () => {
     await makeSettings({ applyChanges: true, searchAtEnd: true });
     const conn = await makeConnection();
-    await makeMediaItem(conn.id, { arrId: 1, monitored: true, onStreaming: true });
+    await makeMediaItem(conn.id, {
+      arrId: 1,
+      monitored: true,
+      onStreaming: true,
+      hasFile: false,
+      movieFileId: null,
+    });
     failing.add("radarr.setMoviesMonitored");
 
     await sweepAndWait();
@@ -808,8 +948,9 @@ describe("targeted sweep", () => {
   it("searches only the titles it covered", async () => {
     await makeSettings({ applyChanges: true, deleteFiles: false, searchAtEnd: true });
     const conn = await makeConnection();
-    await makeMediaItem(conn.id, { arrId: 1, title: "Wanted", monitored: true, onStreaming: false });
-    await makeMediaItem(conn.id, { arrId: 2, title: "Other", monitored: true, onStreaming: false });
+    const searchable = { monitored: true, onStreaming: false, hasFile: false, movieFileId: null };
+    await makeMediaItem(conn.id, { arrId: 1, title: "Wanted", ...searchable });
+    await makeMediaItem(conn.id, { arrId: 2, title: "Other", ...searchable });
 
     const run = await targetedSweepAndWait([
       { connectionId: conn.id, type: "MOVIE", arrId: 1, title: "Wanted" },
