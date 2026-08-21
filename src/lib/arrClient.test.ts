@@ -116,6 +116,13 @@ describe("SonarrClient", () => {
     expect(body(c)).toEqual({ name: "EpisodeSearch", episodeIds: [4, 5] });
   });
 
+  it("issues a season search command", async () => {
+    await client().searchSeason(12, 3);
+    const c = only();
+    expect(c.init.method).toBe("POST");
+    expect(body(c)).toEqual({ name: "SeasonSearch", seriesId: 12, seasonNumber: 3 });
+  });
+
   it("makes no request for an empty id list", async () => {
     await client().setEpisodeMonitored([], true);
     await client().deleteEpisodeFiles([]);

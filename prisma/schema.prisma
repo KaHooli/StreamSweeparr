@@ -392,9 +392,13 @@ model Episode {
   media         MediaItem @relation(fields: [mediaId], references: [id], onDelete: Cascade)
   mediaId       Int
 
+  // Also the index every episode read goes through: both the sweep and the
+  // end-of-run search fetch a series' episodes whole, by mediaId, and this
+  // unique key serves that as a prefix. There is deliberately no index on
+  // `monitored` — the search used to filter on it and no longer can, because
+  // deciding whether a season may be searched as a season needs the
+  // unmonitored episodes as much as the monitored ones.
   @@unique([mediaId, arrEpisodeId])
-  // The end-of-run search collects every monitored episode across the library.
-  @@index([mediaId, monitored])
 }
 
 enum RunStatus {
