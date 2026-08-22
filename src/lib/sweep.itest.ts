@@ -461,6 +461,64 @@ describe("end-of-run search", () => {
     expect(arrCalls).toHaveLength(0);
     expect(run.searchedItems).toBe(0);
   });
+
+  it("never searches episodes of a show left unmonitored by a failed reconcile", async () => {
+    // reconcileSeasons would have put this series back on — it holds a
+    // monitored season — but the write fails, so the show ends the sweep
+    // switched off. The search must not then go and ask for its episodes.
+    await makeSettings({ applyChanges: true, deleteFiles: false, searchAtEnd: true });
+    const conn = await makeConnection({ type: "SONARR" });
+    const show = await makeMediaItem(conn.id, {
+      type: "TV",
+      arrId: 7,
+      title: "Switched Off",
+      monitored: false,
+    });
+    await makeEpisode(show.id, { arrEpisodeId: 101, episodeNumber: 1, ...missing });
+    await makeEpisode(show.id, { arrEpisodeId: 102, episodeNumber: 2, ...missing });
+    sonarrSeries.set(7, {
+      id: 7,
+      monitored: false,
+      status: "continuing",
+      seasons: [{ seasonNumber: 1, monitored: true }],
+    });
+    failing.add("sonarr.updateSeries");
+
+    const run = await sweepAndWait();
+
+    expect(run.status).toBe("FAILED");
+    expect((await prisma.mediaItem.findFirstOrThrow({ where: { arrId: 7 } })).monitored).toBe(false);
+    expect(callsTo("searchSeason")).toHaveLength(0);
+    expect(callsTo("searchEpisodes")).toHaveLength(0);
+    expect(run.searchedItems).toBe(0);
+  });
+
+  it("searches a show the sweep put back on in the same run", async () => {
+    // The series flag moves before the search reads it, so a show re-monitored
+    // this run is searched this run rather than waiting for the next one.
+    await makeSettings({ applyChanges: true, deleteFiles: false, searchAtEnd: true });
+    const conn = await makeConnection({ type: "SONARR" });
+    const show = await makeMediaItem(conn.id, {
+      type: "TV",
+      arrId: 7,
+      title: "Came Back",
+      monitored: false,
+    });
+    await makeEpisode(show.id, { arrEpisodeId: 101, episodeNumber: 1, ...missing });
+    sonarrSeries.set(7, {
+      id: 7,
+      monitored: false,
+      status: "ended",
+      seasons: [{ seasonNumber: 1, monitored: false }],
+    });
+
+    const run = await sweepAndWait();
+
+    // The season came back, so the series did too — and then it was searched.
+    expect(callsTo("updateSeries")).toHaveLength(1);
+    expect(callsTo("searchEpisodes").map((c) => c.args)).toEqual([[[101]]]);
+    expect(run.searchedItems).toBe(1);
+  });
 });
 
 describe("sweepSonarr — season monitoring", () => {

@@ -607,6 +607,11 @@ instead, which names precisely what may be fetched.
 The run log says which shape it used, e.g. `Search 34 monitored episode(s) with
 no file: 6 season search(es), 4 episode search(es).`
 
+**Nothing is searched for a show that is switched off.** A movie has always been
+skipped when it's unmonitored, and a series is now treated the same way: Sonarr
+reads a monitored episode of an unmonitored show as unmonitored anyway, so
+asking for one would be asking for something the show is switched off for.
+
 Movies have no equivalent grouping — a film is one query however you ask — so on
 the Radarr side only the missing-file rule applies.
 

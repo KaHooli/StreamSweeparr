@@ -1100,8 +1100,26 @@ async function searchSonarr(
   // episodes it was just told to stop wanting. In a dry-run nothing was
   // written, so what is counted here is the pre-sweep answer — the same
   // approximation every dry-run count carries.
+  // `monitored: true` is the series' own flag, gating its episodes the way
+  // `searchRadarr` gates a movie. Sonarr reads a monitored episode of an
+  // unmonitored series as unmonitored, so searching one asks for something the
+  // show is switched off for.
+  //
+  // Most of the time this excludes nothing, because `reconcileSeasons` has just
+  // put the series flag back on for anything holding a monitored season. What
+  // it covers is the case where that did not happen: a reconcile that failed
+  // against an unreachable Sonarr leaves the series off, and without this the
+  // run would finish by asking that same Sonarr to go and fetch its episodes.
+  // The end-of-run search should not be the one step that ignores a flag every
+  // other step in the sweep respects.
   const series = await prisma.mediaItem.findMany({
-    where: { connectionId: conn.id, type: "TV", skipped: false, ...arrIdFilter(arrIds) },
+    where: {
+      connectionId: conn.id,
+      type: "TV",
+      monitored: true,
+      skipped: false,
+      ...arrIdFilter(arrIds),
+    },
     orderBy: { arrId: "asc" },
     select: {
       arrId: true,
