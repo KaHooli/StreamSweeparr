@@ -358,6 +358,8 @@ export interface SeasonEpisode {
   arrEpisodeId: number;
   /** Monitored state once this sweep's episode changes are applied. */
   monitored: boolean;
+  /** No availability answer for this episode — carries no evidence either way. */
+  streamingUnknown: boolean;
   /** Null when Sonarr has no announced date — treated as "not aired yet". */
   airDateUtc: Date | null;
 }
@@ -387,16 +389,24 @@ export interface SeasonPlan {
  * again.
  *
  * **Unmonitor** a season when:
- *   - it has at least one **aired** episode — a season that has not started
- *     carries no evidence either way, and marking it unmonitored would be a
- *     guess about a show the user may well still want; and
- *   - every aired episode is unmonitored once this sweep is applied.
+ *   - it has at least one episode that has **aired** and that the provider
+ *     actually answered for — a season carrying no evidence must never be
+ *     marked on the strength of that absence; and
+ *   - every such episode is unmonitored once this sweep is applied.
  *
- * Unaired episodes are deliberately ignored rather than required to be
- * unmonitored. A season that is still airing has future episodes sitting
- * monitored precisely so Sonarr grabs them, and waiting for those would mean a
- * currently-airing season could never qualify — which is the case the user hits
- * most, because it is the one where Sonarr keeps adding episodes.
+ * Two kinds of episode are deliberately ignored rather than required to be
+ * unmonitored, and for the same reason: neither carries evidence.
+ *
+ * *Unaired* ones sit monitored precisely so Sonarr grabs them, so waiting for
+ * those would mean a currently-airing season could never qualify — the case the
+ * user hits most, because it is the one Sonarr keeps adding episodes to.
+ *
+ * *Unknown* ones are episodes the provider said nothing about. Watchmode
+ * collapses a multi-part finale into a single record, so Sonarr's trailing part
+ * number matches nothing — and counting that silence as "not on streaming"
+ * denied entire seasons over one episode the provider had simply never listed.
+ * Both are put back by `correct` after the season write, so ignoring them here
+ * costs the episode nothing.
  *
  * **Monitor** a season that ends the sweep holding any monitored episode. That
  * covers the show which has left streaming and had its episodes re-monitored,
@@ -417,8 +427,10 @@ export interface SeasonPlan {
  * hold no episodes of. The `> 0` test is what stops that becoming an unmonitor.
  */
 export function planSeasons(episodes: SeasonEpisode[], now: Date): SeasonPlan[] {
-  const hasAired = (e: SeasonEpisode) =>
-    e.airDateUtc !== null && e.airDateUtc.getTime() <= now.getTime();
+  // An episode only speaks to whether a season is spent if it has aired *and*
+  // the provider answered for it. Everything else is silence.
+  const speaks = (e: SeasonEpisode) =>
+    !e.streamingUnknown && e.airDateUtc !== null && e.airDateUtc.getTime() <= now.getTime();
 
   const bySeason = new Map<number, SeasonEpisode[]>();
   for (const ep of episodes) {
@@ -430,7 +442,7 @@ export function planSeasons(episodes: SeasonEpisode[], now: Date): SeasonPlan[] 
 
   const plans: SeasonPlan[] = [];
   for (const [seasonNumber, eps] of bySeason) {
-    const aired = eps.filter(hasAired);
+    const aired = eps.filter(speaks);
     const spent = aired.length > 0 && !aired.some((e) => e.monitored);
     const monitored = spent ? false : eps.some((e) => e.monitored) ? true : null;
     if (monitored === null) continue;
@@ -847,6 +859,7 @@ async function sweepSonarr(
         // the sweep is done", and in a dry-run that is the whole answer.
         monitored:
           plan.monitor === "none" ? ep.monitored : plan.monitor === "remonitor",
+        streamingUnknown: ep.streamingUnknown,
         airDateUtc: ep.airDateUtc,
       });
 

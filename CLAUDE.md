@@ -331,8 +331,16 @@ rather than released, or the next tick would restart the sweep just stopped.
 Anything that deletes or mutates Sonarr/Radarr must respect:
 
 - `applyChanges` — false means dry-run; log what *would* happen, mutate nothing.
-- `streamingUnknown` — a failed/unmapped lookup. **Never** re-monitor or
+- `streamingUnknown` — no answer for this row. **Never** re-monitor or
   unmonitor on unknown status; a Watchmode outage must not churn the library.
+  On an `Episode` it is **per episode**, not inherited from the series: an
+  episode the provider never returned is unknown even when the series lookup
+  succeeded. Watchmode lists a two-part finale as one episode, so the trailing
+  part matches nothing — recorded as `onStreaming: false` that reads as a
+  confident negative and denied whole seasons in `planSeasons` over an episode
+  nobody had said anything about. `wmSeen` in `lib/sync.ts` is what keeps the
+  two apart; anything deciding on availability must ignore unknown rows rather
+  than count them as absent.
 - `skipped` — the `ss-skip` tag (`SKIP_TAG_LABEL` in `lib/arr.ts`). Skipped
   titles are never looked up, never (un)monitored, never have files deleted, and
   are excluded from the end-of-run search.

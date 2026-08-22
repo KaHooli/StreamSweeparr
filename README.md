@@ -644,6 +644,11 @@ back — in that order, in the one sweep.
   to. Those unaired episodes stay monitored, and the run log says so.
 - **A season that hasn't started is never touched.** With nothing aired there's
   nothing to go on.
+- **Episodes Watchmode didn't answer for don't count either way.** They're
+  ignored when deciding whether a season is spent, and left monitored — see
+  ["Not on streaming" and "no answer" are
+  different](#not-on-streaming-and-no-answer-are-different). A season Watchmode
+  said *nothing* about is never marked, since that's no evidence at all.
 - **Turning a season back on never re-monitors what's still streaming.**
   Episodes that are on one of your services stay unmonitored, which is the
   whole point of the sweep. The run log names how many were held back.
@@ -1251,6 +1256,22 @@ is one **you selected** *and* the way it's offered is a **type you count**.
 This is why the source-type checkboxes matter: leave *Rent* and *Buy*
 unchecked and a film that's only purchasable won't be treated as something you
 can already stream.
+
+### "Not on streaming" and "no answer" are different
+
+An episode Watchmode simply **didn't return** is recorded as *unknown*, not as
+"not on your services". The two look the same in a list of episodes and mean
+opposite things, and the sweep leans on the difference: an unknown episode is
+never unmonitored, never re-monitored, and — like an unaired one — is ignored
+when deciding whether a season is spent.
+
+This matters more than it sounds. Watchmode lists a **two-part finale as one
+episode**, so a 24-episode Sonarr season gets 23 records back and E24 matches
+nothing. Counted as "not on streaming", that one episode was enough to keep a
+whole season — and the show above it — looking half-watched forever.
+
+The same applies to a series Watchmode has no id for, or one whose lookup
+failed: every episode of it is unknown, and the sweep leaves the lot alone.
 
 ---
 

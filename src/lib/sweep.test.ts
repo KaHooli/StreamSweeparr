@@ -125,11 +125,12 @@ const UNAIRED = new Date("2026-12-01T00:00:00Z");
 
 let nextEpisodeId = 1;
 
-/** An episode, defaulting to "aired, and unmonitored once the sweep lands". */
+/** An episode, defaulting to "aired, answered for, unmonitored once the sweep lands". */
 const ep = (over: Partial<SeasonEpisode> = {}): SeasonEpisode => ({
   seasonNumber: 1,
   arrEpisodeId: nextEpisodeId++,
   monitored: false,
+  streamingUnknown: false,
   airDateUtc: AIRED,
   ...over,
 });
@@ -137,6 +138,13 @@ const ep = (over: Partial<SeasonEpisode> = {}): SeasonEpisode => ({
 /** An episode left monitored once the sweep lands. */
 const onEp = (over: Partial<SeasonEpisode> = {}): SeasonEpisode =>
   ep({ monitored: true, ...over });
+
+/**
+ * The shape this whole rule turns on: aired and monitored, but the provider
+ * never returned a record for it — Watchmode's collapsed multi-part finale.
+ */
+const unknownEp = (over: Partial<SeasonEpisode> = {}): SeasonEpisode =>
+  ep({ monitored: true, streamingUnknown: true, ...over });
 
 /** Season number -> flag written, which is what most cases care about. */
 const flags = (eps: SeasonEpisode[]) =>
@@ -173,6 +181,45 @@ describe("planSeasons — turning a season off", () => {
 
   it("returns nothing for a series with no episodes", () => {
     expect(planSeasons([], NOW)).toEqual([]);
+  });
+});
+
+describe("planSeasons — episodes the provider never answered for", () => {
+  it("ignores an unknown episode rather than letting it deny the season", () => {
+    // The bug this closes: Watchmode collapses a two-part finale into one
+    // record, so Sonarr's E24 matched nothing and was stored as "not on
+    // streaming" — a confident negative that denied the whole season.
+    expect(flags([ep(), ep(), unknownEp()])).toEqual([[1, false]]);
+  });
+
+  it("still needs one aired episode it did get an answer for", () => {
+    // A season the provider said nothing about at all is not spent, it is
+    // unheard of. Marking it on that silence is the failure mode to avoid.
+    expect(flags([unknownEp(), unknownEp()])).toEqual([[1, true]]);
+  });
+
+  it("does not let an unknown episode stand in for evidence", () => {
+    // Only the unknown one is monitored, and it cannot speak — but neither can
+    // it be ignored into a season with no aired, answered episodes at all.
+    expect(flags([ep({ airDateUtc: UNAIRED }), unknownEp()])).toEqual([[1, true]]);
+  });
+
+  it("still refuses when an aired, answered episode is monitored", () => {
+    expect(flags([ep(), onEp(), unknownEp()])).toEqual([[1, true]]);
+  });
+
+  it("puts the unknown episode back after the season write", () => {
+    // It is monitored on purpose; the cascade would clear it like any other.
+    const finale = unknownEp();
+    expect(planSeasons([ep(), ep(), finale], NOW)).toEqual([
+      { seasonNumber: 1, monitored: false, correct: [finale.arrEpisodeId] },
+    ]);
+  });
+
+  it("treats an unknown, unmonitored episode as no obstacle", () => {
+    expect(planSeasons([ep(), ep({ streamingUnknown: true })], NOW)).toEqual([
+      { seasonNumber: 1, monitored: false, correct: [] },
+    ]);
   });
 });
 

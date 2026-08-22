@@ -597,6 +597,49 @@ describe("sweepSonarr — season monitoring", () => {
     expect(future.monitored).toBe(true);
   });
 
+  it("is not denied by an episode the provider never answered for", async () => {
+    // Watchmode collapses a two-part finale into one record, so Sonarr's E24
+    // matches nothing. Stored as a confident "not on streaming" it used to
+    // deny the whole season; stored as unknown it is ignored, and the episode
+    // itself is put back after the season write like any unaired one.
+    await makeSettings({ applyChanges: true, deleteFiles: false, searchAtEnd: false });
+    const conn = await makeConnection({ type: "SONARR" });
+    const show = await makeMediaItem(conn.id, { type: "TV", arrId: 7, title: "Friends" });
+    await makeEpisode(show.id, { arrEpisodeId: 101, episodeNumber: 23, monitored: true, onStreaming: true });
+    await makeEpisode(show.id, {
+      arrEpisodeId: 102,
+      episodeNumber: 24,
+      monitored: true,
+      onStreaming: false,
+      streamingUnknown: true,
+    });
+    sonarrHasSeasons(7, 1);
+
+    const run = await sweepAndWait();
+    expect(run.status).toBe("SUCCESS");
+    expect(putSeasons()).toEqual([{ seasonNumber: 1, monitored: false }]);
+
+    const sonarrCalls = arrCalls.filter((c) => c.client === "sonarr");
+    const methods = sonarrCalls.map((c) => c.method);
+    expect(methods.lastIndexOf("setEpisodeMonitored")).toBeGreaterThan(methods.indexOf("updateSeries"));
+    expect(sonarrCalls[methods.lastIndexOf("setEpisodeMonitored")].args).toEqual([[102], true]);
+    // The unanswered episode keeps its own monitoring throughout.
+    expect((await prisma.episode.findFirstOrThrow({ where: { arrEpisodeId: 102 } })).monitored).toBe(true);
+  });
+
+  it("still refuses a season the provider answered nothing about", async () => {
+    // Every episode unknown is not a spent season, it is no evidence at all.
+    await makeSettings({ applyChanges: true, searchAtEnd: false });
+    const conn = await makeConnection({ type: "SONARR" });
+    const show = await makeMediaItem(conn.id, { type: "TV", arrId: 7 });
+    await makeEpisode(show.id, { arrEpisodeId: 101, episodeNumber: 1, monitored: false, streamingUnknown: true });
+    await makeEpisode(show.id, { arrEpisodeId: 102, episodeNumber: 2, monitored: false, streamingUnknown: true });
+    sonarrHasSeasons(7, 1);
+
+    await sweepAndWait();
+    expect(callsTo("updateSeries")).toHaveLength(0);
+  });
+
   it("writes nothing when Sonarr already has the season unmonitored", async () => {
     await makeSettings({ applyChanges: true, searchAtEnd: false });
     const conn = await makeConnection({ type: "SONARR" });
