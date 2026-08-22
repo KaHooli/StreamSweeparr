@@ -21,6 +21,8 @@ let radarrListCalls = 0;
 let watchmodeIds: Record<number, number> = {};
 /** Watchmode id -> title sources, or the string "error" to fail the lookup. */
 let watchmodeSources: Record<number, unknown> = {};
+/** Watchmode's episode list per title id — the TV equivalent of the above. */
+let watchmodeEpisodes: Record<number, unknown[]> = {};
 let watchmodeSourceCalls: number[] = [];
 let watchmodeSearchCalls = 0;
 /** Plan probes — a movies-only install has no changes feed to earn one. */
@@ -120,6 +122,9 @@ vi.mock("./watchmode", async (importOriginal) => {
         if (entry === "error") throw new Error("watchmode unreachable");
         return entry ?? [];
       }
+      async titleEpisodes(id: number) {
+        return watchmodeEpisodes[id] ?? [];
+      }
     },
   };
 });
@@ -216,6 +221,7 @@ beforeEach(async () => {
   radarrListCalls = 0;
   watchmodeIds = {};
   watchmodeSources = {};
+  watchmodeEpisodes = {};
   watchmodeSourceCalls = [];
   watchmodeSearchCalls = 0;
   watchmodePlanProbes = 0;
@@ -750,5 +756,101 @@ describe("runSync — scoped to named titles", () => {
 
     expect(result.movies).toBe(1);
     expect(result.errors).toEqual([]);
+  });
+});
+
+describe("syncSonarr — episodes the provider does not answer for", () => {
+  /** Sonarr's view: a 3-episode season whose finale is split into two parts. */
+  const sonarrShow = {
+    id: 1,
+    title: "Friends",
+    year: 1994,
+    monitored: true,
+    tmdbId: 2001,
+    tags: [],
+    seasons: [{ seasonNumber: 1, monitored: true }],
+  };
+  const arrEpisode = (n: number) => ({
+    id: 100 + n,
+    seriesId: 1,
+    seasonNumber: 1,
+    episodeNumber: n,
+    title: `Episode ${n}`,
+    airDateUtc: "2004-01-01T00:00:00Z",
+    monitored: true,
+    hasFile: false,
+  });
+  const wmEpisode = (n: number) => ({
+    id: 900 + n,
+    season_number: 1,
+    episode_number: n,
+    sources: wmOnNetflix,
+  });
+
+  async function tvSettings() {
+    return makeSettings({
+      watchmodeApiKeys: ["wm-key"],
+      watchmodeApiKey: "wm-key",
+      countries: ["US"],
+      serviceIds: [WM_NETFLIX],
+      countedTypes: ["sub"],
+      watchmodeCacheDays: 0,
+    });
+  }
+
+  it("records an episode Watchmode never returned as unknown, not as absent", async () => {
+    // Watchmode collapses the two-part finale into one record, so it answers
+    // for E1 and E2 but never mentions E3. Stored as onStreaming:false that
+    // reads as a confident "not on your services"; it has to read as silence.
+    await tvSettings();
+    await makeConnection({ type: "SONARR" });
+    sonarrSeries = [sonarrShow];
+    sonarrEpisodes = { 1: [arrEpisode(1), arrEpisode(2), arrEpisode(3)] };
+    watchmodeIds = { 2001: 77701 };
+    watchmodeEpisodes = { 77701: [wmEpisode(1), wmEpisode(2)] };
+
+    await runSync();
+
+    const eps = await prisma.episode.findMany({ orderBy: { episodeNumber: "asc" } });
+    expect(eps.map((e) => e.onStreaming)).toEqual([true, true, false]);
+    expect(eps.map((e) => e.streamingUnknown)).toEqual([false, false, true]);
+  });
+
+  it("keeps an answered-but-unavailable episode as a confident negative", async () => {
+    // The distinction that matters: Watchmode DID return E3, its sources just
+    // are not the user's. That is an answer, and must not become unknown.
+    await tvSettings();
+    await makeConnection({ type: "SONARR" });
+    sonarrSeries = [sonarrShow];
+    sonarrEpisodes = { 1: [arrEpisode(1), arrEpisode(2), arrEpisode(3)] };
+    watchmodeIds = { 2001: 77701 };
+    watchmodeEpisodes = {
+      77701: [
+        wmEpisode(1),
+        wmEpisode(2),
+        { id: 903, season_number: 1, episode_number: 3, sources: [] },
+      ],
+    };
+
+    await runSync();
+
+    const eps = await prisma.episode.findMany({ orderBy: { episodeNumber: "asc" } });
+    expect(eps.map((e) => e.onStreaming)).toEqual([true, true, false]);
+    expect(eps.map((e) => e.streamingUnknown)).toEqual([false, false, false]);
+  });
+
+  it("marks every episode unknown when the series lookup itself failed", async () => {
+    await tvSettings();
+    await makeConnection({ type: "SONARR" });
+    sonarrSeries = [sonarrShow];
+    sonarrEpisodes = { 1: [arrEpisode(1), arrEpisode(2)] };
+    // No Watchmode id resolves, so nothing was asked about this series at all.
+    watchmodeIds = {};
+
+    await runSync();
+
+    const eps = await prisma.episode.findMany({ orderBy: { episodeNumber: "asc" } });
+    expect(eps.every((e) => e.streamingUnknown)).toBe(true);
+    expect(eps.every((e) => !e.onStreaming)).toBe(true);
   });
 });

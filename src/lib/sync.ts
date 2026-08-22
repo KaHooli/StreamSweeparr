@@ -1063,6 +1063,24 @@ async function syncSonarr(
     // Build a season×episode -> matched-sources map, either from a fresh
     // Watchmode pull or from the cached episode rows.
     const wmMap = new Map<string, ReturnType<typeof streamingInfoJson>>();
+    /**
+     * Every season×episode key Watchmode actually returned a record for,
+     * whether or not its sources matched.
+     *
+     * `wmMap` cannot answer that: it only holds episodes with a *matching*
+     * source, so a miss there covers both "Watchmode says this is not on your
+     * services" and "Watchmode has never heard of this episode". Those are
+     * different answers and only one of them is an answer.
+     *
+     * The distinction is not academic. Watchmode collapses a multi-part
+     * finale into one record — 23 entries for a 24-episode season — so
+     * Sonarr's trailing part number matches nothing. Recorded as
+     * `onStreaming: false` that reads as a confident negative, which is enough
+     * to deny the whole season in `planSeasons` and, through it, the series.
+     * Recorded as unknown it is correctly ignored, the way an unaired episode
+     * already is.
+     */
+    const wmSeen = new Set<string>();
     let streamingUnknown = false;
 
     if (canSkipWatchmode) {
@@ -1071,13 +1089,20 @@ async function syncSonarr(
       result.tvSkipped++;
       const cachedEpisodes = await prisma.episode.findMany({
         where: { mediaId: existing!.id },
-        select: { seasonNumber: true, episodeNumber: true, streamingInfo: true },
+        select: {
+          seasonNumber: true,
+          episodeNumber: true,
+          streamingInfo: true,
+          streamingUnknown: true,
+        },
       });
       for (const ep of cachedEpisodes) {
+        const key = `${ep.seasonNumber}x${ep.episodeNumber}`;
+        // The stored flag is what carries "Watchmode answered for this one"
+        // across a cached pass; there is nothing else on the row that could.
+        if (!ep.streamingUnknown) wmSeen.add(key);
         const info = (ep.streamingInfo as ReturnType<typeof streamingInfoJson> | null) ?? [];
-        if (Array.isArray(info) && info.length) {
-          wmMap.set(`${ep.seasonNumber}x${ep.episodeNumber}`, info);
-        }
+        if (Array.isArray(info) && info.length) wmMap.set(key, info);
       }
     } else if (watchmodeId !== null) {
       // Pull fresh episode availability from Watchmode.
@@ -1085,10 +1110,10 @@ async function syncSonarr(
         const wmEpisodes = await wm.titleEpisodes(watchmodeId, regions);
         result.tvProviderCalls++;
         for (const ep of wmEpisodes) {
+          const key = `${ep.season_number}x${ep.episode_number}`;
+          wmSeen.add(key);
           const matched = matchSources(ep.sources, serviceIds, countedTypes);
-          if (matched.length) {
-            wmMap.set(`${ep.season_number}x${ep.episode_number}`, streamingInfoJson(matched, logos));
-          }
+          if (matched.length) wmMap.set(key, streamingInfoJson(matched, logos));
         }
       } catch (e) {
         streamingUnknown = true;
@@ -1152,8 +1177,12 @@ async function syncSonarr(
     // Replace the episode snapshot atomically so a failure mid-loop can't
     // leave a series with a partial set of episodes.
     const episodeRows = realEpisodes.map((ep) => {
-      const matched = wmMap.get(`${ep.seasonNumber}x${ep.episodeNumber}`) ?? [];
+      const key = `${ep.seasonNumber}x${ep.episodeNumber}`;
+      const matched = wmMap.get(key) ?? [];
       const onStreaming = matched.length > 0;
+      // Unknown when the whole series lookup failed, and also when it succeeded
+      // but said nothing about this episode — see `wmSeen`.
+      const episodeUnknown = streamingUnknown || !wmSeen.has(key);
       if (onStreaming) streamingEpisodes++;
       if (ep.monitored) monitoredEpisodes++;
       return {
@@ -1170,7 +1199,7 @@ async function syncSonarr(
         hasFile: ep.hasFile,
         episodeFileId: ep.episodeFileId ?? null,
         onStreaming,
-        streamingUnknown,
+        streamingUnknown: episodeUnknown,
         streamingInfo: asJson(matched),
       };
     });
