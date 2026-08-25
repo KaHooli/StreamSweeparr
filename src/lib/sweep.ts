@@ -15,6 +15,9 @@
  *      that is still unmonitored once 1 and 2 are decided. Unlike `deleteFiles`
  *      — which only covers titles this sweep just unmonitored — this also clears
  *      an unmonitored back-catalogue. Items re-monitored by 2 are never purged.
+ *      With `cancelQueuedDownloads` also on, the same back-catalogue has its
+ *      in-progress downloads cancelled: purging a library while the download
+ *      client is still filling it back up only empties it on paper.
  *   4. SEASONS + SERIES (Sonarr only): Sonarr's own flags are brought into line
  *      with what sits underneath them. A season goes off once every *aired*
  *      episode of it is unmonitored and on while it still holds a monitored
@@ -309,11 +312,19 @@ export type MonitorAction = "unmonitor" | "remonitor" | "none";
 /** Why an item's file should be deleted, or null to keep it. */
 export type DeleteReason = "on streaming" | "unmonitored";
 
+/**
+ * Why an item's in-progress download should be cancelled, or null to let it
+ * finish. Deliberately the same two reasons as `DeleteReason` and kept as its
+ * own type: the file and the download are separate decisions that happen to
+ * answer to the same pair of settings.
+ */
+export type CancelReason = "on streaming" | "unmonitored";
+
 export interface ItemPlan {
   monitor: MonitorAction;
   deleteFile: DeleteReason | null;
   /** Cancel this item's in-progress download and drop it from the client. */
-  cancelDownload: boolean;
+  cancelDownload: CancelReason | null;
 }
 
 /**
@@ -333,15 +344,21 @@ export interface ItemPlan {
  *     being re-monitored are excluded: they are monitored once the sweep ends,
  *     so their files must survive.
  *
- * Download cancellation (`cancelQueuedDownloads`) is narrower than either, and
- * deliberately so. It fires only for an item **this sweep just unmonitored**
- * that is mid-download — the case where Sonarr grabbed something a moment
- * before we learned it was already on streaming, and would otherwise finish
- * fetching it. It is not extended to the unmonitored back-catalogue the way
- * `purgeUnmonitoredFiles` extends deletion: an already-unmonitored title that
- * is downloading is one somebody went and grabbed on purpose, and cancelling
- * that is not what the setting says it does. A file is also cheap to re-grab
- * later; a part-finished download is work thrown away.
+ * Download cancellation (`cancelQueuedDownloads`) tracks the file rules, one
+ * for one, because a download is simply a file that has not landed yet:
+ *   - on its own it covers the item this sweep just unmonitored — the case
+ *     where Sonarr grabbed something a moment before we learned it was already
+ *     on streaming, and would otherwise finish fetching it;
+ *   - with `purgeUnmonitoredFiles` it widens to anything left unmonitored, the
+ *     same back-catalogue that switch hands to the file rules. Purging a
+ *     library while its download client is still filling it back up is the
+ *     case that makes this worth having.
+ *
+ * The one place it deliberately does **not** track them is `hasFile`. A file
+ * rule needs a file to act on; a download by definition has not produced one
+ * yet, and the item mid-download with nothing on disk is exactly the one worth
+ * catching. So the cancellation is decided before `hasFile` gets a say, and an
+ * item can be cancelled while its `deleteFile` is null.
  */
 export function planItem(
   item: {
@@ -369,11 +386,18 @@ export function planItem(
     monitoredAfter = true;
   }
 
-  const cancelDownload =
-    monitor === "unmonitor" && !!item.inQueue && !!settings.cancelQueuedDownloads;
+  // Mirrors the file rules below, minus their `hasFile` precondition — see the
+  // docblock. `monitoredAfter` is what carries the purge case: an item this
+  // sweep unmonitors and one that was already unmonitored both end it that way,
+  // and only the second needs `purgeUnmonitoredFiles` to be in scope.
+  let cancelDownload: CancelReason | null = null;
+  if (item.inQueue && settings.cancelQueuedDownloads) {
+    if (monitor === "unmonitor") cancelDownload = "on streaming";
+    else if (settings.purgeUnmonitoredFiles && !monitoredAfter) {
+      cancelDownload = "unmonitored";
+    }
+  }
 
-  // A download in flight is not a file yet, so `hasFile` says nothing about it:
-  // the cancellation has to be decided before the file rules get their say.
   if (!item.hasFile) return { monitor, deleteFile: null, cancelDownload };
   if (monitor === "unmonitor" && settings.deleteFiles) {
     return { monitor, deleteFile: "on streaming", cancelDownload };
@@ -782,7 +806,7 @@ async function cancelDownloads(
   client: { removeFromQueue(ids: number[], removeFromClient: boolean): Promise<unknown> },
   conn: { name: string },
   candidates: QueueCandidate[],
-  cancelIds: Set<number>,
+  cancelIds: Map<number, CancelReason>,
   labelOf: (itemId: number) => string,
   dryRun: boolean,
   counts: RunCounts,
@@ -791,14 +815,18 @@ async function cancelDownloads(
   checkAbort: CheckAbort
 ) {
   if (!cancelIds.size) return;
-  const removals = planQueueRemovals(candidates, cancelIds);
+  const removals = planQueueRemovals(candidates, new Set(cancelIds.keys()));
 
   for (const removal of removals) {
     const what = removal.itemIds.map(labelOf).join(", ");
+    // One download can cover episodes cancelled for different reasons — some
+    // on streaming, some merely left unmonitored — so the log says which apply
+    // rather than picking one and being wrong about the rest.
+    const why = [...new Set(removal.itemIds.map((id) => cancelIds.get(id)))].join(", ");
     push(
       "action",
       `[${conn.name}] ${dryRun ? "Would cancel" : "Cancel"} the download of ${what} ` +
-        `and remove it from the download client (on streaming).`
+        `and remove it from the download client (${why}).`
     );
     counts.cancelledDownloads++;
   }
@@ -856,8 +884,8 @@ async function sweepRadarr(
   const toRemonitor: { rowId: number; arrId: number; title: string }[] = [];
   const filesToDelete: PendingFileDelete[] = [];
   const missingFileId: string[] = [];
-  /** Radarr ids whose in-progress download this sweep is cancelling. */
-  const cancelIds = new Set<number>();
+  /** Radarr ids whose in-progress download this sweep is cancelling, and why. */
+  const cancelIds = new Map<number, CancelReason>();
 
   for (const m of movies) {
     await checkAbort();
@@ -888,11 +916,15 @@ async function sweepRadarr(
     const plan = planItem({ ...m, inQueue: queued.has(m.arrId) }, settings);
     const entry = { rowId: m.id, arrId: m.arrId, title: m.title };
 
+    // Outside the monitoring branches: with `purgeUnmonitoredFiles` on, a title
+    // that is already unmonitored is in scope for cancellation while needing no
+    // monitoring change at all.
+    if (plan.cancelDownload) cancelIds.set(m.arrId, plan.cancelDownload);
+
     if (plan.monitor === "unmonitor") {
       push("action", `[${conn.name}] Unmonitor movie "${m.title}" (on streaming).`);
       counts.unmonitoredMovies++;
       toUnmonitor.push(entry);
-      if (plan.cancelDownload) cancelIds.add(m.arrId);
     } else if (plan.monitor === "remonitor") {
       push("action", `[${conn.name}] Re-monitor movie "${m.title}" (left streaming).`);
       counts.remonitoredMovies++;
@@ -1094,8 +1126,8 @@ async function sweepSonarr(
     const toRemonitor: number[] = [];
     const filesToDelete: PendingFileDelete[] = [];
     const seasonEpisodes: SeasonEpisode[] = [];
-    /** Sonarr episode ids whose in-progress download this sweep is cancelling. */
-    const cancelIds = new Set<number>();
+    /** Sonarr episode ids whose download this sweep is cancelling, and why. */
+    const cancelIds = new Map<number, CancelReason>();
     const labels = new Map<number, string>();
 
     for (const ep of s.episodes) {
@@ -1108,7 +1140,7 @@ async function sweepSonarr(
       else if (plan.monitor === "remonitor") toRemonitor.push(ep.arrEpisodeId);
 
       if (plan.cancelDownload) {
-        cancelIds.add(ep.arrEpisodeId);
+        cancelIds.set(ep.arrEpisodeId, plan.cancelDownload);
         labels.set(
           ep.arrEpisodeId,
           `"${s.title}" S${ep.seasonNumber}E${ep.episodeNumber}`

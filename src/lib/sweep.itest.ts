@@ -302,6 +302,108 @@ describe("cancelling downloads in progress", () => {
     expect(run.cancelledDownloads).toBe(1);
   });
 
+  it("cancels downloads for the whole unmonitored back-catalogue with purge on", async () => {
+    // The pairing: purging files while the download client keeps filling the
+    // library back up empties it on paper only.
+    await makeSettings({
+      applyChanges: true,
+      searchAtEnd: false,
+      deleteFiles: false,
+      purgeUnmonitoredFiles: true,
+      cancelQueuedDownloads: true,
+    });
+    const conn = await makeConnection();
+    // Already unmonitored, downloading, nothing on disk yet — the case the file
+    // rules structurally cannot reach.
+    await makeMediaItem(conn.id, {
+      arrId: 1,
+      title: "Old Grab",
+      monitored: false,
+      onStreaming: true,
+      hasFile: false,
+      movieFileId: null,
+    });
+    arrQueue.set("radarr", [movieRow(50, 1)]);
+
+    const run = await sweepAndWait();
+    expect(run.status).toBe("SUCCESS");
+    expect(run.unmonitoredMovies).toBe(0);
+    expect(run.cancelledDownloads).toBe(1);
+    expect(callsTo("removeFromQueue")[0].args).toEqual([[50], true]);
+    const log = (run.log as { msg: string }[]).map((l) => l.msg).join("\n");
+    expect(log).toContain("(unmonitored)");
+  });
+
+  it("leaves the back-catalogue downloading while purge is off", async () => {
+    await makeSettings({
+      applyChanges: true,
+      searchAtEnd: false,
+      purgeUnmonitoredFiles: false,
+      cancelQueuedDownloads: true,
+    });
+    const conn = await makeConnection();
+    await makeMediaItem(conn.id, { arrId: 1, monitored: false, onStreaming: true, hasFile: false });
+    arrQueue.set("radarr", [movieRow(50, 1)]);
+
+    const run = await sweepAndWait();
+    expect(callsTo("removeFromQueue")).toHaveLength(0);
+    expect(run.cancelledDownloads).toBe(0);
+  });
+
+  it("never cancels a download for a title that stays monitored, purge or not", async () => {
+    await makeSettings({
+      applyChanges: true,
+      searchAtEnd: false,
+      purgeUnmonitoredFiles: true,
+      cancelQueuedDownloads: true,
+    });
+    const conn = await makeConnection();
+    // Monitored and not on streaming: exactly what the download is for.
+    await makeMediaItem(conn.id, { arrId: 1, monitored: true, onStreaming: false, hasFile: false });
+    // Unmonitored but off streaming, so it is re-monitored and keeps its grab.
+    await makeMediaItem(conn.id, { arrId: 2, monitored: false, onStreaming: false, hasFile: false });
+    arrQueue.set("radarr", [movieRow(50, 1), movieRow(51, 2)]);
+
+    const run = await sweepAndWait();
+    expect(run.remonitoredMovies).toBe(1);
+    expect(callsTo("removeFromQueue")).toHaveLength(0);
+    expect(run.cancelledDownloads).toBe(0);
+  });
+
+  it("cancels a pack mixing this run's unmonitors with the back-catalogue", async () => {
+    await makeSettings({
+      applyChanges: true,
+      searchAtEnd: false,
+      deleteFiles: false,
+      purgeUnmonitoredFiles: true,
+      cancelQueuedDownloads: true,
+    });
+    const conn = await makeConnection({ type: "SONARR" });
+    const show = await makeMediaItem(conn.id, { type: "TV", arrId: 1, monitored: true });
+    // Caught by this run…
+    await makeEpisode(show.id, {
+      arrEpisodeId: 11, episodeNumber: 1, monitored: true, onStreaming: true, hasFile: false,
+      episodeFileId: null,
+    });
+    // …and one already unmonitored, only in scope because purge is on.
+    await makeEpisode(show.id, {
+      arrEpisodeId: 12, episodeNumber: 2, monitored: false, onStreaming: true, hasFile: false,
+      episodeFileId: null,
+    });
+    arrQueue.set("sonarr", [
+      { id: 60, episodeId: 11, downloadId: "pack", trackedDownloadState: "downloading" },
+      { id: 61, episodeId: 12, downloadId: "pack", trackedDownloadState: "downloading" },
+    ]);
+
+    const run = await sweepAndWait();
+    expect(run.status).toBe("SUCCESS");
+    expect(callsTo("removeFromQueue")[0].args).toEqual([[60, 61], true]);
+    expect(run.cancelledDownloads).toBe(1);
+    // Both reasons apply to the one download, and the log says so.
+    const log = (run.log as { msg: string }[]).map((l) => l.msg).join("\n");
+    expect(log).toContain("(on streaming, unmonitored)");
+  });
+
   it("reads the queue once per connection, not once per series", async () => {
     await makeSettings({ applyChanges: true, searchAtEnd: false, cancelQueuedDownloads: true });
     const conn = await makeConnection({ type: "SONARR" });

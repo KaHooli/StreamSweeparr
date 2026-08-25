@@ -48,47 +48,47 @@ describe("planItem — monitoring decisions", () => {
 describe("planItem — deleteFiles (only what this sweep unmonitors)", () => {
   it("deletes the file of an item it just unmonitored", () => {
     const plan = planItem(item({ monitored: true, onStreaming: true }), DELETE_ONLY);
-    expect(plan).toEqual({ monitor: "unmonitor", deleteFile: "on streaming", cancelDownload: false });
+    expect(plan).toEqual({ monitor: "unmonitor", deleteFile: "on streaming", cancelDownload: null });
   });
 
   it("does not touch files of already-unmonitored items", () => {
     // This is the gap purgeUnmonitoredFiles exists to close.
     const plan = planItem(item({ monitored: false, onStreaming: true }), DELETE_ONLY);
-    expect(plan).toEqual({ monitor: "none", deleteFile: null, cancelDownload: false });
+    expect(plan).toEqual({ monitor: "none", deleteFile: null, cancelDownload: null });
   });
 
   it("deletes nothing when disabled", () => {
     const plan = planItem(item({ monitored: true, onStreaming: true }), OFF);
-    expect(plan).toEqual({ monitor: "unmonitor", deleteFile: null, cancelDownload: false });
+    expect(plan).toEqual({ monitor: "unmonitor", deleteFile: null, cancelDownload: null });
   });
 });
 
 describe("planItem — purgeUnmonitoredFiles", () => {
   it("purges an already-unmonitored item that is on streaming", () => {
     const plan = planItem(item({ monitored: false, onStreaming: true }), PURGE_ONLY);
-    expect(plan).toEqual({ monitor: "none", deleteFile: "unmonitored", cancelDownload: false });
+    expect(plan).toEqual({ monitor: "none", deleteFile: "unmonitored", cancelDownload: null });
   });
 
   it("purges an unmonitored item whose streaming status is unknown", () => {
     // It stays unmonitored, so its file is in scope.
     const plan = planItem(item({ monitored: false, streamingUnknown: true }), PURGE_ONLY);
-    expect(plan).toEqual({ monitor: "none", deleteFile: "unmonitored", cancelDownload: false });
+    expect(plan).toEqual({ monitor: "none", deleteFile: "unmonitored", cancelDownload: null });
   });
 
   it("purges an item this sweep unmonitored even when deleteFiles is off", () => {
     const plan = planItem(item({ monitored: true, onStreaming: true }), PURGE_ONLY);
-    expect(plan).toEqual({ monitor: "unmonitor", deleteFile: "unmonitored", cancelDownload: false });
+    expect(plan).toEqual({ monitor: "unmonitor", deleteFile: "unmonitored", cancelDownload: null });
   });
 
   it("never purges an item being re-monitored", () => {
     // It ends the sweep monitored, so the file must survive for playback.
     const plan = planItem(item({ monitored: false, onStreaming: false }), BOTH);
-    expect(plan).toEqual({ monitor: "remonitor", deleteFile: null, cancelDownload: false });
+    expect(plan).toEqual({ monitor: "remonitor", deleteFile: null, cancelDownload: null });
   });
 
   it("never purges a monitored item", () => {
     const plan = planItem(item({ monitored: true, onStreaming: false }), BOTH);
-    expect(plan).toEqual({ monitor: "none", deleteFile: null, cancelDownload: false });
+    expect(plan).toEqual({ monitor: "none", deleteFile: null, cancelDownload: null });
   });
 
   it("reports a single reason so a file is never queued twice", () => {
@@ -99,7 +99,7 @@ describe("planItem — purgeUnmonitoredFiles", () => {
   it("does nothing for items with no file", () => {
     for (const settings of [OFF, DELETE_ONLY, PURGE_ONLY, BOTH]) {
       expect(planItem(item({ monitored: false, onStreaming: true, hasFile: false }), settings))
-        .toEqual({ monitor: "none", deleteFile: null, cancelDownload: false });
+        .toEqual({ monitor: "none", deleteFile: null, cancelDownload: null });
     }
   });
 
@@ -107,11 +107,11 @@ describe("planItem — purgeUnmonitoredFiles", () => {
     // Regression guard: with purgeUnmonitoredFiles off, the only file deleted is
     // still the one belonging to a title this sweep just unmonitored.
     const expected: [ReturnType<typeof item>, ItemPlan][] = [
-      [item({ monitored: true, onStreaming: true }), { monitor: "unmonitor", deleteFile: "on streaming", cancelDownload: false }],
-      [item({ monitored: false, onStreaming: true }), { monitor: "none", deleteFile: null, cancelDownload: false }],
-      [item({ monitored: false, onStreaming: false }), { monitor: "remonitor", deleteFile: null, cancelDownload: false }],
-      [item({ monitored: true, onStreaming: false }), { monitor: "none", deleteFile: null, cancelDownload: false }],
-      [item({ monitored: false, streamingUnknown: true }), { monitor: "none", deleteFile: null, cancelDownload: false }],
+      [item({ monitored: true, onStreaming: true }), { monitor: "unmonitor", deleteFile: "on streaming", cancelDownload: null }],
+      [item({ monitored: false, onStreaming: true }), { monitor: "none", deleteFile: null, cancelDownload: null }],
+      [item({ monitored: false, onStreaming: false }), { monitor: "remonitor", deleteFile: null, cancelDownload: null }],
+      [item({ monitored: true, onStreaming: false }), { monitor: "none", deleteFile: null, cancelDownload: null }],
+      [item({ monitored: false, streamingUnknown: true }), { monitor: "none", deleteFile: null, cancelDownload: null }],
     ];
     for (const [input, want] of expected) {
       expect(planItem(input, DELETE_ONLY)).toEqual(want);
@@ -159,7 +159,11 @@ describe("planItem — cancelQueuedDownloads", () => {
       item({ monitored: true, onStreaming: true, inQueue: true, hasFile: false }),
       CANCEL
     );
-    expect(plan).toEqual({ monitor: "unmonitor", deleteFile: null, cancelDownload: true });
+    expect(plan).toEqual({
+      monitor: "unmonitor",
+      deleteFile: null,
+      cancelDownload: "on streaming",
+    });
   });
 
   it("cancels regardless of whether the title also has a file already", () => {
@@ -172,23 +176,19 @@ describe("planItem — cancelQueuedDownloads", () => {
     expect(plan).toEqual({
       monitor: "unmonitor",
       deleteFile: "on streaming",
-      cancelDownload: true,
+      cancelDownload: "on streaming",
     });
   });
 
   it("does nothing for an item that is not downloading", () => {
     const plan = planItem(item({ monitored: true, onStreaming: true, inQueue: false }), CANCEL);
-    expect(plan.cancelDownload).toBe(false);
+    expect(plan.cancelDownload).toBeNull();
   });
 
-  it("leaves the already-unmonitored back-catalogue alone", () => {
-    // Deliberately narrower than purgeUnmonitoredFiles: a download somebody
-    // started by hand on an unmonitored title is not this sweep's to cancel.
-    const plan = planItem(
-      item({ monitored: false, onStreaming: true, inQueue: true }),
-      { ...CANCEL, purgeUnmonitoredFiles: true }
-    );
-    expect(plan.cancelDownload).toBe(false);
+  it("leaves the already-unmonitored back-catalogue alone on its own", () => {
+    // Without the purge switch this stays as narrow as `deleteFiles` is.
+    const plan = planItem(item({ monitored: false, onStreaming: true, inQueue: true }), CANCEL);
+    expect(plan.cancelDownload).toBeNull();
   });
 
   it("never cancels for an item it is re-monitoring", () => {
@@ -196,22 +196,102 @@ describe("planItem — cancelQueuedDownloads", () => {
       item({ monitored: false, onStreaming: false, inQueue: true }),
       CANCEL
     );
-    expect(plan).toEqual({ monitor: "remonitor", deleteFile: null, cancelDownload: false });
+    expect(plan).toEqual({ monitor: "remonitor", deleteFile: null, cancelDownload: null });
   });
 
-  it("never cancels on an unknown streaming answer", () => {
+  it("never cancels on an unknown streaming answer for a monitored item", () => {
     const plan = planItem(
       item({ monitored: true, streamingUnknown: true, inQueue: true }),
       CANCEL
     );
-    expect(plan.cancelDownload).toBe(false);
+    expect(plan.cancelDownload).toBeNull();
   });
 
   it("cancels nothing while the setting is off", () => {
     for (const settings of [OFF, DELETE_ONLY, PURGE_ONLY, BOTH]) {
       const plan = planItem(item({ monitored: true, onStreaming: true, inQueue: true }), settings);
-      expect(plan.cancelDownload).toBe(false);
+      expect(plan.cancelDownload).toBeNull();
     }
+  });
+});
+
+describe("planItem — cancelQueuedDownloads alongside purgeUnmonitoredFiles", () => {
+  const CANCEL_PURGE = { ...CANCEL, purgeUnmonitoredFiles: true };
+
+  it("cancels the download of an already-unmonitored item", () => {
+    // The pairing that makes a library-wide clear-out stick: purging files
+    // while the download client keeps filling the library back up is no purge.
+    const plan = planItem(
+      item({ monitored: false, onStreaming: true, inQueue: true, hasFile: false }),
+      CANCEL_PURGE
+    );
+    expect(plan).toEqual({
+      monitor: "none",
+      deleteFile: null,
+      cancelDownload: "unmonitored",
+    });
+  });
+
+  it("cancels an unmonitored item that has no file yet", () => {
+    // The case the file rules structurally cannot reach: a part-finished
+    // download has produced nothing on disk, so `deleteFile` has nothing to
+    // act on while the download is exactly what should be stopped.
+    const plan = planItem(
+      item({ monitored: false, onStreaming: false, streamingUnknown: true, inQueue: true, hasFile: false }),
+      CANCEL_PURGE
+    );
+    expect(plan.deleteFile).toBeNull();
+    expect(plan.cancelDownload).toBe("unmonitored");
+  });
+
+  it("reports the download and the file separately for an unmonitored item with both", () => {
+    const plan = planItem(
+      item({ monitored: false, onStreaming: true, inQueue: true, hasFile: true }),
+      CANCEL_PURGE
+    );
+    expect(plan).toEqual({
+      monitor: "none",
+      deleteFile: "unmonitored",
+      cancelDownload: "unmonitored",
+    });
+  });
+
+  it("still calls this sweep's own unmonitors 'on streaming'", () => {
+    // Both reasons apply to a title the sweep just unmonitored; the specific
+    // one wins, so the run log says why the title was actually caught.
+    const plan = planItem(
+      item({ monitored: true, onStreaming: true, inQueue: true, hasFile: false }),
+      CANCEL_PURGE
+    );
+    expect(plan.cancelDownload).toBe("on streaming");
+  });
+
+  it("never cancels an item that ends the sweep monitored", () => {
+    // Re-monitored, and the plain monitored title that is simply downloading.
+    const remonitored = planItem(
+      item({ monitored: false, onStreaming: false, inQueue: true }),
+      CANCEL_PURGE
+    );
+    expect(remonitored.cancelDownload).toBeNull();
+
+    const wanted = planItem(
+      item({ monitored: true, onStreaming: false, inQueue: true }),
+      CANCEL_PURGE
+    );
+    expect(wanted.cancelDownload).toBeNull();
+  });
+
+  it("cancels nothing for an unmonitored item that is not downloading", () => {
+    const plan = planItem(item({ monitored: false, onStreaming: true }), CANCEL_PURGE);
+    expect(plan.cancelDownload).toBeNull();
+  });
+
+  it("purges files without cancelling while the cancel switch is off", () => {
+    const plan = planItem(
+      item({ monitored: false, onStreaming: true, inQueue: true }),
+      PURGE_ONLY
+    );
+    expect(plan).toEqual({ monitor: "none", deleteFile: "unmonitored", cancelDownload: null });
   });
 });
 

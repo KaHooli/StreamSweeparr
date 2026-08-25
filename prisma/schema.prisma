@@ -94,10 +94,11 @@ model Settings {
   purgeUnmonitoredFiles Boolean @default(false)
   // When a sweep unmonitors a title that is mid-download, remove it from the
   // Sonarr/Radarr queue and tell the download client to drop the download and
-  // its data. Only covers what the sweep itself unmonitors, never the
-  // unmonitored back-catalogue: an unmonitored title that is downloading is
-  // usually one somebody grabbed on purpose. Off by default — it destroys work
-  // in progress, and a wrong availability answer would do so for nothing.
+  // its data. Tracks the file settings above: on its own it covers what the
+  // sweep itself unmonitors; with purgeUnmonitoredFiles it widens to the whole
+  // unmonitored back-catalogue, so a purge is not undone by a download client
+  // still filling the library back up. Off by default — it destroys work in
+  // progress, and a wrong availability answer would do so for nothing.
   cancelQueuedDownloads Boolean @default(false)
   // Trigger a search for all monitored items at the end of a run.
   searchAtEnd       Boolean  @default(true)

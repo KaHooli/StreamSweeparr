@@ -7,7 +7,11 @@
 -- purge — having spent the bandwidth and, on a private tracker, the ratio.
 --
 -- `cancelQueuedDownloads` opts into removing those queue entries and telling
--- the download client to drop the data. It defaults to FALSE for the same
+-- the download client to drop the data. It tracks the file-deletion settings:
+-- alone it covers what a sweep unmonitors, and alongside
+-- `purgeUnmonitoredFiles` it widens to the whole unmonitored back-catalogue,
+-- so a library-wide purge is not quietly undone by downloads still landing.
+-- It defaults to FALSE for the same
 -- reason `purgeUnmonitoredFiles` does: it is destructive, it destroys work in
 -- progress rather than a file that can be re-grabbed at leisure, and an
 -- install upgrading into it must not find that behaviour switched on by

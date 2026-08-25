@@ -525,7 +525,7 @@ All of these live under **Settings → Run options**.
 |---|---|---|
 | **Apply changes (LIVE mode)** | ❌ off | The master switch. Off = dry-run: nothing in Sonarr/Radarr is touched, the run just logs what it would do. |
 | **Delete files when unmonitoring** | ✅ on | When the sweep unmonitors a title *because it's on streaming*, delete its file too. |
-| **Cancel downloads in progress** | ❌ off | If a title the sweep unmonitors is *already downloading*, drop it from the Sonarr/Radarr queue and tell the download client to delete it. See below. |
+| **Cancel downloads in progress** | ❌ off | If a title the sweep unmonitors is *already downloading*, drop it from the Sonarr/Radarr queue and tell the download client to delete it. Pairs with the option below to cover the whole unmonitored back-catalogue. See below. |
 | **Remove files for all unmonitored items** | ❌ off | Wider: at the end of a sweep, delete the file for **every** unmonitored movie/episode, including a back-catalogue you unmonitored by hand years ago. See below. |
 | **Remove movies deleted from TMDB** | ✅ on | If TMDB says a movie's id no longer exists, remove it from Radarr. **Files are kept.** |
 | **Search monitored items at end of run** | ✅ on | Trigger a Sonarr/Radarr search once the sweep finishes, for everything still monitored that is **missing its file**. See below. |
@@ -554,22 +554,32 @@ Sonarr grabs a new episode within seconds of the show being added, and the sweep
 that works out it's already streaming arrives a minute later.
 
 With this on, a title the sweep unmonitors that is mid-download has its queue
-entry removed and the download deleted from the client. What that does **not**
-do, deliberately:
+entry removed and the download deleted from the client.
+
+**It follows the file settings.** On its own it covers the same titles as
+*Delete files when unmonitoring* — the ones this run unmonitored. Turn on
+**Remove files for all unmonitored items** as well and it widens to match,
+cancelling downloads for **every** unmonitored title, back-catalogue included.
+That pairing is the point of it for a library-wide clear-out: purging files
+while the download client is still filling the library back up only empties it
+on paper.
+
+One thing it does *not* copy from the file rules is their need for a file to
+exist. A download that hasn't finished has produced nothing on disk yet, and
+that's precisely the case worth catching — so a title with no file is still
+cancelled.
+
+What it does **not** do, deliberately:
 
 - **It doesn't blocklist the release.** The release was fine; you just stopped
   wanting the title. Blocklisting would bar it for good, including when the
   title leaves streaming and a later sweep re-monitors it.
 - **It doesn't trigger a replacement search.** The removal is sent with
   `skipRedownload`, so cancelling a download can't start another one.
-- **It doesn't touch the unmonitored back-catalogue** the way *Remove files for
-  all unmonitored items* does. Only titles *this run* unmonitors are in scope —
-  a download running against an already-unmonitored title is one you started on
-  purpose.
 - **It doesn't break up a season pack.** One download often covers several
   episodes, and cancelling it takes all of them. So a shared download is only
-  cancelled when **every** episode riding on it is being unmonitored; a pack
-  where nine episodes are on streaming and the tenth isn't is left to finish.
+  cancelled when **every** episode riding on it is in scope; a pack where nine
+  episodes are unwanted and the tenth is still monitored is left to finish.
 - **It doesn't interrupt an import.** A download that has finished and is being
   imported is left alone — it's a file at that point, and the ordinary file
   deletion rules pick it up on the next run.
@@ -605,6 +615,9 @@ Two things stay out of scope even when it's on:
 
 Note it's a superset of the narrower toggle: with this on, files are removed
 from unmonitored titles even if **Delete files when unmonitoring** is off.
+
+It widens **Cancel downloads in progress** the same way, if that's on too — so
+a clear-out isn't undone by downloads still landing behind it.
 
 </details>
 
@@ -1092,7 +1105,9 @@ and `pg_restore` commands, and they work anywhere Docker does.
   mode)** is on.
 - **Cancelling a download throws work away.** **Cancel downloads in progress**
   deletes a part-finished download from your download client. Unlike a deleted
-  file it cannot simply be re-fetched at leisure, so it is off by default.
+  file it cannot simply be re-fetched at leisure, so it is off by default — and
+  alongside **Remove files for all unmonitored items** it applies to your whole
+  unmonitored back-catalogue, not just this run's titles.
 - **File deletion is permanent.** **Delete files when unmonitoring** is limited
   to titles found on your selected services; **Remove files for all unmonitored
   items** widens that to your whole unmonitored back-catalogue — enable that one
