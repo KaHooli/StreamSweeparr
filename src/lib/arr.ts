@@ -6,7 +6,7 @@
  * configured Sonarr/Radarr instances when the user does not enter them by hand.
  */
 
-import { safeFetch } from "./safeFetch";
+import { safeFetch, type SafeFetchOptions } from "./safeFetch";
 
 export class ArrError extends Error {
   constructor(message: string, public status?: number) {
@@ -23,10 +23,12 @@ async function arrFetch<T>(
   baseUrl: string,
   apiKey: string,
   path: string,
-  init: RequestInit = {}
+  init: SafeFetchOptions = {}
 ): Promise<T> {
   const url = `${normalizeBase(baseUrl)}${path}`;
-  // safeFetch validates the host (SSRF guard) and applies a timeout.
+  // safeFetch validates the host (SSRF guard) and applies a timeout. Callers
+  // may override `timeoutMs` for an endpoint whose work is not bounded by the
+  // *arr's own responsiveness — see `removeFromQueue`.
   const res = await safeFetch(url, {
     ...init,
     headers: {
@@ -188,6 +190,23 @@ async function fetchQueue(
   }
   return out;
 }
+
+/**
+ * Timeout for a queue removal, far longer than the 15s `safeFetch` default.
+ *
+ * `RemoveMany` is not a database write. Sonarr and Radarr loop over the ids
+ * **serially**, and for each distinct download they call out to the download
+ * client to delete it — so the request's duration is a function of how many
+ * downloads are in the batch and how quick qBittorrent/SABnzbd is to answer,
+ * neither of which the *arr's own responsiveness bounds. Under the default a
+ * batch of any size timed out, and because aborting the HTTP request does not
+ * stop the loop the server had already gone on removing things the run then
+ * reported as failures.
+ *
+ * The batch size (`QUEUE_BATCH` in lib/sweep.ts) is what keeps this bounded;
+ * this is the headroom for a download client having a slow minute.
+ */
+const QUEUE_REMOVE_TIMEOUT_MS = 120_000;
 
 /**
  * Query string for a queue removal.
@@ -357,6 +376,7 @@ export class SonarrClient {
     return arrFetch<void>(this.baseUrl, this.apiKey, `/api/v3/queue/bulk?${params}`, {
       method: "DELETE",
       body: JSON.stringify({ ids: queueIds }),
+      timeoutMs: QUEUE_REMOVE_TIMEOUT_MS,
     });
   }
 
@@ -500,6 +520,7 @@ export class RadarrClient {
     return arrFetch<void>(this.baseUrl, this.apiKey, `/api/v3/queue/bulk?${params}`, {
       method: "DELETE",
       body: JSON.stringify({ ids: queueIds }),
+      timeoutMs: QUEUE_REMOVE_TIMEOUT_MS,
     });
   }
 

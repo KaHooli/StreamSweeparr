@@ -269,6 +269,29 @@ describe("download queue", () => {
     await new RadarrClient("http://radarr:7878", "k").removeFromQueue([], true);
     expect(calls).toHaveLength(0);
   });
+
+  it("allows far longer than the default for a removal to come back", async () => {
+    // The *arr loops the ids serially, calling the download client once per
+    // download. The request's duration is that work, not the *arr's own
+    // responsiveness, and under the 15s default every batch timed out.
+    respond = () => new Response(null, { status: 204 });
+    for (const client of [
+      new SonarrClient("http://sonarr:8989", "k"),
+      new RadarrClient("http://radarr:7878", "k"),
+    ]) {
+      calls.length = 0;
+      await client.removeFromQueue([1], true);
+      const timeoutMs = (only().init as { timeoutMs?: number }).timeoutMs;
+      expect(timeoutMs).toBeGreaterThan(15_000);
+    }
+  });
+
+  it("leaves every other request on the default timeout", async () => {
+    // The long timeout is for the one endpoint that earns it; a slow Sonarr
+    // should still fail fast everywhere else.
+    await new SonarrClient("http://sonarr:8989", "k").getSeries();
+    expect((only().init as { timeoutMs?: number }).timeoutMs).toBeUndefined();
+  });
 });
 
 describe("isCancellableQueueItem", () => {
