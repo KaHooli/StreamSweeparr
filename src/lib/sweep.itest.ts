@@ -19,6 +19,11 @@ const arrCalls: ArrCall[] = [];
 /** Methods set here throw when called, to simulate a failing instance. */
 const failing = new Set<string>();
 /**
+ * Methods here throw for their first N calls and succeed after, for the batched
+ * steps where what matters is what the run does with a *partial* failure.
+ */
+const failTimes = new Map<string, number>();
+/**
  * Methods parked here block until the test releases them. A sweep body runs
  * detached and a test-sized library is swept in milliseconds, so holding one
  * *arr call open is the only way to catch a run in flight — which is what
@@ -62,6 +67,11 @@ function record(client: "sonarr" | "radarr", method: string, result?: (args: unk
     const hold = held.get(`${client}.${method}`);
     if (hold) await hold;
     if (failing.has(`${client}.${method}`)) throw new Error(`${method} failed`);
+    const remaining = failTimes.get(`${client}.${method}`) ?? 0;
+    if (remaining > 0) {
+      failTimes.set(`${client}.${method}`, remaining - 1);
+      throw new Error(`${method} failed`);
+    }
     return result ? result(args) : undefined;
   };
 }
@@ -136,6 +146,7 @@ beforeEach(async () => {
   arrCalls.length = 0;
   syncOptions.length = 0;
   failing.clear();
+  failTimes.clear();
   held.clear();
   sonarrSeries.clear();
   arrQueue.clear();
@@ -402,6 +413,92 @@ describe("cancelling downloads in progress", () => {
     // Both reasons apply to the one download, and the log says so.
     const log = (run.log as { msg: string }[]).map((l) => l.msg).join("\n");
     expect(log).toContain("(on streaming, unmonitored)");
+  });
+
+  it("splits a large cancellation into batches the download client can answer", async () => {
+    // The bug this pins: every removal is a serial download-client round trip
+    // inside the *arr, so a library-wide purge sent hundreds in one request and
+    // timed out, cancelling nothing.
+    await makeSettings({
+      applyChanges: true,
+      searchAtEnd: false,
+      deleteFiles: false,
+      purgeUnmonitoredFiles: true,
+      cancelQueuedDownloads: true,
+    });
+    const conn = await makeConnection();
+    const rows = [];
+    for (let i = 1; i <= 25; i++) {
+      await makeMediaItem(conn.id, {
+        arrId: i, monitored: false, onStreaming: true, hasFile: false, movieFileId: null,
+      });
+      rows.push(movieRow(100 + i, i));
+    }
+    arrQueue.set("radarr", rows);
+
+    const run = await sweepAndWait();
+    expect(run.status).toBe("SUCCESS");
+    expect(run.cancelledDownloads).toBe(25);
+
+    const removals = callsTo("removeFromQueue");
+    expect(removals.length).toBeGreaterThan(1);
+    for (const call of removals) {
+      expect((call.args[0] as number[]).length).toBeLessThanOrEqual(20);
+    }
+    // Every download still goes, just across several requests.
+    expect(removals.flatMap((c) => c.args[0] as number[])).toHaveLength(25);
+  });
+
+  it("counts only the cancellations that actually landed", async () => {
+    // A run whose removals all timed out previously reported them as cancelled,
+    // because the count was taken when the line was logged rather than when the
+    // request came back.
+    await makeSettings({
+      applyChanges: true,
+      searchAtEnd: false,
+      deleteFiles: false,
+      cancelQueuedDownloads: true,
+    });
+    const conn = await makeConnection();
+    await makeMediaItem(conn.id, { arrId: 1, title: "Grabbed", monitored: true, onStreaming: true });
+    arrQueue.set("radarr", [movieRow(50, 1)]);
+    failing.add("radarr.removeFromQueue");
+
+    const run = await sweepAndWait();
+    expect(run.status).toBe("FAILED");
+    expect(run.cancelledDownloads).toBe(0);
+    // The title was still unmonitored — only the cancellation failed.
+    expect(run.unmonitoredMovies).toBe(1);
+    expect(run.error).toContain("cancel 1 download(s)");
+  });
+
+  it("keeps counting the rest after one batch fails", async () => {
+    await makeSettings({
+      applyChanges: true,
+      searchAtEnd: false,
+      deleteFiles: false,
+      purgeUnmonitoredFiles: true,
+      cancelQueuedDownloads: true,
+    });
+    const conn = await makeConnection();
+    const rows = [];
+    for (let i = 1; i <= 25; i++) {
+      await makeMediaItem(conn.id, {
+        arrId: i, monitored: false, onStreaming: true, hasFile: false, movieFileId: null,
+      });
+      rows.push(movieRow(100 + i, i));
+    }
+    arrQueue.set("radarr", rows);
+    // Fail the first batch only. One unreachable moment must not cost the run
+    // the batches either side of it, nor be reported as if it had worked.
+    failTimes.set("radarr.removeFromQueue", 1);
+
+    const run = await sweepAndWait();
+    expect(run.status).toBe("FAILED");
+    // 25 downloads over batches of 20: the failed first batch is not counted,
+    // the second is.
+    expect(run.cancelledDownloads).toBe(5);
+    expect(callsTo("removeFromQueue")).toHaveLength(2);
   });
 
   it("reads the queue once per connection, not once per series", async () => {

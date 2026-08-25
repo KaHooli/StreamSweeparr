@@ -750,6 +750,22 @@ function chunk<T>(items: T[], size: number): T[][] {
 const BATCH = 200;
 
 /**
+ * How many downloads one cancellation request may carry.
+ *
+ * Far smaller than `BATCH` because the work is a different shape. The other
+ * batched calls hand the *arr a list and let it do one database write; a queue
+ * removal makes it loop **serially**, calling out to the download client once
+ * per distinct download. So the request's cost scales with the batch, and a
+ * library-wide purge — which can queue up hundreds of cancellations at once —
+ * turned a single 200-wide batch into a request no timeout would survive.
+ *
+ * Sizing is by *download*, not by queue row: Sonarr and Radarr both de-duplicate
+ * the ids by download id before removing, so the fifteen rows of a season pack
+ * cost one round trip between them, not fifteen.
+ */
+const QUEUE_BATCH = 20;
+
+/**
  * Read a connection's download queue, or nothing when cancellation is off.
  *
  * Skipping the call when the setting is off keeps a sweep's cost exactly where
@@ -828,19 +844,24 @@ async function cancelDownloads(
       `[${conn.name}] ${dryRun ? "Would cancel" : "Cancel"} the download of ${what} ` +
         `and remove it from the download client (${why}).`
     );
-    counts.cancelledDownloads++;
+    // A dry-run's count is the whole of its answer, so it is taken here. A live
+    // run's is taken once the request has actually landed — counting up front
+    // had a run whose every removal timed out still reporting them all as
+    // cancelled, which is the one thing the run log must never do.
+    if (dryRun) counts.cancelledDownloads++;
   }
   if (dryRun || !removals.length) return;
 
-  for (const batch of chunk(removals, BATCH)) {
+  for (const batch of chunk(removals, QUEUE_BATCH)) {
     // Between batches, matching every other apply step: one call plus nothing
     // to record locally, since the queue is *arr's state and not part of the
     // snapshot this database keeps.
     await checkAbort();
     const queueIds = batch.flatMap((r) => r.queueIds);
-    await errors.attempt(`[${conn.name}] cancel ${batch.length} download(s)`, () =>
-      client.removeFromQueue(queueIds, true)
-    );
+    await errors.attempt(`[${conn.name}] cancel ${batch.length} download(s)`, async () => {
+      await client.removeFromQueue(queueIds, true);
+      counts.cancelledDownloads += batch.length;
+    });
   }
 }
 
