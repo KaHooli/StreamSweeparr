@@ -47,6 +47,7 @@ export interface SettingsDto {
   tmdbCountedTypes: string[];
   deleteFiles: boolean;
   purgeUnmonitoredFiles: boolean;
+  cancelQueuedDownloads: boolean;
   searchAtEnd: boolean;
   removeMissingTmdbMovies: boolean;
   applyChanges: boolean;

@@ -68,6 +68,7 @@ const info: SystemInfo = {
     applyChanges: false,
     deleteFiles: true,
     purgeUnmonitoredFiles: false,
+    cancelQueuedDownloads: false,
     searchAtEnd: true,
     removeMissingTmdbMovies: false,
     watchmodeApiKeySet: true,

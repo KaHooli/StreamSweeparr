@@ -81,6 +81,7 @@ export interface ConfigInfo {
   applyChanges: boolean;
   deleteFiles: boolean;
   purgeUnmonitoredFiles: boolean;
+  cancelQueuedDownloads: boolean;
   searchAtEnd: boolean;
   removeMissingTmdbMovies: boolean;
   watchmodeApiKeySet: boolean;
@@ -334,6 +335,7 @@ export function buildDiagnosticsText(info: SystemInfo): string {
     row("Mode", cfg.applyChanges ? "LIVE (changes applied)" : "Dry-run");
     row("Delete files", yesNo(cfg.deleteFiles));
     row("Purge unmonitored files", yesNo(cfg.purgeUnmonitoredFiles));
+    row("Cancel queued downloads", yesNo(cfg.cancelQueuedDownloads));
     row("Search at end", yesNo(cfg.searchAtEnd));
     row("Remove missing TMDB movies", yesNo(cfg.removeMissingTmdbMovies));
     row(

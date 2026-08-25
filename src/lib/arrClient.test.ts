@@ -27,6 +27,7 @@ import {
   RadarrClient,
   SeerrClient,
   ArrError,
+  isCancellableQueueItem,
   posterFromImages,
 } from "./arr";
 
@@ -197,6 +198,101 @@ describe("RadarrClient", () => {
     await client().deleteMovieFiles([]);
     await client().searchMovies([]);
     expect(calls).toHaveLength(0);
+  });
+});
+
+/** A one-page queue response, as both apps' paging envelope shapes it. */
+const queuePage = (records: unknown[], totalRecords = records.length) =>
+  json({ page: 1, pageSize: 1000, totalRecords, records });
+
+describe("download queue", () => {
+  it("asks for a page big enough not to silently truncate the queue", () => {
+    // The endpoint's own default is 10. Inheriting it would walk a tenth of a
+    // busy queue and look like it had walked all of it.
+    respond = () => queuePage([]);
+    return new SonarrClient("http://sonarr:8989", "k").getQueue().then(() => {
+      expect(only().url).toContain("pageSize=1000");
+      expect(only().url).toContain("page=1");
+    });
+  });
+
+  it("pages until it has every record", async () => {
+    const page = (n: number) =>
+      json({ page: n, pageSize: 1000, totalRecords: 3, records: [{ id: n }] });
+    let n = 0;
+    respond = () => page(++n);
+    const rows = await new SonarrClient("http://sonarr:8989", "k").getQueue();
+    expect(rows.map((r) => r.id)).toEqual([1, 2, 3]);
+    expect(calls).toHaveLength(3);
+  });
+
+  it("stops on a short page rather than looping", async () => {
+    respond = () => json({ page: 1, pageSize: 1000, totalRecords: 999, records: [] });
+    const rows = await new RadarrClient("http://radarr:7878", "k").getQueue();
+    expect(rows).toEqual([]);
+    expect(calls).toHaveLength(1);
+  });
+
+  it("scopes the read to the titles a targeted sweep is about", async () => {
+    respond = () => queuePage([]);
+    await new SonarrClient("http://sonarr:8989", "k").getQueue([5, 9]);
+    expect(only().url).toContain("seriesIds=5&seriesIds=9");
+
+    calls.length = 0;
+    await new RadarrClient("http://radarr:7878", "k").getQueue([12]);
+    expect(only().url).toContain("movieIds=12");
+  });
+
+  it("removes queue records in one bulk request", async () => {
+    respond = () => new Response(null, { status: 204 });
+    await new SonarrClient("http://sonarr:8989", "k").removeFromQueue([4, 5], true);
+    const c = only();
+    expect(c.init.method).toBe("DELETE");
+    expect(c.url).toContain("/api/v3/queue/bulk?");
+    expect(body(c)).toEqual({ ids: [4, 5] });
+  });
+
+  it("removes the download from the client, without blocklisting or redownloading", () => {
+    // All three are stated rather than inherited: blocklisting would bar the
+    // release for good, and a redownload would undo the cancellation outright.
+    respond = () => new Response(null, { status: 204 });
+    return new RadarrClient("http://radarr:7878", "k").removeFromQueue([1], true).then(() => {
+      const url = new URL(only().url);
+      expect(url.searchParams.get("removeFromClient")).toBe("true");
+      expect(url.searchParams.get("blocklist")).toBe("false");
+      expect(url.searchParams.get("skipRedownload")).toBe("true");
+    });
+  });
+
+  it("makes no request for an empty id list", async () => {
+    await new SonarrClient("http://sonarr:8989", "k").removeFromQueue([], true);
+    await new RadarrClient("http://radarr:7878", "k").removeFromQueue([], true);
+    expect(calls).toHaveLength(0);
+  });
+});
+
+describe("isCancellableQueueItem", () => {
+  it("cancels what is still on its way in", () => {
+    expect(isCancellableQueueItem({ id: 1, trackedDownloadState: "downloading" })).toBe(true);
+  });
+
+  it("leaves anything past the download alone", () => {
+    // The bytes are on disk by this point, so removing the row races the import.
+    for (const state of ["importPending", "importing", "imported", "importBlocked"]) {
+      expect(isCancellableQueueItem({ id: 1, trackedDownloadState: state })).toBe(false);
+    }
+  });
+
+  it("leaves stuck and ignored rows to the admin looking at them", () => {
+    for (const state of ["failed", "failedPending", "ignored"]) {
+      expect(isCancellableQueueItem({ id: 1, trackedDownloadState: state })).toBe(false);
+    }
+  });
+
+  it("falls back to status on an *arr that does not send the state", () => {
+    expect(isCancellableQueueItem({ id: 1, status: "queued" })).toBe(true);
+    expect(isCancellableQueueItem({ id: 1, status: "paused" })).toBe(true);
+    expect(isCancellableQueueItem({ id: 1, status: "completed" })).toBe(false);
   });
 });
 

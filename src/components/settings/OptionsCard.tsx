@@ -28,6 +28,13 @@ export function OptionsCard({ settings, onChange }: CardProps) {
         onChange={(v) => set({ deleteFiles: v })}
       />
       <Toggle
+        title="Cancel downloads in progress"
+        desc="If a title being unmonitored is already downloading, remove it from the Sonarr/Radarr queue and tell the download client to delete it. With “Remove files for all unmonitored items” also on, this covers every unmonitored title, not just the ones this sweep unmonitored. A download covering several episodes is only cancelled when every one of them is in scope."
+        checked={settings.cancelQueuedDownloads}
+        danger
+        onChange={(v) => set({ cancelQueuedDownloads: v })}
+      />
+      <Toggle
         title="Remove files for all unmonitored items"
         desc="At the end of a sweep, delete files for every unmonitored movie and episode — not just the ones this sweep unmonitored. Clears an existing unmonitored back-catalogue."
         checked={settings.purgeUnmonitoredFiles}

@@ -25,6 +25,13 @@ const failing = new Set<string>();
  * asking it to stop mid-run requires.
  */
 const held = new Map<string, Promise<void>>();
+/**
+ * The download queue each client reports, keyed by client. Tests that care put
+ * rows here; everything else gets an empty queue, which is also what a sweep
+ * with cancellation switched off must never even ask for.
+ */
+const arrQueue = new Map<"sonarr" | "radarr", unknown[]>();
+
 /** The series resource `getSeriesById` reports back. */
 interface MockSeries {
   id: number;
@@ -59,7 +66,12 @@ function record(client: "sonarr" | "radarr", method: string, result?: (args: unk
   };
 }
 
-vi.mock("./arr", () => ({
+vi.mock("./arr", async (importActual) => ({
+  // Only the HTTP clients are stubbed. The queue state rules come through
+  // untouched, so a copy of them here cannot drift out of step with the ones
+  // the sweep actually runs.
+  isCancellableQueueItem: (await importActual<typeof import("./arr")>())
+    .isCancellableQueueItem,
   RadarrClient: class {
     getMovie = record("radarr", "getMovie");
     setMoviesMonitored = record("radarr", "setMoviesMonitored");
@@ -67,6 +79,8 @@ vi.mock("./arr", () => ({
     deleteMovieFile = record("radarr", "deleteMovieFile");
     deleteMovie = record("radarr", "deleteMovie");
     searchMovies = record("radarr", "searchMovies");
+    getQueue = record("radarr", "getQueue", () => arrQueue.get("radarr") ?? []);
+    removeFromQueue = record("radarr", "removeFromQueue");
   },
   SonarrClient: class {
     setEpisodeMonitored = record("sonarr", "setEpisodeMonitored");
@@ -77,6 +91,8 @@ vi.mock("./arr", () => ({
       sonarrSeries.get(id as number) ?? defaultSeries(id as number)
     );
     updateSeries = record("sonarr", "updateSeries");
+    getQueue = record("sonarr", "getQueue", () => arrQueue.get("sonarr") ?? []);
+    removeFromQueue = record("sonarr", "removeFromQueue");
   },
 }));
 
@@ -122,6 +138,7 @@ beforeEach(async () => {
   failing.clear();
   held.clear();
   sonarrSeries.clear();
+  arrQueue.clear();
 });
 afterAll(async () => {
   await prisma.$disconnect();
@@ -147,6 +164,289 @@ async function targetedSweepAndWait(targets: SweepTarget[]) {
 }
 
 const callsTo = (method: string) => arrCalls.filter((c) => c.method === method);
+
+describe("cancelling downloads in progress", () => {
+  /** A Radarr queue row for `movieId`, downloading unless told otherwise. */
+  const movieRow = (
+    id: number,
+    movieId: number,
+    over: Record<string, unknown> = {}
+  ) => ({ id, movieId, downloadId: `dl-${id}`, trackedDownloadState: "downloading", ...over });
+
+  it("never asks for the queue while the setting is off", async () => {
+    // The read is a real request to a real Sonarr/Radarr; an install that has
+    // not opted in should not pay for it on every sweep.
+    await makeSettings({ applyChanges: true, searchAtEnd: false });
+    const conn = await makeConnection();
+    await makeMediaItem(conn.id, { arrId: 1, monitored: true, onStreaming: true });
+
+    const run = await sweepAndWait();
+    expect(run.status).toBe("SUCCESS");
+    expect(callsTo("getQueue")).toHaveLength(0);
+    expect(callsTo("removeFromQueue")).toHaveLength(0);
+    expect(run.cancelledDownloads).toBe(0);
+  });
+
+  it("cancels the download of a movie it unmonitors, after the unmonitor lands", async () => {
+    await makeSettings({
+      applyChanges: true,
+      searchAtEnd: false,
+      deleteFiles: false,
+      cancelQueuedDownloads: true,
+    });
+    const conn = await makeConnection();
+    await makeMediaItem(conn.id, { arrId: 1, monitored: true, onStreaming: true, hasFile: false });
+    arrQueue.set("radarr", [movieRow(50, 1)]);
+
+    const run = await sweepAndWait();
+    expect(run.status).toBe("SUCCESS");
+    expect(run.cancelledDownloads).toBe(1);
+
+    const removals = callsTo("removeFromQueue");
+    expect(removals).toHaveLength(1);
+    // removeFromClient: the whole point — the download itself goes, not just
+    // Radarr's row for it.
+    expect(removals[0].args).toEqual([[50], true]);
+
+    // Order is load-bearing: Radarr decides whether to hunt for a replacement
+    // from the monitored flag as it stands when the row disappears.
+    const order = arrCalls.map((c) => c.method);
+    expect(order.indexOf("setMoviesMonitored")).toBeLessThan(order.indexOf("removeFromQueue"));
+  });
+
+  it("leaves the queue alone in a dry-run but says what it would cancel", async () => {
+    await makeSettings({ applyChanges: false, searchAtEnd: false, cancelQueuedDownloads: true });
+    const conn = await makeConnection();
+    await makeMediaItem(conn.id, { arrId: 1, title: "Grabbed", monitored: true, onStreaming: true });
+    arrQueue.set("radarr", [movieRow(50, 1)]);
+
+    const run = await sweepAndWait();
+    expect(run.status).toBe("SUCCESS");
+    expect(callsTo("removeFromQueue")).toHaveLength(0);
+    expect(run.cancelledDownloads).toBe(1);
+    const log = (run.log as { msg: string }[]).map((l) => l.msg).join("\n");
+    expect(log).toContain('Would cancel the download of "Grabbed"');
+  });
+
+  it("does not cancel a download for a title it is not unmonitoring", async () => {
+    await makeSettings({ applyChanges: true, searchAtEnd: false, cancelQueuedDownloads: true });
+    const conn = await makeConnection();
+    await makeMediaItem(conn.id, { arrId: 1, monitored: true, onStreaming: false });
+    arrQueue.set("radarr", [movieRow(50, 1)]);
+
+    const run = await sweepAndWait();
+    expect(callsTo("removeFromQueue")).toHaveLength(0);
+    expect(run.cancelledDownloads).toBe(0);
+  });
+
+  it("leaves a download that has finished and is importing", async () => {
+    await makeSettings({ applyChanges: true, searchAtEnd: false, cancelQueuedDownloads: true });
+    const conn = await makeConnection();
+    await makeMediaItem(conn.id, { arrId: 1, monitored: true, onStreaming: true });
+    arrQueue.set("radarr", [movieRow(50, 1, { trackedDownloadState: "importing" })]);
+
+    const run = await sweepAndWait();
+    expect(callsTo("removeFromQueue")).toHaveLength(0);
+    expect(run.cancelledDownloads).toBe(0);
+  });
+
+  it("cancels a season pack only when every episode on it is unmonitored", async () => {
+    await makeSettings({
+      applyChanges: true,
+      searchAtEnd: false,
+      deleteFiles: false,
+      cancelQueuedDownloads: true,
+    });
+    const conn = await makeConnection({ type: "SONARR" });
+    const show = await makeMediaItem(conn.id, { type: "TV", arrId: 1, monitored: true });
+    await makeEpisode(show.id, { arrEpisodeId: 11, episodeNumber: 1, monitored: true, onStreaming: true });
+    await makeEpisode(show.id, { arrEpisodeId: 12, episodeNumber: 2, monitored: true, onStreaming: true });
+    // Not on streaming, so it survives the sweep — and the pack survives with it.
+    await makeEpisode(show.id, { arrEpisodeId: 13, episodeNumber: 3, monitored: true, onStreaming: false });
+    arrQueue.set("sonarr", [
+      { id: 60, episodeId: 11, downloadId: "pack", trackedDownloadState: "downloading" },
+      { id: 61, episodeId: 12, downloadId: "pack", trackedDownloadState: "downloading" },
+      { id: 62, episodeId: 13, downloadId: "pack", trackedDownloadState: "downloading" },
+    ]);
+
+    const run = await sweepAndWait();
+    expect(run.status).toBe("SUCCESS");
+    expect(run.unmonitoredEps).toBe(2);
+    // Cancelling would take episode 3 with it.
+    expect(callsTo("removeFromQueue")).toHaveLength(0);
+    expect(run.cancelledDownloads).toBe(0);
+  });
+
+  it("cancels a pack whose every episode is on streaming, in one request", async () => {
+    await makeSettings({
+      applyChanges: true,
+      searchAtEnd: false,
+      deleteFiles: false,
+      cancelQueuedDownloads: true,
+    });
+    const conn = await makeConnection({ type: "SONARR" });
+    const show = await makeMediaItem(conn.id, { type: "TV", arrId: 1, monitored: true });
+    await makeEpisode(show.id, { arrEpisodeId: 11, episodeNumber: 1, monitored: true, onStreaming: true });
+    await makeEpisode(show.id, { arrEpisodeId: 12, episodeNumber: 2, monitored: true, onStreaming: true });
+    arrQueue.set("sonarr", [
+      { id: 60, episodeId: 11, downloadId: "pack", trackedDownloadState: "downloading" },
+      { id: 61, episodeId: 12, downloadId: "pack", trackedDownloadState: "downloading" },
+    ]);
+
+    const run = await sweepAndWait();
+    expect(run.status).toBe("SUCCESS");
+    const removals = callsTo("removeFromQueue");
+    expect(removals).toHaveLength(1);
+    expect(removals[0].args).toEqual([[60, 61], true]);
+    // One download, not two rows: the count is what a person would call it.
+    expect(run.cancelledDownloads).toBe(1);
+  });
+
+  it("cancels downloads for the whole unmonitored back-catalogue with purge on", async () => {
+    // The pairing: purging files while the download client keeps filling the
+    // library back up empties it on paper only.
+    await makeSettings({
+      applyChanges: true,
+      searchAtEnd: false,
+      deleteFiles: false,
+      purgeUnmonitoredFiles: true,
+      cancelQueuedDownloads: true,
+    });
+    const conn = await makeConnection();
+    // Already unmonitored, downloading, nothing on disk yet — the case the file
+    // rules structurally cannot reach.
+    await makeMediaItem(conn.id, {
+      arrId: 1,
+      title: "Old Grab",
+      monitored: false,
+      onStreaming: true,
+      hasFile: false,
+      movieFileId: null,
+    });
+    arrQueue.set("radarr", [movieRow(50, 1)]);
+
+    const run = await sweepAndWait();
+    expect(run.status).toBe("SUCCESS");
+    expect(run.unmonitoredMovies).toBe(0);
+    expect(run.cancelledDownloads).toBe(1);
+    expect(callsTo("removeFromQueue")[0].args).toEqual([[50], true]);
+    const log = (run.log as { msg: string }[]).map((l) => l.msg).join("\n");
+    expect(log).toContain("(unmonitored)");
+  });
+
+  it("leaves the back-catalogue downloading while purge is off", async () => {
+    await makeSettings({
+      applyChanges: true,
+      searchAtEnd: false,
+      purgeUnmonitoredFiles: false,
+      cancelQueuedDownloads: true,
+    });
+    const conn = await makeConnection();
+    await makeMediaItem(conn.id, { arrId: 1, monitored: false, onStreaming: true, hasFile: false });
+    arrQueue.set("radarr", [movieRow(50, 1)]);
+
+    const run = await sweepAndWait();
+    expect(callsTo("removeFromQueue")).toHaveLength(0);
+    expect(run.cancelledDownloads).toBe(0);
+  });
+
+  it("never cancels a download for a title that stays monitored, purge or not", async () => {
+    await makeSettings({
+      applyChanges: true,
+      searchAtEnd: false,
+      purgeUnmonitoredFiles: true,
+      cancelQueuedDownloads: true,
+    });
+    const conn = await makeConnection();
+    // Monitored and not on streaming: exactly what the download is for.
+    await makeMediaItem(conn.id, { arrId: 1, monitored: true, onStreaming: false, hasFile: false });
+    // Unmonitored but off streaming, so it is re-monitored and keeps its grab.
+    await makeMediaItem(conn.id, { arrId: 2, monitored: false, onStreaming: false, hasFile: false });
+    arrQueue.set("radarr", [movieRow(50, 1), movieRow(51, 2)]);
+
+    const run = await sweepAndWait();
+    expect(run.remonitoredMovies).toBe(1);
+    expect(callsTo("removeFromQueue")).toHaveLength(0);
+    expect(run.cancelledDownloads).toBe(0);
+  });
+
+  it("cancels a pack mixing this run's unmonitors with the back-catalogue", async () => {
+    await makeSettings({
+      applyChanges: true,
+      searchAtEnd: false,
+      deleteFiles: false,
+      purgeUnmonitoredFiles: true,
+      cancelQueuedDownloads: true,
+    });
+    const conn = await makeConnection({ type: "SONARR" });
+    const show = await makeMediaItem(conn.id, { type: "TV", arrId: 1, monitored: true });
+    // Caught by this run…
+    await makeEpisode(show.id, {
+      arrEpisodeId: 11, episodeNumber: 1, monitored: true, onStreaming: true, hasFile: false,
+      episodeFileId: null,
+    });
+    // …and one already unmonitored, only in scope because purge is on.
+    await makeEpisode(show.id, {
+      arrEpisodeId: 12, episodeNumber: 2, monitored: false, onStreaming: true, hasFile: false,
+      episodeFileId: null,
+    });
+    arrQueue.set("sonarr", [
+      { id: 60, episodeId: 11, downloadId: "pack", trackedDownloadState: "downloading" },
+      { id: 61, episodeId: 12, downloadId: "pack", trackedDownloadState: "downloading" },
+    ]);
+
+    const run = await sweepAndWait();
+    expect(run.status).toBe("SUCCESS");
+    expect(callsTo("removeFromQueue")[0].args).toEqual([[60, 61], true]);
+    expect(run.cancelledDownloads).toBe(1);
+    // Both reasons apply to the one download, and the log says so.
+    const log = (run.log as { msg: string }[]).map((l) => l.msg).join("\n");
+    expect(log).toContain("(on streaming, unmonitored)");
+  });
+
+  it("reads the queue once per connection, not once per series", async () => {
+    await makeSettings({ applyChanges: true, searchAtEnd: false, cancelQueuedDownloads: true });
+    const conn = await makeConnection({ type: "SONARR" });
+    for (const arrId of [1, 2, 3]) {
+      const show = await makeMediaItem(conn.id, { type: "TV", arrId, monitored: true });
+      await makeEpisode(show.id, { arrEpisodeId: arrId * 10, onStreaming: true });
+    }
+
+    await sweepAndWait();
+    expect(callsTo("getQueue")).toHaveLength(1);
+  });
+
+  it("scopes the queue read to the titles a targeted sweep covers", async () => {
+    await makeSettings({ applyChanges: true, searchAtEnd: false, cancelQueuedDownloads: true });
+    const conn = await makeConnection();
+    await makeMediaItem(conn.id, { arrId: 7, monitored: true, onStreaming: true });
+
+    await targetedSweepAndWait([
+      { connectionId: conn.id, type: "MOVIE", arrId: 7, title: "Just this one" },
+    ]);
+    expect(callsTo("getQueue")[0].args).toEqual([[7]]);
+  });
+
+  it("still unmonitors when the queue cannot be read, and fails the run", async () => {
+    // Losing the queue must not cost the sweep its actual job, but the admin
+    // asked for cancellation and did not get it — that is not a clean run.
+    await makeSettings({
+      applyChanges: true,
+      searchAtEnd: false,
+      deleteFiles: false,
+      cancelQueuedDownloads: true,
+    });
+    const conn = await makeConnection();
+    await makeMediaItem(conn.id, { arrId: 1, monitored: true, onStreaming: true });
+    failing.add("radarr.getQueue");
+
+    const run = await sweepAndWait();
+    expect(run.status).toBe("FAILED");
+    expect(run.unmonitoredMovies).toBe(1);
+    expect(callsTo("setMoviesMonitored")).toHaveLength(1);
+    expect(run.error).toContain("read download queue");
+  });
+});
 
 describe("sweepRadarr", () => {
   it("unmonitors on-streaming movies in one batched request and updates the snapshot", async () => {

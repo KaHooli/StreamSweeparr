@@ -4,13 +4,20 @@
  * For every enabled connection:
  *   1. UNMONITOR + DELETE: monitored items (movies / episodes) that are now
  *      available on a selected streaming service are set to unmonitored and,
- *      if enabled, their files are deleted.
+ *      if enabled, their files are deleted. If `cancelQueuedDownloads` is on,
+ *      one that is *mid-download* also has its download cancelled and dropped
+ *      from the download client — otherwise Sonarr/Radarr finish fetching a
+ *      title we have just decided nobody needs, because an unmonitored flag
+ *      stops new grabs but does not abandon one already in flight.
  *   2. RE-MONITOR: unmonitored items that are NO LONGER on any selected
  *      streaming service are set back to monitored.
  *   3. PURGE (optional, `purgeUnmonitoredFiles`): delete files for every item
  *      that is still unmonitored once 1 and 2 are decided. Unlike `deleteFiles`
  *      — which only covers titles this sweep just unmonitored — this also clears
  *      an unmonitored back-catalogue. Items re-monitored by 2 are never purged.
+ *      With `cancelQueuedDownloads` also on, the same back-catalogue has its
+ *      in-progress downloads cancelled: purging a library while the download
+ *      client is still filling it back up only empties it on paper.
  *   4. SEASONS + SERIES (Sonarr only): Sonarr's own flags are brought into line
  *      with what sits underneath them. A season goes off once every *aired*
  *      episode of it is unmonitored and on while it still holds a monitored
@@ -32,7 +39,12 @@
 
 import type { MediaType } from "@/generated/prisma/client";
 import { prisma, getSettings } from "./db";
-import { SonarrClient, RadarrClient } from "./arr";
+import {
+  SonarrClient,
+  RadarrClient,
+  isCancellableQueueItem,
+  type ArrQueueItem,
+} from "./arr";
 import { runSync, type SyncTarget } from "./sync";
 import {
   startRun,
@@ -300,9 +312,19 @@ export type MonitorAction = "unmonitor" | "remonitor" | "none";
 /** Why an item's file should be deleted, or null to keep it. */
 export type DeleteReason = "on streaming" | "unmonitored";
 
+/**
+ * Why an item's in-progress download should be cancelled, or null to let it
+ * finish. Deliberately the same two reasons as `DeleteReason` and kept as its
+ * own type: the file and the download are separate decisions that happen to
+ * answer to the same pair of settings.
+ */
+export type CancelReason = "on streaming" | "unmonitored";
+
 export interface ItemPlan {
   monitor: MonitorAction;
   deleteFile: DeleteReason | null;
+  /** Cancel this item's in-progress download and drop it from the client. */
+  cancelDownload: CancelReason | null;
 }
 
 /**
@@ -321,6 +343,22 @@ export interface ItemPlan {
  *     which is what clears a pre-existing unmonitored back-catalogue. Items
  *     being re-monitored are excluded: they are monitored once the sweep ends,
  *     so their files must survive.
+ *
+ * Download cancellation (`cancelQueuedDownloads`) tracks the file rules, one
+ * for one, because a download is simply a file that has not landed yet:
+ *   - on its own it covers the item this sweep just unmonitored — the case
+ *     where Sonarr grabbed something a moment before we learned it was already
+ *     on streaming, and would otherwise finish fetching it;
+ *   - with `purgeUnmonitoredFiles` it widens to anything left unmonitored, the
+ *     same back-catalogue that switch hands to the file rules. Purging a
+ *     library while its download client is still filling it back up is the
+ *     case that makes this worth having.
+ *
+ * The one place it deliberately does **not** track them is `hasFile`. A file
+ * rule needs a file to act on; a download by definition has not produced one
+ * yet, and the item mid-download with nothing on disk is exactly the one worth
+ * catching. So the cancellation is decided before `hasFile` gets a say, and an
+ * item can be cancelled while its `deleteFile` is null.
  */
 export function planItem(
   item: {
@@ -328,8 +366,14 @@ export function planItem(
     onStreaming: boolean;
     streamingUnknown: boolean;
     hasFile: boolean;
+    /** Currently mid-download in the *arr queue. Absent means "not in it". */
+    inQueue?: boolean;
   },
-  settings: { deleteFiles: boolean; purgeUnmonitoredFiles: boolean }
+  settings: {
+    deleteFiles: boolean;
+    purgeUnmonitoredFiles: boolean;
+    cancelQueuedDownloads?: boolean;
+  }
 ): ItemPlan {
   let monitor: MonitorAction = "none";
   let monitoredAfter = item.monitored;
@@ -342,14 +386,101 @@ export function planItem(
     monitoredAfter = true;
   }
 
-  if (!item.hasFile) return { monitor, deleteFile: null };
+  // Mirrors the file rules below, minus their `hasFile` precondition — see the
+  // docblock. `monitoredAfter` is what carries the purge case: an item this
+  // sweep unmonitors and one that was already unmonitored both end it that way,
+  // and only the second needs `purgeUnmonitoredFiles` to be in scope.
+  let cancelDownload: CancelReason | null = null;
+  if (item.inQueue && settings.cancelQueuedDownloads) {
+    if (monitor === "unmonitor") cancelDownload = "on streaming";
+    else if (settings.purgeUnmonitoredFiles && !monitoredAfter) {
+      cancelDownload = "unmonitored";
+    }
+  }
+
+  if (!item.hasFile) return { monitor, deleteFile: null, cancelDownload };
   if (monitor === "unmonitor" && settings.deleteFiles) {
-    return { monitor, deleteFile: "on streaming" };
+    return { monitor, deleteFile: "on streaming", cancelDownload };
   }
   if (settings.purgeUnmonitoredFiles && !monitoredAfter) {
-    return { monitor, deleteFile: "unmonitored" };
+    return { monitor, deleteFile: "unmonitored", cancelDownload };
   }
-  return { monitor, deleteFile: null };
+  return { monitor, deleteFile: null, cancelDownload };
+}
+
+/** One queue row as the removal decision sees it. */
+export interface QueueCandidate {
+  /** The queue record's id — what the removal endpoint takes. */
+  queueId: number;
+  /** The episode or movie id the row belongs to, or null if *arr can't say. */
+  itemId: number | null;
+  /** Rows sharing this share one download in the client. Null means its own. */
+  downloadId: string | null;
+  /** Whether the row is still on its way in (see `isCancellableQueueItem`). */
+  cancellable: boolean;
+}
+
+/** One download a sweep is going to cancel. */
+export interface QueueRemoval {
+  /** Every queue row belonging to this download. */
+  queueIds: number[];
+  /** The episode/movie ids it would have delivered. */
+  itemIds: number[];
+}
+
+/**
+ * Decide which downloads to cancel, given the rows in the queue and the items
+ * this sweep just unmonitored. Pure, like `planItem`, so the rule that makes it
+ * safe is pinned by tests rather than by care.
+ *
+ * The rule that matters is the grouping. **A single download can cover several
+ * episodes** — a season pack is one torrent, and Sonarr expands it into one
+ * queue row per episode, all carrying the same `downloadId`. Removing any one
+ * of those rows with `removeFromClient` takes the whole download with it, and
+ * with it every other episode in the pack.
+ *
+ * So a download is cancelled only when **every** row belonging to it is being
+ * unmonitored. A season pack where nine episodes are on streaming and the tenth
+ * is not stays put: finishing it and deleting nine files wastes some disk, where
+ * cancelling it would lose the episode the user still wants and leave nothing
+ * to show a search had already found it. The next sweep purges what landed.
+ *
+ * Rows that are not cancellable disqualify their group for the same reason —
+ * if part of a pack has already begun importing, the download is past the point
+ * where dropping it is a clean cancellation.
+ *
+ * A row with no `downloadId` is its own group: nothing else can be riding on it.
+ * A row with no `itemId` is one *arr could not attribute to a title, so it can
+ * never be matched against the unmonitor set — and because it disqualifies any
+ * group it appears in, an unattributable row protects the download it sits on
+ * rather than exposing it.
+ */
+export function planQueueRemovals(
+  rows: QueueCandidate[],
+  unmonitoredIds: Set<number>
+): QueueRemoval[] {
+  // Group first, decide second: the decision is a property of the download, not
+  // of the row that happened to match.
+  const groups = new Map<string, QueueCandidate[]>();
+  for (const row of rows) {
+    const key = row.downloadId ? `d:${row.downloadId}` : `q:${row.queueId}`;
+    const group = groups.get(key);
+    if (group) group.push(row);
+    else groups.set(key, [row]);
+  }
+
+  const out: QueueRemoval[] = [];
+  for (const group of groups.values()) {
+    const wanted = group.every(
+      (r) => r.cancellable && r.itemId !== null && unmonitoredIds.has(r.itemId)
+    );
+    if (!wanted) continue;
+    out.push({
+      queueIds: group.map((r) => r.queueId),
+      itemIds: [...new Set(group.map((r) => r.itemId as number))],
+    });
+  }
+  return out;
 }
 
 /** One episode as the season decision sees it, after `planItem` has spoken. */
@@ -618,12 +749,108 @@ function chunk<T>(items: T[], size: number): T[][] {
 /** Ids per bulk *arr request. */
 const BATCH = 200;
 
+/**
+ * Read a connection's download queue, or nothing when cancellation is off.
+ *
+ * Skipping the call when the setting is off keeps a sweep's cost exactly where
+ * it was for everyone who has not asked for this. When it is on, the cost is
+ * one local *arr request per connection — a targeted sweep narrows it to the
+ * titles it is about, so the webhook path stays as cheap as it was.
+ *
+ * A failure here is recorded rather than thrown: the sweep's own job is to
+ * unmonitor, and losing the queue must not stop it. `errors.attempt` still ends
+ * the run FAILED, which is right — the admin asked for downloads to be
+ * cancelled and they were not.
+ */
+async function readQueue(
+  client: { getQueue(ids?: number[]): Promise<ArrQueueItem[]> },
+  conn: { name: string },
+  enabled: boolean,
+  errors: ErrorCollector,
+  arrIds?: number[]
+): Promise<ArrQueueItem[]> {
+  if (!enabled) return [];
+  const rows = await errors.attempt(`[${conn.name}] read download queue`, () =>
+    client.getQueue(arrIds)
+  );
+  return rows ?? [];
+}
+
+/** Turn *arr queue rows into the shape `planQueueRemovals` decides on. */
+function toQueueCandidates(
+  rows: ArrQueueItem[],
+  itemIdOf: (row: ArrQueueItem) => number | null | undefined
+): QueueCandidate[] {
+  return rows.map((row) => ({
+    queueId: row.id,
+    itemId: itemIdOf(row) ?? null,
+    downloadId: row.downloadId ?? null,
+    cancellable: isCancellableQueueItem(row),
+  }));
+}
+
+/**
+ * Cancel the downloads a sweep's unmonitor decisions have orphaned.
+ *
+ * Shared by both sweeps: only the id on the queue row and the label differ.
+ * Logs in a dry-run and acts otherwise, so a preview reports the cancellations
+ * it would make instead of quietly omitting the one destructive step it has.
+ *
+ * **Call this after the unmonitor write, never before.** Sonarr and Radarr
+ * decide whether to go looking for a replacement from the monitored flag as it
+ * stands when the queue row disappears; cancelling first leaves a window where
+ * re-grabbing the title is the correct thing for them to do. `skipRedownload`
+ * on the request covers the same ground, and the order costs nothing.
+ */
+async function cancelDownloads(
+  client: { removeFromQueue(ids: number[], removeFromClient: boolean): Promise<unknown> },
+  conn: { name: string },
+  candidates: QueueCandidate[],
+  cancelIds: Map<number, CancelReason>,
+  labelOf: (itemId: number) => string,
+  dryRun: boolean,
+  counts: RunCounts,
+  push: Push,
+  errors: ErrorCollector,
+  checkAbort: CheckAbort
+) {
+  if (!cancelIds.size) return;
+  const removals = planQueueRemovals(candidates, new Set(cancelIds.keys()));
+
+  for (const removal of removals) {
+    const what = removal.itemIds.map(labelOf).join(", ");
+    // One download can cover episodes cancelled for different reasons — some
+    // on streaming, some merely left unmonitored — so the log says which apply
+    // rather than picking one and being wrong about the rest.
+    const why = [...new Set(removal.itemIds.map((id) => cancelIds.get(id)))].join(", ");
+    push(
+      "action",
+      `[${conn.name}] ${dryRun ? "Would cancel" : "Cancel"} the download of ${what} ` +
+        `and remove it from the download client (${why}).`
+    );
+    counts.cancelledDownloads++;
+  }
+  if (dryRun || !removals.length) return;
+
+  for (const batch of chunk(removals, BATCH)) {
+    // Between batches, matching every other apply step: one call plus nothing
+    // to record locally, since the queue is *arr's state and not part of the
+    // snapshot this database keeps.
+    await checkAbort();
+    const queueIds = batch.flatMap((r) => r.queueIds);
+    await errors.attempt(`[${conn.name}] cancel ${batch.length} download(s)`, () =>
+      client.removeFromQueue(queueIds, true)
+    );
+  }
+}
+
 async function sweepRadarr(
   conn: { id: number; name: string; baseUrl: string; apiKey: string },
   settings: {
     deleteFiles: boolean;
     removeMissingTmdbMovies: boolean;
     purgeUnmonitoredFiles: boolean;
+    cancelQueuedDownloads: boolean;
   },
   dryRun: boolean,
   counts: RunCounts,
@@ -637,6 +864,19 @@ async function sweepRadarr(
     where: { connectionId: conn.id, type: "MOVIE", skipped: false, ...arrIdFilter(arrIds) },
   });
 
+  // Read before planning: `planItem` needs to know which titles are mid-download
+  // to decide, and in a dry-run that is the difference between reporting the
+  // cancellation and staying silent about it.
+  const queue = await readQueue(
+    client,
+    conn,
+    settings.cancelQueuedDownloads,
+    errors,
+    arrIds
+  );
+  const queued = new Set(queue.map((q) => q.movieId).filter((id): id is number => !!id));
+  const titleByArrId = new Map(movies.map((m) => [m.arrId, m.title]));
+
   // Decide everything first, then act in batches. Planning is pure and cannot
   // fail, so a Radarr outage can only cost us the apply step — never leave the
   // library half-planned.
@@ -644,6 +884,8 @@ async function sweepRadarr(
   const toRemonitor: { rowId: number; arrId: number; title: string }[] = [];
   const filesToDelete: PendingFileDelete[] = [];
   const missingFileId: string[] = [];
+  /** Radarr ids whose in-progress download this sweep is cancelling, and why. */
+  const cancelIds = new Map<number, CancelReason>();
 
   for (const m of movies) {
     await checkAbort();
@@ -671,8 +913,13 @@ async function sweepRadarr(
       continue;
     }
 
-    const plan = planItem(m, settings);
+    const plan = planItem({ ...m, inQueue: queued.has(m.arrId) }, settings);
     const entry = { rowId: m.id, arrId: m.arrId, title: m.title };
+
+    // Outside the monitoring branches: with `purgeUnmonitoredFiles` on, a title
+    // that is already unmonitored is in scope for cancellation while needing no
+    // monitoring change at all.
+    if (plan.cancelDownload) cancelIds.set(m.arrId, plan.cancelDownload);
 
     if (plan.monitor === "unmonitor") {
       push("action", `[${conn.name}] Unmonitor movie "${m.title}" (on streaming).`);
@@ -723,9 +970,26 @@ async function sweepRadarr(
     }
   }
 
+  // Unmonitor first, then cancel — see `cancelDownloads` for why the order is
+  // load-bearing. The cancellation runs in a dry-run too, where it only reports.
+  if (!dryRun) {
+    await applyRadarrMonitoring(client, conn, toUnmonitor, false, errors, checkAbort);
+  }
+  await cancelDownloads(
+    client,
+    conn,
+    toQueueCandidates(queue, (q) => q.movieId),
+    cancelIds,
+    (id) => `"${titleByArrId.get(id) ?? `movie ${id}`}"`,
+    dryRun,
+    counts,
+    push,
+    errors,
+    checkAbort
+  );
+
   if (dryRun) return;
 
-  await applyRadarrMonitoring(client, conn, toUnmonitor, false, errors, checkAbort);
   await applyRadarrMonitoring(client, conn, toRemonitor, true, errors, checkAbort);
 
   for (const batch of chunk(filesToDelete, BATCH)) {
@@ -779,7 +1043,11 @@ async function applyRadarrMonitoring(
 
 async function sweepSonarr(
   conn: { id: number; name: string; baseUrl: string; apiKey: string },
-  settings: { deleteFiles: boolean; purgeUnmonitoredFiles: boolean },
+  settings: {
+    deleteFiles: boolean;
+    purgeUnmonitoredFiles: boolean;
+    cancelQueuedDownloads: boolean;
+  },
   dryRun: boolean,
   counts: RunCounts,
   push: Push,
@@ -833,6 +1101,20 @@ async function sweepSonarr(
     }
   }
 
+  // One read for the connection, not one per series: the queue is a single list
+  // and a library-wide sweep would otherwise ask for it hundreds of times.
+  const queue = await readQueue(
+    client,
+    conn,
+    settings.cancelQueuedDownloads,
+    errors,
+    arrIds
+  );
+  const queuedEpisodes = new Set(
+    queue.map((q) => q.episodeId).filter((id): id is number => !!id)
+  );
+  const queueCandidates = toQueueCandidates(queue, (q) => q.episodeId);
+
   const now = new Date();
 
   for (const s of series) {
@@ -844,12 +1126,26 @@ async function sweepSonarr(
     const toRemonitor: number[] = [];
     const filesToDelete: PendingFileDelete[] = [];
     const seasonEpisodes: SeasonEpisode[] = [];
+    /** Sonarr episode ids whose download this sweep is cancelling, and why. */
+    const cancelIds = new Map<number, CancelReason>();
+    const labels = new Map<number, string>();
 
     for (const ep of s.episodes) {
-      const plan = planItem(ep, settings);
+      const plan = planItem(
+        { ...ep, inQueue: queuedEpisodes.has(ep.arrEpisodeId) },
+        settings
+      );
 
       if (plan.monitor === "unmonitor") toUnmonitor.push(ep.arrEpisodeId);
       else if (plan.monitor === "remonitor") toRemonitor.push(ep.arrEpisodeId);
+
+      if (plan.cancelDownload) {
+        cancelIds.set(ep.arrEpisodeId, plan.cancelDownload);
+        labels.set(
+          ep.arrEpisodeId,
+          `"${s.title}" S${ep.seasonNumber}E${ep.episodeNumber}`
+        );
+      }
 
       seasonEpisodes.push({
         seasonNumber: ep.seasonNumber,
@@ -886,6 +1182,23 @@ async function sweepSonarr(
         });
       }
     }
+
+    // Straight after the unmonitor write — see `cancelDownloads`. The whole
+    // connection's queue rows are handed over, not just this series': a download
+    // is only cancelled when every episode riding on it is in `cancelIds`, and
+    // that test has to see the rows belonging to other series to be able to fail.
+    await cancelDownloads(
+      client,
+      conn,
+      queueCandidates,
+      cancelIds,
+      (id) => labels.get(id) ?? `episode ${id}`,
+      dryRun,
+      counts,
+      push,
+      errors,
+      checkAbort
+    );
 
     for (const f of filesToDelete) {
       push("action", `[${conn.name}] ${dryRun ? "Would delete" : "Delete"} file for ${f.label} (${f.reason}).`);

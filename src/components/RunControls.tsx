@@ -16,6 +16,7 @@ interface RunProgress {
   unmonitoredEps: number;
   remonitoredEps: number;
   deletedFiles: number;
+  cancelledDownloads: number;
   searchedItems: number;
 }
 

@@ -100,6 +100,7 @@ export interface RunCounts {
   deletedFiles: number;
   removedMovies: number;
   searchedItems: number;
+  cancelledDownloads: number;
 }
 
 export class RunLockError extends Error {
@@ -125,6 +126,7 @@ export class RunContext {
     deletedFiles: 0,
     removedMovies: 0,
     searchedItems: 0,
+    cancelledDownloads: 0,
   };
   private lastFlush = 0;
   // Serialises writes: `push` fires flushes without awaiting them, and two
