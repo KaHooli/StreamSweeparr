@@ -92,6 +92,13 @@ model Settings {
   // titles that sweep itself unmonitored. Clears a pre-existing unmonitored
   // back-catalogue. Off by default because it is broad and destructive.
   purgeUnmonitoredFiles Boolean @default(false)
+  // When a sweep unmonitors a title that is mid-download, remove it from the
+  // Sonarr/Radarr queue and tell the download client to drop the download and
+  // its data. Only covers what the sweep itself unmonitors, never the
+  // unmonitored back-catalogue: an unmonitored title that is downloading is
+  // usually one somebody grabbed on purpose. Off by default — it destroys work
+  // in progress, and a wrong availability answer would do so for nothing.
+  cancelQueuedDownloads Boolean @default(false)
   // Trigger a search for all monitored items at the end of a run.
   searchAtEnd       Boolean  @default(true)
   // Remove movies from Radarr when TMDB reports their id no longer exists.
@@ -441,6 +448,9 @@ model RunLog {
   deletedFiles       Int       @default(0)
   removedMovies      Int       @default(0)
   searchedItems      Int       @default(0)
+  // Downloads cancelled, counted per download rather than per queue row: one
+  // grab covering six episodes is one cancellation to the person reading this.
+  cancelledDownloads Int       @default(0)
 
   // Human-readable step log.
   log                Json?

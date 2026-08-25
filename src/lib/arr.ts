@@ -89,6 +89,131 @@ export function hasSkipTag(
   return titleTags.some((id) => skipIds.has(id));
 }
 
+/* -------------------------- Download queue ------------------------------ */
+
+/**
+ * One row of Sonarr's or Radarr's download queue.
+ *
+ * Both apps return the same shape from `GET /api/v3/queue`, differing only in
+ * which id names the title: Sonarr sends `episodeId` (plus `seriesId`), Radarr
+ * sends `movieId`. `id` is the queue *record's* id — that, not the title's, is
+ * what the removal endpoint takes.
+ */
+export interface ArrQueueItem {
+  /** The queue record's own id. What DELETE /api/v3/queue/bulk takes. */
+  id: number;
+  /** Sonarr. Null for a record *arr cannot attribute to a known episode. */
+  episodeId?: number | null;
+  seriesId?: number | null;
+  /** Radarr. */
+  movieId?: number | null;
+  /**
+   * The download's id in the download client. Several queue records share one
+   * when a single grab covers several episodes — see `planQueueRemovals` in
+   * lib/sweep.ts, which is why this is carried through.
+   */
+  downloadId?: string | null;
+  title?: string | null;
+  /** QueueStatus: queued | downloading | paused | completed | failed | … */
+  status?: string | null;
+  /** TrackedDownloadState: downloading | importPending | importing | … */
+  trackedDownloadState?: string | null;
+}
+
+interface ArrQueuePage {
+  page: number;
+  pageSize: number;
+  totalRecords: number;
+  records: ArrQueueItem[];
+}
+
+/**
+ * `pageSize` for a queue read.
+ *
+ * The endpoint's own default is **10**, which is the trap here: a plain
+ * `GET /api/v3/queue` returns ten rows and a `totalRecords` nobody reads, so a
+ * queue of any size looks like it was walked when it was not. Asking for a
+ * large page keeps a normal queue to one request; `fetchQueue` still pages, for
+ * the install whose queue is bigger than this.
+ */
+const QUEUE_PAGE_SIZE = 1000;
+
+/** Stop a malformed `totalRecords` turning pagination into an endless loop. */
+const QUEUE_MAX_PAGES = 50;
+
+/**
+ * Which queue rows may be cancelled: the ones still on their way in.
+ *
+ * `trackedDownloadState` is the lifecycle field, and it is `downloading` for
+ * everything the client has not finished — that covers the rows whose `status`
+ * reads `queued`, `paused`, `delay` or `downloadClientUnavailable` too. Once
+ * the download completes it moves through `importPending` → `importing` →
+ * `imported`, and those are deliberately left alone: the bytes are already on
+ * disk, so removing one races Sonarr's own import for the file. Nothing is lost
+ * by waiting — the next sweep sees an ordinary file and `deleteFiles` handles
+ * it by the path that already exists.
+ *
+ * `importBlocked`, `failed` and `ignored` are skipped for a different reason:
+ * they are stuck rows an admin is likely looking at, and quietly clearing
+ * someone's failed-download list is not what "cancel the download" asked for.
+ *
+ * The field is only absent on an *arr too old to send it, where `status` is all
+ * there is; `completed` is the one value that certainly must not be cancelled.
+ */
+export function isCancellableQueueItem(item: ArrQueueItem): boolean {
+  if (item.trackedDownloadState) return item.trackedDownloadState === "downloading";
+  return item.status !== "completed";
+}
+
+/**
+ * Walk every page of a queue endpoint.
+ *
+ * Shared by both clients because the paging envelope is identical; `path` is
+ * what differs, carrying each app's own id filter.
+ */
+async function fetchQueue(
+  baseUrl: string,
+  apiKey: string,
+  path: string,
+  params: URLSearchParams
+): Promise<ArrQueueItem[]> {
+  const out: ArrQueueItem[] = [];
+  for (let page = 1; page <= QUEUE_MAX_PAGES; page++) {
+    params.set("page", String(page));
+    params.set("pageSize", String(QUEUE_PAGE_SIZE));
+    const res = await arrFetch<ArrQueuePage>(baseUrl, apiKey, `${path}?${params}`);
+    const records = res?.records ?? [];
+    out.push(...records);
+    if (!records.length || out.length >= (res?.totalRecords ?? 0)) break;
+  }
+  return out;
+}
+
+/**
+ * Query string for a queue removal.
+ *
+ * Every one of these defaults the wrong way round for a sweep, so all three are
+ * always sent explicitly:
+ *
+ *   - `removeFromClient` defaults to **true** at the API, which is the one
+ *     default that happens to be what we want — but it is the destructive one,
+ *     so it is stated rather than inherited.
+ *   - `blocklist` must stay false. Blocklisting means "this release is bad";
+ *     here the release is fine and the *title* is simply no longer wanted. Set
+ *     it, and the release could never be grabbed again once the title leaves
+ *     streaming and a later sweep re-monitors it.
+ *   - `skipRedownload` must be true, or Sonarr/Radarr may go looking for a
+ *     replacement the moment the row disappears — cancelling a download only to
+ *     start another one.
+ */
+function queueRemovalParams(removeFromClient: boolean): URLSearchParams {
+  return new URLSearchParams({
+    removeFromClient: String(removeFromClient),
+    blocklist: "false",
+    skipRedownload: "true",
+  });
+}
+
 /* ------------------------------- Sonarr -------------------------------- */
 
 export interface SonarrSeason {
@@ -202,6 +327,36 @@ export class SonarrClient {
     return arrFetch<void>(this.baseUrl, this.apiKey, "/api/v3/episodefile/bulk", {
       method: "DELETE",
       body: JSON.stringify({ episodeFileIds }),
+    });
+  }
+
+  /**
+   * The download queue, optionally confined to some series.
+   *
+   * One request for a normal-sized queue however large the library is, and a
+   * targeted sweep narrows it further with `seriesIds`. `includeUnknownSeriesItems`
+   * is left off: a row Sonarr cannot attribute to a series is a row the sweep
+   * has no title to match it against.
+   */
+  getQueue(seriesIds?: number[]) {
+    const params = new URLSearchParams();
+    for (const id of seriesIds ?? []) params.append("seriesIds", String(id));
+    return fetchQueue(this.baseUrl, this.apiKey, "/api/v3/queue", params);
+  }
+
+  /**
+   * Remove queue records, and with them the downloads behind them.
+   *
+   * `removeFromClient` is what makes this more than a tidy-up of Sonarr's own
+   * list: it tells the download client to drop the download and its data. See
+   * `queueRemovalParams` for why the other two flags are pinned.
+   */
+  removeFromQueue(queueIds: number[], removeFromClient: boolean) {
+    if (!queueIds.length) return Promise.resolve(undefined);
+    const params = queueRemovalParams(removeFromClient);
+    return arrFetch<void>(this.baseUrl, this.apiKey, `/api/v3/queue/bulk?${params}`, {
+      method: "DELETE",
+      body: JSON.stringify({ ids: queueIds }),
     });
   }
 
@@ -328,6 +483,23 @@ export class RadarrClient {
     return arrFetch<void>(this.baseUrl, this.apiKey, "/api/v3/moviefile/bulk", {
       method: "DELETE",
       body: JSON.stringify({ movieFileIds }),
+    });
+  }
+
+  /** The download queue, optionally confined to some movies. */
+  getQueue(movieIds?: number[]) {
+    const params = new URLSearchParams();
+    for (const id of movieIds ?? []) params.append("movieIds", String(id));
+    return fetchQueue(this.baseUrl, this.apiKey, "/api/v3/queue", params);
+  }
+
+  /** Remove queue records, and with them the downloads behind them. */
+  removeFromQueue(queueIds: number[], removeFromClient: boolean) {
+    if (!queueIds.length) return Promise.resolve(undefined);
+    const params = queueRemovalParams(removeFromClient);
+    return arrFetch<void>(this.baseUrl, this.apiKey, `/api/v3/queue/bulk?${params}`, {
+      method: "DELETE",
+      body: JSON.stringify({ ids: queueIds }),
     });
   }
 

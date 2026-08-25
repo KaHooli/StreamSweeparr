@@ -16,6 +16,7 @@ interface RunLog {
   unmonitoredEps: number;
   remonitoredEps: number;
   deletedFiles: number;
+  cancelledDownloads: number;
   removedMovies: number;
   searchedItems: number;
   error: string | null;
@@ -153,6 +154,7 @@ export default function RunsPage() {
                 <Metric label="Unmon. episodes" value={r.unmonitoredEps} />
                 <Metric label="Re-mon. episodes" value={r.remonitoredEps} />
                 <Metric label="Files deleted" value={r.deletedFiles} />
+                <Metric label="Downloads cancelled" value={r.cancelledDownloads} />
                 <Metric label="Movies removed" value={r.removedMovies} />
                 <Metric label="Searched" value={r.searchedItems} />
               </div>

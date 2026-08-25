@@ -210,6 +210,10 @@ export function InfoCard() {
             />
             <Row label="Delete files" value={yesNo(cfg.deleteFiles)} />
             <Row label="Purge unmonitored files" value={yesNo(cfg.purgeUnmonitoredFiles)} />
+            <Row
+              label="Cancel queued downloads"
+              value={yesNo(cfg.cancelQueuedDownloads)}
+            />
             <Row label="Search at end" value={yesNo(cfg.searchAtEnd)} />
             <Row label="Remove missing TMDB movies" value={yesNo(cfg.removeMissingTmdbMovies)} />
             <Row
