@@ -1169,6 +1169,20 @@ provisioned on first login and can be restricted with an allow-list. **New SSO
 users get the `user` role** — an admin promotes them under **Settings → Users
 &amp; security → Users**.
 
+An account is identified by the provider's `sub`, not by its username, so a
+rename at the provider follows the same account rather than making a new one.
+The first SSO login *does* attach itself to an existing account with a matching
+username — that is how the password admin links theirs — but only to one that
+has never signed in with SSO. A second `sub` turning up with a username that is
+already linked is refused, since on most providers the username is chosen by the
+user and it would otherwise be a way to take over somebody else's account.
+
+> [!TIP]
+> That last point is worth a thought if anyone other than you can get an account
+> at your identity provider. Whoever it says is `admin` links to the local admin
+> account on their first sign-in, so on a shared or self-service provider, fill
+> in the **allow-list** rather than leaving it open.
+
 The `id_token` that comes back is checked against the issuer you configured,
 the client id you configured, and its own expiry, and if your provider also
 serves a `userinfo` endpoint the two have to agree on *who* signed in. A token
