@@ -1242,6 +1242,13 @@ request timeout and redirects disabled.
 Private LAN ranges are blocked too, unless you set **`SSRF_ALLOW_PRIVATE=true`**
 — which you'll need if your *arr apps live on your LAN, as they usually do.
 
+The rules are applied to what an address *is*, not to how it was typed. IPv6 has
+several ways of writing the same host — `::ffff:7f00:1` and `::127.0.0.1` are
+both loopback, and `2002:a9fe:a9fe::` is the metadata address again — and all of
+them are blocked, as is an IPv4 address wrapped in any of the IPv6 transition
+formats. You can also give an *arr a bare IPv6 address (`http://[2001:db8::5]:8989`);
+that is checked the same way.
+
 ---
 
 ## 🔧 Environment variables
