@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { sanitizeExternalUrl, tmdbWatchUrl } from "./urls";
+import { safeNextPath, sanitizeExternalUrl, tmdbWatchUrl } from "./urls";
 
 describe("sanitizeExternalUrl", () => {
   it("keeps absolute http(s) URLs", () => {
@@ -37,6 +37,44 @@ describe("sanitizeExternalUrl", () => {
     expect(sanitizeExternalUrl(null)).toBeNull();
     expect(sanitizeExternalUrl(undefined)).toBeNull();
     expect(sanitizeExternalUrl(42)).toBeNull();
+  });
+});
+
+describe("safeNextPath", () => {
+  it("keeps the paths the proxy actually builds", () => {
+    expect(safeNextPath("/settings")).toBe("/settings");
+    expect(safeNextPath("/runs?status=FAILED")).toBe("/runs?status=FAILED");
+    expect(safeNextPath("/")).toBe("/");
+  });
+
+  it("refuses an absolute URL pointing at another site", () => {
+    // The open-redirect case: a link to this app's own login page that lands
+    // the victim on somebody else's, having signed in on the way past.
+    expect(safeNextPath("https://evil.example/login")).toBe("/");
+    expect(safeNextPath("http://evil.example")).toBe("/");
+  });
+
+  it("refuses the spellings that look like a path and are not", () => {
+    expect(safeNextPath("//evil.example")).toBe("/");
+    expect(safeNextPath("/\\evil.example")).toBe("/");
+    expect(safeNextPath("  //evil.example")).toBe("/");
+  });
+
+  it("refuses other schemes", () => {
+    expect(safeNextPath("javascript:alert(1)")).toBe("/");
+    expect(safeNextPath("data:text/html,<script>alert(1)</script>")).toBe("/");
+  });
+
+  it("refuses control characters, which browsers strip before navigating", () => {
+    expect(safeNextPath("/\t//evil.example")).toBe("/");
+    expect(safeNextPath("/\n/evil.example")).toBe("/");
+  });
+
+  it("falls back to the dashboard when there is nothing usable", () => {
+    expect(safeNextPath(null)).toBe("/");
+    expect(safeNextPath(undefined)).toBe("/");
+    expect(safeNextPath("")).toBe("/");
+    expect(safeNextPath("settings")).toBe("/");
   });
 });
 
