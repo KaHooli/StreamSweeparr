@@ -99,10 +99,32 @@ export async function ensureLocalAdmin() {
 /** Back-compat alias used by the login route. */
 export const ensureDefaultAdmin = ensureLocalAdmin;
 
+/** Raised when a login cannot be attached to an account safely. */
+export class OidcLinkError extends Error {}
+
 /**
  * Find or create a user for a successful OIDC login. Matches by oidcSubject
  * first, then by username (to link an existing account), otherwise creates a
  * new OIDC user with the USER role.
+ *
+ * The subject is the identity; the username is only a label. That ordering is
+ * what makes a rename harmless, and it is also why the username match below
+ * will not touch an account that already belongs to a subject:
+ *
+ * A provider's `preferred_username` is not a secret and, on most of them, not
+ * even fixed — the user picks it. If a username match could re-point an account
+ * that is already linked, then anyone who can set their own username at the
+ * identity provider could set it to somebody else's, sign in, and take over
+ * that account: the row's `oidcSubject` moves to them, and its role and history
+ * come with it. Nothing legitimate needs that, because an account that is
+ * already linked is found by subject one line earlier.
+ *
+ * The remaining username match is the documented one — attaching SSO to an
+ * account that has never used it, which is how the local password admin links
+ * theirs on first sign-in. It stays, but it is worth being clear-eyed that it
+ * rests on the provider: whoever the provider says is `admin` becomes the
+ * administrator here. On a provider where accounts can be self-registered or
+ * renamed, use the allow-list under Settings → Users & security.
  */
 export async function upsertOidcUser(opts: { subject: string; username: string }) {
   const bySub = await prisma.user.findUnique({ where: { oidcSubject: opts.subject } });
@@ -110,6 +132,13 @@ export async function upsertOidcUser(opts: { subject: string; username: string }
 
   const byName = await prisma.user.findUnique({ where: { username: opts.username } });
   if (byName) {
+    if (byName.oidcSubject && byName.oidcSubject !== opts.subject) {
+      throw new OidcLinkError(
+        `"${opts.username}" is already linked to a different single sign-on account. ` +
+          `Two subjects claiming one username is a provider configuration problem; ` +
+          `rename one of them, or restrict sign-in with the allow-list.`
+      );
+    }
     return prisma.user.update({
       where: { id: byName.id },
       data: { oidcSubject: opts.subject },

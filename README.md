@@ -1169,6 +1169,20 @@ provisioned on first login and can be restricted with an allow-list. **New SSO
 users get the `user` role** — an admin promotes them under **Settings → Users
 &amp; security → Users**.
 
+An account is identified by the provider's `sub`, not by its username, so a
+rename at the provider follows the same account rather than making a new one.
+The first SSO login *does* attach itself to an existing account with a matching
+username — that is how the password admin links theirs — but only to one that
+has never signed in with SSO. A second `sub` turning up with a username that is
+already linked is refused, since on most providers the username is chosen by the
+user and it would otherwise be a way to take over somebody else's account.
+
+> [!TIP]
+> That last point is worth a thought if anyone other than you can get an account
+> at your identity provider. Whoever it says is `admin` links to the local admin
+> account on their first sign-in, so on a shared or self-service provider, fill
+> in the **allow-list** rather than leaving it open.
+
 The `id_token` that comes back is checked against the issuer you configured,
 the client id you configured, and its own expiry, and if your provider also
 serves a `userinfo` endpoint the two have to agree on *who* signed in. A token
@@ -1241,6 +1255,24 @@ request timeout and redirects disabled.
 
 Private LAN ranges are blocked too, unless you set **`SSRF_ALLOW_PRIVATE=true`**
 — which you'll need if your *arr apps live on your LAN, as they usually do.
+
+The rules are applied to what an address *is*, not to how it was typed. IPv6 has
+several ways of writing the same host — `::ffff:7f00:1` and `::127.0.0.1` are
+both loopback, and `2002:a9fe:a9fe::` is the metadata address again — and all of
+them are blocked, as is an IPv4 address wrapped in any of the IPv6 transition
+formats. You can also give an *arr a bare IPv6 address (`http://[2001:db8::5]:8989`);
+that is checked the same way.
+
+### Response headers
+
+Every response carries `X-Frame-Options: DENY` and `frame-ancestors 'none'` (this
+UI deletes media — it has no business inside somebody else's frame), plus
+`nosniff`, a `Referrer-Policy` that keeps the page you were on off third-party
+CDNs, and a `Permissions-Policy` switching off device APIs the app never uses.
+
+HSTS is deliberately **not** sent: it is a promise about your whole origin, and
+plenty of self-hosted installs run over plain HTTP on a LAN. If you terminate
+TLS at a reverse proxy, set it there.
 
 ---
 

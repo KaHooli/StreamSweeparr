@@ -4,13 +4,16 @@ import { Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import useSWR from "swr";
 import { fetcher, postJson } from "@/lib/fetcher";
+import { safeNextPath } from "@/lib/urls";
 
 export const dynamic = "force-dynamic";
 
 function LoginInner() {
   const router = useRouter();
   const params = useSearchParams();
-  const next = params.get("next") || "/";
+  // Sanitised, not just defaulted: this value is navigated to, and the proxy
+  // that sets it only ever puts a path here. See safeNextPath.
+  const next = safeNextPath(params.get("next"));
   const urlError = params.get("error");
 
   const { data: session } = useSWR<{

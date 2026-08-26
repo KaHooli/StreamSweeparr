@@ -3,6 +3,7 @@ import { prisma } from "@/lib/db";
 import {
   ensureLocalAdmin,
   upsertOidcUser,
+  OidcLinkError,
   DEFAULT_ADMIN_USERNAME,
   DEFAULT_ADMIN_PASSWORD,
 } from "@/lib/users";
@@ -155,5 +156,23 @@ describe("upsertOidcUser", () => {
     const a = await upsertOidcUser({ subject: "sub-1", username: "ada" });
     const b = await upsertOidcUser({ subject: "sub-2", username: "eve" });
     expect(a.id).not.toBe(b.id);
+  });
+
+  /**
+   * The takeover case. `preferred_username` is chosen by the user on most
+   * providers, so a second subject claiming a linked account's username must
+   * not inherit that account — role, history and all.
+   */
+  it("refuses a second subject claiming an already-linked username", async () => {
+    const ada = await upsertOidcUser({ subject: "sub-1", username: "ada" });
+    await prisma.user.update({ where: { id: ada.id }, data: { role: "ADMIN" } });
+
+    await expect(upsertOidcUser({ subject: "sub-2", username: "ada" })).rejects.toBeInstanceOf(
+      OidcLinkError
+    );
+
+    // The account is untouched: still sub-1's, still an admin.
+    const after = await prisma.user.findUnique({ where: { id: ada.id } });
+    expect(after).toMatchObject({ oidcSubject: "sub-1", role: "ADMIN" });
   });
 });
