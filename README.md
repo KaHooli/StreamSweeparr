@@ -1263,6 +1263,17 @@ them are blocked, as is an IPv4 address wrapped in any of the IPv6 transition
 formats. You can also give an *arr a bare IPv6 address (`http://[2001:db8::5]:8989`);
 that is checked the same way.
 
+### Response headers
+
+Every response carries `X-Frame-Options: DENY` and `frame-ancestors 'none'` (this
+UI deletes media — it has no business inside somebody else's frame), plus
+`nosniff`, a `Referrer-Policy` that keeps the page you were on off third-party
+CDNs, and a `Permissions-Policy` switching off device APIs the app never uses.
+
+HSTS is deliberately **not** sent: it is a promise about your whole origin, and
+plenty of self-hosted installs run over plain HTTP on a LAN. If you terminate
+TLS at a reverse proxy, set it there.
+
 ---
 
 ## 🔧 Environment variables
