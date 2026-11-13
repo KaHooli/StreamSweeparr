@@ -304,6 +304,38 @@ const row = (over: Partial<QueueCandidate> = {}): QueueCandidate => ({
   ...over,
 });
 
+describe("planItem — an episode assumed on streaming ahead of Watchmode", () => {
+  const ALL = { deleteFiles: true, purgeUnmonitoredFiles: true, cancelQueuedDownloads: true };
+  const assumed = (over: Partial<Parameters<typeof planItem>[0]> = {}) =>
+    item({ onStreaming: true, streamingInferred: true, ...over });
+
+  it("is unmonitored, so Sonarr stops grabbing it while Watchmode catches up", () => {
+    expect(planItem(assumed(), OFF).monitor).toBe("unmonitor");
+  });
+
+  it("never has its file deleted, even with every deletion setting on", () => {
+    expect(planItem(assumed(), ALL)).toEqual<ItemPlan>({
+      monitor: "unmonitor",
+      deleteFile: null,
+      cancelDownload: null,
+    });
+  });
+
+  it("is not purged once it is already unmonitored", () => {
+    const plan = planItem(assumed({ monitored: false }), ALL);
+    expect(plan).toEqual<ItemPlan>({ monitor: "none", deleteFile: null, cancelDownload: null });
+  });
+
+  it("never has its download cancelled", () => {
+    expect(planItem(assumed({ hasFile: false, inQueue: true }), ALL).cancelDownload).toBeNull();
+  });
+
+  it("leaves a confirmed episode's deletion rules untouched", () => {
+    const plan = planItem(item({ onStreaming: true, streamingInferred: false }), ALL);
+    expect(plan.deleteFile).toBe("on streaming");
+  });
+});
+
 describe("planQueueRemovals", () => {
   it("cancels a download whose only item is being unmonitored", () => {
     const out = planQueueRemovals([row({ queueId: 7, itemId: 100 })], new Set([100]));
