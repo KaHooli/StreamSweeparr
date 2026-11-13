@@ -128,3 +128,25 @@ describe("proxy webhook endpoint", () => {
     expect(isPassThrough(await proxy(request("/api/webhook/sonarr", token)))).toBe(true);
   });
 });
+
+describe("proxy feed endpoints", () => {
+  // Another app reading the streaming-link feed cannot hold a session either;
+  // the route checks its own key — see app/api/feed/[kind]/route.ts.
+  for (const path of ["/api/feed/tv", "/api/feed/movies"]) {
+    it(`lets an anonymous ${path} call reach the route`, async () => {
+      expect(isPassThrough(await proxy(request(path)))).toBe(true);
+    });
+  }
+
+  it("opens up those two paths and nothing around them", async () => {
+    for (const path of [
+      "/api/feed",
+      "/api/feed/",
+      "/api/feed/music",
+      "/api/feed/tv/extra",
+      "/api/feeds",
+    ]) {
+      expect(isPassThrough(await proxy(request(path)))).toBe(false);
+    }
+  });
+});

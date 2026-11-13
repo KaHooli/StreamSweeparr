@@ -28,6 +28,7 @@ describe("dedupeServices", () => {
       "A Christmas Carol"
     );
     expect(out.url).toBe("https://www.netflix.com/title/80192098");
+    expect(out.linkKind).toBe("direct");
   });
 
   it("falls back to the service's own search page when there is no deep link", () => {
@@ -39,6 +40,7 @@ describe("dedupeServices", () => {
       "A Christmas Carol"
     );
     expect(out.url).toBe("https://www.netflix.com/search?q=A%20Christmas%20Carol");
+    expect(out.linkKind).toBe("search");
   });
 
   it("ignores a placeholder web_url persisted by an earlier sync", () => {
@@ -57,11 +59,18 @@ describe("dedupeServices", () => {
       "A Christmas Carol"
     );
     expect(out.url).toBe("https://www.themoviedb.org/tv/1/watch");
+    expect(out.linkKind).toBe("tmdb");
   });
 
   it("leaves the link null only when nothing at all resolves", () => {
     const [out] = dedupeServices([service({ name: "Some Regional Broadcaster" })], null, "Andor");
     expect(out.url).toBeNull();
+    expect(out.linkKind).toBeNull();
+  });
+
+  it("carries the region the service was first matched in", () => {
+    const [out] = dedupeServices([service({ region: "AU" }), service({ region: "US" })]);
+    expect(out.region).toBe("AU");
   });
 
   it("returns an empty list for a missing or malformed streamingInfo blob", () => {

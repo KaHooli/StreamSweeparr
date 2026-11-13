@@ -69,6 +69,7 @@ just that one title is swept.
 [Scheduled sweeps](#-scheduled-sweeps) ·
 [Sweep on add](#-sweeping-new-titles-as-theyre-added) ·
 [Skipping titles](#-keeping-titles-out-of-the-sweep) ·
+[Streaming links for other apps](#-sharing-streaming-links-with-other-apps) ·
 [Install as an app](#-install-it-as-an-app)
 
 **When something's wrong**
@@ -889,6 +890,93 @@ Each one shows up on the **Runs** page like any other, opening with
 
 ---
 
+## 🔌 Sharing streaming links with other apps
+
+The dashboard already knows, for every title on your services, *where* it is
+streaming and how to get there. The streaming-link feed hands that to another
+self-hosted program — a portal such as
+[Hearthport](https://github.com/KaHooli/Hearthport), a home dashboard, a
+script — so it can show "watch on Netflix" next to a title without knowing
+anything about Watchmode or TMDB.
+
+Turn it on under **Settings → Connections → Share streaming links with other
+apps**. The card shows the two feed URLs and a key, each with a Copy button.
+
+### The two feeds
+
+TV shows and movies are separate:
+
+```
+GET https://sweep.example.com/api/feed/tv
+GET https://sweep.example.com/api/feed/movies
+```
+
+Send the key as an `X-Api-Key` header (or `Authorization: Bearer …`). For a
+program that can only be given a URL, `?apikey=…` works too — but that puts the
+key in your reverse proxy&rsquo;s access log, so prefer the header.
+
+```bash
+curl -H "X-Api-Key: YOUR_KEY" https://sweep.example.com/api/feed/tv
+```
+
+Each feed lists the same titles the dashboard does — the ones on at least one
+of your services — minus anything tagged [`ss-skip`](#-keeping-titles-out-of-the-sweep):
+
+```json
+{
+  "type": "tv",
+  "generatedAt": "2026-11-13T09:00:00.000Z",
+  "count": 1,
+  "items": [{
+    "title": "Severance", "year": 2022,
+    "tmdbId": 95396, "tvdbId": 371980, "imdbId": "tt11280740",
+    "posterUrl": "https://…",
+    "episodes": { "streaming": 19, "total": 19 },
+    "checkedAt": "2026-11-12T03:10:00.000Z",
+    "services": [
+      { "name": "Apple TV+", "type": "sub", "region": "AU",
+        "logo": "https://…", "url": "https://tv.apple.com/…", "linkKind": "direct" }
+    ]
+  }]
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `tmdbId` / `tvdbId` / `imdbId` | What to match your own titles on. `tvdbId` and `episodes` are TV only. |
+| `episodes` | How many of the show&rsquo;s episodes are on your services, out of how many Sonarr knows. |
+| `checkedAt` | When Watchmode/TMDB was last asked about this title. The links are no fresher than this. |
+| `services[].url` | The best link available — see `linkKind`. |
+| `services[].linkKind` | `direct`: straight to the title on that service. `search`: that service&rsquo;s own search page for the title (TMDB never gives a direct link, so every TMDB-answered movie looks like this). `tmdb`: TMDB&rsquo;s "where to watch" page, for a service whose search page we don&rsquo;t know. `null` with `url: null` when there is nothing to link to. |
+
+A title held by **two instances** (a 4K Sonarr alongside the main one, say)
+appears once, with the best link from either.
+
+### Fetching less
+
+- **One title:** `?tmdbId=95396`. Several: `?tmdbId=95396,1399` or repeat the
+  parameter. An id that isn&rsquo;t a number is a `400`, not an empty answer.
+- **Only when it changed:** every response carries an `ETag`. Send it back as
+  `If-None-Match` and you get an empty `304` until a sync changes something.
+
+### Things worth knowing
+
+- **It costs no API credits.** The feed hands out what the last sync found; it
+  never calls Watchmode or TMDB. Poll it as often as you like — the answers only
+  change when a sync runs.
+- **It is read-only.** The key can list your streaming titles and nothing else:
+  it cannot start a sync or sweep, and it is a different key from the
+  [webhook](#-sweeping-new-titles-as-theyre-added) token, so replacing one never
+  breaks the other.
+- **Like the webhook, it answers without a session.** It is refused outright
+  (`503`) while switched off, a wrong key is a `401`, and repeated wrong keys
+  are rate-limited (`429`). The key is stored encrypted; **Regenerate** stops
+  the old one working at once.
+- **Over plain HTTP the key is in the clear.** Fine across a LAN; put the app
+  behind TLS if the traffic leaves one.
+
+---
+
 ## 🏷 Keeping titles out of the sweep
 
 Tag a series in Sonarr or a movie in Radarr with **`ss-skip`** (case doesn't
@@ -1177,10 +1265,16 @@ and `pg_restore` commands, and they work anywhere Docker does.
 ## 🔐 Accounts, login &amp; security
 
 The whole app is behind a login. Unauthenticated page requests are redirected to
-`/login`; unauthenticated API calls get a `401`. The single exception is
-`/api/webhook/{sonarr,radarr}`, which Sonarr and Radarr call and which
-authenticates with its own shared secret instead — it is refused entirely unless
-you have switched [sweep on add](#-sweeping-new-titles-as-theyre-added) on.
+`/login`; unauthenticated API calls get a `401`. There are two exceptions,
+each with its own key and its own off switch (both off by default):
+
+- `/api/webhook/{sonarr,radarr}`, which Sonarr and Radarr call to report a new
+  title — refused entirely unless you have switched
+  [sweep on add](#-sweeping-new-titles-as-theyre-added) on;
+- `/api/feed/{tv,movies}`, which another app reads for streaming links —
+  refused entirely unless you have switched the
+  [streaming-link feed](#-sharing-streaming-links-with-other-apps) on. It is
+  read-only.
 
 **Roles.** Every account is either **admin** (settings, connections,
 sync/sweep, user management) or **user** (read-only dashboard and run history).
@@ -1557,8 +1651,9 @@ countries or services — clear `watchmodeChangesCursor` and `providerSyncedAt`.
 ```
 
 Traffic runs the other way too: Sonarr and Radarr POST to `/api/webhook/*` when
-a title is added, which queues it for a sweep of its own — the only inbound path
-that does not carry a session.
+a title is added, which queues it for a sweep of its own; and another app can GET
+`/api/feed/{tv,movies}` for the streaming links in the snapshot. Those are the
+two inbound paths that do not carry a session, and each has its own key.
 
 
 <details>
@@ -1580,6 +1675,8 @@ that does not carry a session.
 | **Sweep engine** — unmonitor/delete, re-monitor, search | `src/lib/sweep.ts` |
 | **Scheduled sweeps** — interval maths (pure) + the timer that claims a slot | `src/lib/{schedule,scheduler}.ts` |
 | **Webhook sweeps** — payload parsing + shared secret, the URLs the UI hands out, the queue and its worker | `src/lib/{webhook,webhookUrl,sweepQueue}.ts`, `src/app/api/webhook/[arr]/route.ts` |
+| **Streaming-link feed** — the query and its shape, the URLs the UI hands out, the route | `src/lib/{feed,feedUrl}.ts`, `src/app/api/feed/[kind]/route.ts` |
+| Shared-secret minting + constant-time comparison (webhook and feed) | `src/lib/sharedSecret.ts` |
 | Background run lock + live progress | `src/lib/jobs.ts` |
 | Whether setup is complete, per media type | `src/lib/setupState.ts` |
 | SSRF-guarded fetch | `src/lib/safeFetch.ts` |

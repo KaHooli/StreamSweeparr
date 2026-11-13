@@ -158,6 +158,10 @@ export const SETTINGS_SECRET_FIELDS = [
   // only thing guarding a route that starts sweeps, so it belongs here with the
   // rest of the credentials rather than sitting in the clear.
   "webhookToken",
+  // The key other apps present to read the streaming-link feed. Read-only, but
+  // it still lets anyone holding it list the library, so it is treated as a
+  // credential like the rest.
+  "feedToken",
 ] as const;
 
 export type SettingsSecretField = (typeof SETTINGS_SECRET_FIELDS)[number];

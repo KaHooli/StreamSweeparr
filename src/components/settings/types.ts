@@ -69,6 +69,9 @@ export interface SettingsDto {
   webhookToken: string;
   /** How long a newly added title waits before its sweep starts. */
   webhookSettleSeconds: number;
+  feedEnabled: boolean;
+  /** The feed key in full, for the same reason as `webhookToken`. */
+  feedToken: string;
   localLoginEnabled: boolean;
   localLoginEffective: boolean;
   localLoginLock: { locked: boolean; reason: string | null };

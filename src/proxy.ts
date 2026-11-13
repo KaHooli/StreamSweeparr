@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { SESSION_COOKIE, verifySession } from "@/lib/session";
+import { FEED_PATHS } from "@/lib/feedUrl";
 
 /**
  * Auth gate. Every route requires a valid session cookie except the login page
@@ -48,6 +49,17 @@ function isWebhookEndpoint(pathname: string): boolean {
   return pathname === "/api/webhook/sonarr" || pathname === "/api/webhook/radarr";
 }
 
+/**
+ * The streaming-link feed (`lib/feed.ts`). Other apps cannot hold a session
+ * either, so the feed authenticates with its own key and switch. Unlike the
+ * webhook paths these are imported: `lib/feedUrl.ts` has no imports at all, so
+ * it is safe on the edge — and must stay that way. Exact paths again, for the
+ * same reason.
+ */
+function isFeedEndpoint(pathname: string): boolean {
+  return (Object.values(FEED_PATHS) as string[]).includes(pathname);
+}
+
 export async function proxy(req: NextRequest) {
   const { pathname, search } = req.nextUrl;
 
@@ -60,6 +72,7 @@ export async function proxy(req: NextRequest) {
     // everything while webhook sweeps are switched off. Narrowed to the two
     // *arr kinds so the prefix can never be widened by accident.
     isWebhookEndpoint(pathname) ||
+    isFeedEndpoint(pathname) ||
     pathname.startsWith("/_next/") ||
     pathname === "/favicon.ico" ||
     isPwaAsset(pathname);

@@ -23,7 +23,16 @@ const tvShow = (title: string, over: Partial<DashboardTvShow> = {}): DashboardTv
   streamingEpisodes: 6,
   unmonitoredPct: 50,
   tmdbId: 1,
-  services: [{ name: "Netflix", type: "sub", logo: null, url: "https://netflix.test" }],
+  services: [
+    {
+      name: "Netflix",
+      type: "sub",
+      region: "AU",
+      logo: null,
+      url: "https://netflix.test",
+      linkKind: "direct",
+    },
+  ],
   lastSyncedAt: new Date(0),
   ...over,
 });
@@ -36,7 +45,16 @@ const movie = (title: string, over: Partial<DashboardMovie> = {}): DashboardMovi
   monitored: false,
   hasFile: true,
   tmdbId: 2,
-  services: [{ name: "BINGE", type: "sub", logo: null, url: "https://binge.test" }],
+  services: [
+    {
+      name: "BINGE",
+      type: "sub",
+      region: "AU",
+      logo: null,
+      url: "https://binge.test",
+      linkKind: "direct",
+    },
+  ],
   lastSyncedAt: new Date(0),
   ...over,
 });
