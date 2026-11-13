@@ -214,6 +214,11 @@ export function InfoCard() {
               label="Cancel queued downloads"
               value={yesNo(cfg.cancelQueuedDownloads)}
             />
+            <Row label="Re-check newly aired episodes" value={yesNo(cfg.recheckNewEpisodes)} />
+            <Row
+              label="Assume newly aired episodes stream"
+              value={yesNo(cfg.assumeNewEpisodesStream)}
+            />
             <Row label="Search at end" value={yesNo(cfg.searchAtEnd)} />
             <Row label="Remove missing TMDB movies" value={yesNo(cfg.removeMissingTmdbMovies)} />
             <Row

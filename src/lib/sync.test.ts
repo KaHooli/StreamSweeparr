@@ -4,6 +4,11 @@ import {
   applyProviderLinks,
   providerLinksAreStale,
   parseAirDate,
+  newEpisodesAwaitingStreaming,
+  newEpisodeRecheckDue,
+  NEW_EPISODE_WINDOW_MS,
+  NEW_EPISODE_RECHECK_MS,
+  type NewEpisodeCandidate,
   type StreamingInfoEntry,
 } from "./sync";
 
@@ -114,5 +119,96 @@ describe("parseAirDate", () => {
     // unparseable date would otherwise cost the whole series' episode snapshot.
     expect(parseAirDate("TBA")).toBeNull();
     expect(parseAirDate("0000-00-00")).toBeNull();
+  });
+});
+
+describe("newEpisodesAwaitingStreaming", () => {
+  const DAY = 24 * 60 * 60 * 1000;
+  const now = Date.UTC(2026, 10, 13, 12);
+  /** S23, one episode a week, E05 aired yesterday — the Grey's Anatomy case. */
+  const weekly = (n: number, airedDaysAgo: number | null): NewEpisodeCandidate => ({
+    seasonNumber: 23,
+    episodeNumber: n,
+    airDateUtc: airedDaysAgo === null ? null : new Date(now - airedDaysAgo * DAY),
+  });
+  const season = [weekly(1, 29), weekly(2, 22), weekly(3, 15), weekly(4, 8), weekly(5, 1), weekly(6, -6)];
+  const confirmed = (...eps: number[]) => new Set(eps.map((n) => `23x${n}`));
+
+  it("finds a newly aired episode whose predecessor is confirmed", () => {
+    expect(newEpisodesAwaitingStreaming(season, confirmed(1, 2, 3, 4), now)).toEqual([
+      { key: "23x5", airDateUtc: new Date(now - DAY), previousKey: "23x4" },
+    ]);
+  });
+
+  it("ignores an episode Watchmode has already confirmed", () => {
+    expect(newEpisodesAwaitingStreaming(season, confirmed(1, 2, 3, 4, 5), now)).toEqual([]);
+  });
+
+  it("ignores a show whose previous episode is not on the user's services", () => {
+    // A service running a season behind, or a show the user does not stream:
+    // nothing says the new episode is coming, so it earns neither a recheck
+    // nor an assumption.
+    expect(newEpisodesAwaitingStreaming(season, confirmed(1, 2, 3), now)).toEqual([]);
+    expect(newEpisodesAwaitingStreaming(season, confirmed(), now)).toEqual([]);
+  });
+
+  it("does not let one unconfirmed episode vouch for the next", () => {
+    const later = [...season.slice(0, 4), weekly(5, 6), weekly(6, 1)];
+    expect(newEpisodesAwaitingStreaming(later, confirmed(1, 2, 3, 4), now).map((a) => a.key)).toEqual([
+      "23x5",
+    ]);
+  });
+
+  it("ignores an episode older than the window, and one not yet aired", () => {
+    const old = [weekly(4, 20), { ...weekly(5, 0), airDateUtc: new Date(now - NEW_EPISODE_WINDOW_MS - 1) }];
+    expect(newEpisodesAwaitingStreaming(old, confirmed(4), now)).toEqual([]);
+    expect(newEpisodesAwaitingStreaming([weekly(4, 8), weekly(5, -1)], confirmed(4), now)).toEqual([]);
+  });
+
+  it("ignores an episode with no air date", () => {
+    expect(newEpisodesAwaitingStreaming([weekly(4, 8), weekly(5, null)], confirmed(4), now)).toEqual([]);
+  });
+
+  it("covers a season premiere through the previous season's finale", () => {
+    const eps: NewEpisodeCandidate[] = [
+      { seasonNumber: 22, episodeNumber: 18, airDateUtc: new Date(now - 180 * DAY) },
+      { seasonNumber: 23, episodeNumber: 1, airDateUtc: new Date(now - DAY) },
+    ];
+    expect(newEpisodesAwaitingStreaming(eps, new Set(["22x18"]), now).map((a) => a.key)).toEqual(["23x1"]);
+  });
+
+  it("orders by season and episode, whatever order Sonarr lists them in", () => {
+    const shuffled = [weekly(5, 1), weekly(3, 15), weekly(4, 8)];
+    expect(newEpisodesAwaitingStreaming(shuffled, confirmed(3, 4), now).map((a) => a.key)).toEqual([
+      "23x5",
+    ]);
+  });
+
+  it("ignores specials", () => {
+    const eps: NewEpisodeCandidate[] = [
+      { seasonNumber: 0, episodeNumber: 1, airDateUtc: new Date(now - 10 * DAY) },
+      { seasonNumber: 1, episodeNumber: 1, airDateUtc: new Date(now - DAY) },
+    ];
+    expect(newEpisodesAwaitingStreaming(eps, new Set(["0x1"]), now)).toEqual([]);
+  });
+});
+
+describe("newEpisodeRecheckDue", () => {
+  const HOUR = 60 * 60 * 1000;
+  const now = Date.UTC(2026, 10, 13, 12);
+  const aired = new Date(now - 10 * HOUR);
+  const awaiting = [{ key: "23x5", airDateUtc: aired, previousKey: "23x4" }];
+
+  it("is due when the last lookup predates the episode airing", () => {
+    expect(newEpisodeRecheckDue(awaiting, new Date(aired.getTime() - HOUR), now)).toBe(true);
+  });
+
+  it("is not due again until a day has passed since the last lookup", () => {
+    expect(newEpisodeRecheckDue(awaiting, new Date(now - 2 * HOUR), now)).toBe(false);
+    expect(newEpisodeRecheckDue(awaiting, new Date(now - NEW_EPISODE_RECHECK_MS), now)).toBe(true);
+  });
+
+  it("is never due with nothing awaiting", () => {
+    expect(newEpisodeRecheckDue([], new Date(now - 30 * 24 * HOUR), now)).toBe(false);
   });
 });

@@ -197,6 +197,8 @@ async function configInfo(): Promise<ConfigInfo | null> {
       deleteFiles: s.deleteFiles,
       purgeUnmonitoredFiles: s.purgeUnmonitoredFiles,
       cancelQueuedDownloads: s.cancelQueuedDownloads,
+      recheckNewEpisodes: s.recheckNewEpisodes,
+      assumeNewEpisodesStream: s.assumeNewEpisodesStream,
       searchAtEnd: s.searchAtEnd,
       removeMissingTmdbMovies: s.removeMissingTmdbMovies,
       // Presence only — the decrypted values never leave this function.

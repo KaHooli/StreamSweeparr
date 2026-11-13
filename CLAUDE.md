@@ -341,6 +341,13 @@ Anything that deletes or mutates Sonarr/Radarr must respect:
   nobody had said anything about. `wmSeen` in `lib/sync.ts` is what keeps the
   two apart; anything deciding on availability must ignore unknown rows rather
   than count them as absent.
+- `streamingInferred` — an `Episode` whose `onStreaming` is an assumption
+  (`assumeNewEpisodesStream`): newly aired, borrowing the previous episode's
+  services until Watchmode lists it. `planItem` lets it be unmonitored but
+  gives it no file deletion, purge or download cancellation, whatever the
+  settings say. Sync never treats it as a Watchmode answer — a cached pass drops
+  it and works it out again, so it cannot outlive its 7-day window or vouch for
+  the next episode.
 - `skipped` — the `ss-skip` tag (`SKIP_TAG_LABEL` in `lib/arr.ts`). Skipped
   titles are never looked up, never (un)monitored, never have files deleted, and
   are excluded from the end-of-run search.
@@ -364,6 +371,13 @@ A movie answered by Watchmode keeps the **7-day** TV window rather than the
 affordable is that TMDB calls are free. For the same reason an install using
 Watchmode for movies *only* skips the plan probe — the changes feed is
 episode-shaped, so the answer could not be used.
+
+`recheckNewEpisodes` deliberately cuts the TV window short, for one case: a
+series with an episode aired in the last week that Watchmode has not confirmed,
+straight after one it has. That series is looked up at most daily
+(`newEpisodeRecheckDue` in `lib/sync.ts`), and only until the episode is
+confirmed or a week old. Keep the "previous episode confirmed" condition — it
+is what stops every new episode of a show nobody streams costing a daily credit.
 
 A **scoped** sync (`runSync(progress, { targets, force })`) is the cheap path
 and the one deliberate exception: it looks at only the named titles, and `force`

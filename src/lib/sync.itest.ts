@@ -24,6 +24,8 @@ let watchmodeSources: Record<number, unknown> = {};
 /** Watchmode's episode list per title id — the TV equivalent of the above. */
 let watchmodeEpisodes: Record<number, unknown[]> = {};
 let watchmodeSourceCalls: number[] = [];
+/** Per-episode availability fetches — the metered call the TV cache saves. */
+let watchmodeEpisodeCalls: number[] = [];
 let watchmodeSearchCalls = 0;
 /** Plan probes — a movies-only install has no changes feed to earn one. */
 let watchmodePlanProbes = 0;
@@ -123,6 +125,7 @@ vi.mock("./watchmode", async (importOriginal) => {
         return entry ?? [];
       }
       async titleEpisodes(id: number) {
+        watchmodeEpisodeCalls.push(id);
         return watchmodeEpisodes[id] ?? [];
       }
     },
@@ -223,6 +226,7 @@ beforeEach(async () => {
   watchmodeSources = {};
   watchmodeEpisodes = {};
   watchmodeSourceCalls = [];
+  watchmodeEpisodeCalls = [];
   watchmodeSearchCalls = 0;
   watchmodePlanProbes = 0;
 });
@@ -852,5 +856,156 @@ describe("syncSonarr — episodes the provider does not answer for", () => {
     const eps = await prisma.episode.findMany({ orderBy: { episodeNumber: "asc" } });
     expect(eps.every((e) => e.streamingUnknown)).toBe(true);
     expect(eps.every((e) => !e.onStreaming)).toBe(true);
+  });
+});
+
+describe("syncSonarr — newly aired episodes Watchmode has not listed yet", () => {
+  const DAY = 24 * 60 * 60 * 1000;
+  const show = {
+    id: 1,
+    title: "Grey's Anatomy",
+    year: 2005,
+    monitored: true,
+    tmdbId: 1416,
+    tags: [],
+    seasons: [{ seasonNumber: 23, monitored: true }],
+  };
+  /** A weekly season: E1 aired four weeks ago, E5 yesterday. */
+  const arrEpisode = (n: number, airedDaysAgo = (5 - n) * 7 + 1) => ({
+    id: 100 + n,
+    seriesId: 1,
+    seasonNumber: 23,
+    episodeNumber: n,
+    title: `Episode ${n}`,
+    airDateUtc: new Date(Date.now() - airedDaysAgo * DAY).toISOString(),
+    monitored: true,
+    hasFile: false,
+  });
+  /** Watchmode's answer: listed, but only on services the user does not count. */
+  const wmEpisode = (n: number, sources: unknown[] = wmOnNetflix) => ({
+    id: 900 + n,
+    season_number: 23,
+    episode_number: n,
+    sources,
+  });
+
+  async function setup(over: Record<string, unknown> = {}) {
+    await makeSettings({
+      watchmodeApiKeys: ["wm-key"],
+      watchmodeApiKey: "wm-key",
+      countries: ["AU"],
+      serviceIds: [WM_NETFLIX],
+      countedTypes: ["sub"],
+      ...over,
+    });
+    await makeConnection({ type: "SONARR" });
+    sonarrSeries = [show];
+    sonarrEpisodes = { 1: [1, 2, 3, 4, 5].map((n) => arrEpisode(n)) };
+    watchmodeIds = { 1416: 3001 };
+    // E5 aired yesterday: Watchmode lists it, with a purchase option only.
+    watchmodeEpisodes = { 3001: [1, 2, 3, 4].map((n) => wmEpisode(n)).concat(wmEpisode(5, [])) };
+  }
+
+  const episode5 = () => prisma.episode.findFirstOrThrow({ where: { episodeNumber: 5 } });
+
+  /** Pretend the last Watchmode lookup happened `ms` ago. */
+  const lastLookedUp = (ms: number) =>
+    prisma.mediaItem.updateMany({ data: { providerSyncedAt: new Date(Date.now() - ms) } });
+
+  it("assumes the new episode is on its predecessor's services, flagged as an assumption", async () => {
+    await setup();
+    const result = await runSync();
+
+    const ep = await episode5();
+    expect(ep.onStreaming).toBe(true);
+    expect(ep.streamingInferred).toBe(true);
+    expect(ep.streamingUnknown).toBe(false);
+    expect(ep.streamingInfo).toEqual([expect.objectContaining({ sourceId: WM_NETFLIX })]);
+    expect(result.tvAssumedEpisodes).toBe(1);
+    // The episodes Watchmode did confirm are not marked as assumptions.
+    const confirmed = await prisma.episode.findMany({ where: { episodeNumber: { lt: 5 } } });
+    expect(confirmed.every((e) => e.onStreaming && !e.streamingInferred)).toBe(true);
+  });
+
+  it("makes no assumption when the setting is off", async () => {
+    await setup({ assumeNewEpisodesStream: false });
+    await runSync();
+
+    const ep = await episode5();
+    expect(ep.onStreaming).toBe(false);
+    expect(ep.streamingInferred).toBe(false);
+    // Watchmode did answer for it, so this is a confident negative as before.
+    expect(ep.streamingUnknown).toBe(false);
+  });
+
+  it("makes no assumption when the previous episode is not on the user's services", async () => {
+    await setup();
+    watchmodeEpisodes = {
+      3001: [1, 2, 3].map((n) => wmEpisode(n)).concat(wmEpisode(4, []), wmEpisode(5, [])),
+    };
+    await runSync();
+
+    expect((await episode5()).onStreaming).toBe(false);
+  });
+
+  it("lets the assumption lapse once the episode is more than a week old", async () => {
+    await setup();
+    sonarrEpisodes = { 1: [1, 2, 3, 4].map((n) => arrEpisode(n, 40 - n * 7)).concat(arrEpisode(5, 8)) };
+    await runSync();
+
+    const ep = await episode5();
+    expect(ep.onStreaming).toBe(false);
+    expect(ep.streamingInferred).toBe(false);
+  });
+
+  it("re-asks Watchmode a day later instead of waiting out the cache window", async () => {
+    await setup();
+    await runSync();
+    expect(watchmodeEpisodeCalls).toEqual([3001]);
+
+    // Straight away: already asked since E5 aired, so the cache answers — and
+    // the assumption is worked out again rather than carried as a Watchmode
+    // answer.
+    let result = await runSync();
+    expect(watchmodeEpisodeCalls).toEqual([3001]);
+    expect(result.tvSkipped).toBe(1);
+    expect((await episode5()).streamingInferred).toBe(true);
+
+    // A day on, well inside the 7-day window, Watchmode has caught up.
+    await lastLookedUp(DAY + 60_000);
+    watchmodeEpisodes = { 3001: [1, 2, 3, 4, 5].map((n) => wmEpisode(n)) };
+    result = await runSync();
+    expect(watchmodeEpisodeCalls).toEqual([3001, 3001]);
+    expect(result.tvNewEpisodeRechecks).toBe(1);
+
+    const ep = await episode5();
+    expect(ep.onStreaming).toBe(true);
+    expect(ep.streamingInferred).toBe(false);
+
+    // Confirmed now, so nothing is awaiting and the cache window applies again.
+    await lastLookedUp(DAY + 60_000);
+    await runSync();
+    expect(watchmodeEpisodeCalls).toEqual([3001, 3001]);
+  });
+
+  it("re-asks once for an episode that aired after the last lookup", async () => {
+    await setup();
+    // Looked up before E5 aired, when Watchmode had nothing on it at all.
+    sonarrEpisodes = { 1: [1, 2, 3, 4].map((n) => arrEpisode(n)) };
+    watchmodeEpisodes = { 3001: [1, 2, 3, 4].map((n) => wmEpisode(n)) };
+    await runSync();
+    await lastLookedUp(2 * DAY);
+
+    sonarrEpisodes = { 1: [1, 2, 3, 4, 5].map((n) => arrEpisode(n)) };
+    await runSync();
+    expect(watchmodeEpisodeCalls).toEqual([3001, 3001]);
+  });
+
+  it("serves the series from cache as before when re-checking is off", async () => {
+    await setup({ recheckNewEpisodes: false });
+    await runSync();
+    await lastLookedUp(DAY + 60_000);
+    await runSync();
+    expect(watchmodeEpisodeCalls).toEqual([3001]);
   });
 });

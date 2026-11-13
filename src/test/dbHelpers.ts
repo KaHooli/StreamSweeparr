@@ -93,6 +93,7 @@ export async function makeEpisode(
     airDateUtc: Date | null;
     onStreaming: boolean;
     streamingUnknown: boolean;
+    streamingInferred: boolean;
   }> = {}
 ) {
   return prisma.episode.create({
@@ -109,6 +110,7 @@ export async function makeEpisode(
       episodeFileId: over.episodeFileId === undefined ? 900 : over.episodeFileId,
       onStreaming: over.onStreaming ?? false,
       streamingUnknown: over.streamingUnknown ?? false,
+      streamingInferred: over.streamingInferred ?? false,
     },
   });
 }

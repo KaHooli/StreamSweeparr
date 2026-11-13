@@ -54,6 +54,14 @@ export interface SyncResult {
   // and how many were skipped as unchanged/fresh (credit-saving visibility).
   tvProviderCalls: number;
   tvSkipped: number;
+  /**
+   * Of `tvProviderCalls`, series looked up only because a newly aired episode
+   * was still unconfirmed (`Settings.recheckNewEpisodes`) — the credits that
+   * setting costs, so the run log can say so.
+   */
+  tvNewEpisodeRechecks: number;
+  /** Episodes assumed on streaming ahead of Watchmode (`assumeNewEpisodesStream`). */
+  tvAssumedEpisodes: number;
   /** Movies that hit their availability provider, and those served from cache. */
   movieProviderCalls: number;
   movieSkipped: number;
@@ -108,6 +116,14 @@ export interface SyncOptions {
    * reached yet as gone from Sonarr/Radarr.
    */
   checkAbort?: CheckAbort;
+}
+
+/** The newly-aired episode behaviours, as `syncSonarr` receives them. */
+interface NewEpisodeOptions {
+  /** `Settings.recheckNewEpisodes` — see `newEpisodeRecheckDue`. */
+  recheck: boolean;
+  /** `Settings.assumeNewEpisodesStream` — see `newEpisodesAwaitingStreaming`. */
+  assume: boolean;
 }
 
 /** How much of one connection a sync pass should cover. */
@@ -193,6 +209,118 @@ export function parseAirDate(raw: string | undefined): Date | null {
   if (!raw) return null;
   const d = new Date(raw);
   return Number.isNaN(d.getTime()) ? null : d;
+}
+
+/**
+ * How long after airing an episode counts as "new" for the two newly-aired
+ * behaviours below. Long enough to cover Watchmode's usual lag of a few days,
+ * short enough that an episode which is never coming to the user's services
+ * stops costing credits — and stops being assumed — within a week.
+ */
+export const NEW_EPISODE_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * How often a series with an unconfirmed new episode is looked up again.
+ * Daily: Watchmode's own lag is measured in days, so asking more often would
+ * mostly buy the same "not yet" answer for a credit each time.
+ */
+export const NEW_EPISODE_RECHECK_MS = 24 * 60 * 60 * 1000;
+
+/** The fields of an episode the newly-aired rules read, from Sonarr or the snapshot. */
+export interface NewEpisodeCandidate {
+  seasonNumber: number;
+  episodeNumber: number;
+  airDateUtc: Date | null;
+}
+
+/** A newly aired episode still waiting for Watchmode to list it. */
+export interface AwaitingEpisode {
+  /** `${season}x${episode}`, the key the sync's maps use. */
+  key: string;
+  airDateUtc: Date;
+  /** The episode before it, which Watchmode has confirmed on the user's services. */
+  previousKey: string;
+}
+
+/**
+ * Newly aired episodes of a show that is otherwise caught up on the user's
+ * services, and that Watchmode has not yet confirmed there.
+ *
+ * Watchmode typically lists an episode's streaming sources a few days after it
+ * airs. Until then it either omits the episode or returns it with no matching
+ * sources, so the sweep reads it as "not on streaming" — and once the series is
+ * cached, the cache window (7 days by default) keeps that answer long after
+ * Watchmode has caught up. A show the user streams week to week therefore ran
+ * a week or more behind. This is what both remedies key off:
+ * `Settings.recheckNewEpisodes` re-asks for these series sooner, and
+ * `Settings.assumeNewEpisodesStream` lets the episode borrow its predecessor's
+ * services in the meantime.
+ *
+ * An episode qualifies when it:
+ *   - aired within `NEW_EPISODE_WINDOW_MS` (not in the future, not long gone);
+ *   - is not in `confirmed`, the episodes Watchmode itself put on the user's
+ *     services (an assumption from an earlier pass does not count); and
+ *   - directly follows, in season/episode order, an episode that *is* in
+ *     `confirmed`.
+ *
+ * The last condition is what keeps this cheap and honest. It is the signal
+ * that the show is released on the user's service as it airs; without it,
+ * every new episode of a show the user does not stream at all — or one whose
+ * service runs a season behind — would earn daily lookups and a false "on
+ * streaming". A season premiere qualifies through the previous season's
+ * finale, so a returning show is covered from its first episode. Requiring a
+ * *confirmed* predecessor also means one assumption cannot vouch for the next.
+ *
+ * Specials (season 0) are ignored, as everywhere else in sync.
+ */
+export function newEpisodesAwaitingStreaming(
+  episodes: NewEpisodeCandidate[],
+  confirmed: Set<string>,
+  now: number
+): AwaitingEpisode[] {
+  const ordered = episodes
+    .filter((e) => e.seasonNumber > 0)
+    .sort((a, b) => a.seasonNumber - b.seasonNumber || a.episodeNumber - b.episodeNumber);
+  const out: AwaitingEpisode[] = [];
+  for (let i = 1; i < ordered.length; i++) {
+    const ep = ordered[i];
+    const air = ep.airDateUtc;
+    if (!air) continue;
+    const age = now - air.getTime();
+    if (age < 0 || age > NEW_EPISODE_WINDOW_MS) continue;
+    const key = `${ep.seasonNumber}x${ep.episodeNumber}`;
+    if (confirmed.has(key)) continue;
+    const prev = ordered[i - 1];
+    const previousKey = `${prev.seasonNumber}x${prev.episodeNumber}`;
+    if (!confirmed.has(previousKey)) continue;
+    out.push({ key, airDateUtc: air, previousKey });
+  }
+  return out;
+}
+
+/**
+ * Whether a series the cache window would otherwise skip should be looked up
+ * again because of a newly aired episode (`Settings.recheckNewEpisodes`).
+ *
+ * Due when an awaiting episode (see `newEpisodesAwaitingStreaming`) either
+ * aired after the last lookup — nothing has been asked about it at all — or
+ * has been waiting at least `NEW_EPISODE_RECHECK_MS` since that lookup.
+ *
+ * What bounds the credits: one lookup per series per day at most, only for
+ * series with an episode under a week old whose predecessor is confirmed on
+ * the user's services, and it stops the moment Watchmode confirms the episode.
+ * So a weekly show costs at most about eight lookups per episode in the worst
+ * case (one on airing, then daily), and usually two or three.
+ */
+export function newEpisodeRecheckDue(
+  awaiting: AwaitingEpisode[],
+  providerSyncedAt: Date,
+  now: number
+): boolean {
+  const lastPull = providerSyncedAt.getTime();
+  return awaiting.some(
+    (a) => lastPull <= a.airDateUtc.getTime() || now - lastPull >= NEW_EPISODE_RECHECK_MS
+  );
 }
 
 export interface StreamingInfoEntry {
@@ -320,6 +448,8 @@ export async function runSync(
     onStreamingSeries: 0,
     tvProviderCalls: 0,
     tvSkipped: 0,
+    tvNewEpisodeRechecks: 0,
+    tvAssumedEpisodes: 0,
     movieProviderCalls: 0,
     movieSkipped: 0,
     tvLinkCalls: 0,
@@ -577,6 +707,10 @@ export async function runSync(
           changedIds,
           wmLogos,
           wmTtlMs,
+          {
+            recheck: settings.recheckNewEpisodes,
+            assume: settings.assumeNewEpisodesStream,
+          },
           checkAbort,
           scope
         );
@@ -618,6 +752,20 @@ export async function runSync(
       `(${result.movieSkipped} served from cache, ${movieWindow} freshness window). ` +
       `${result.taggedSkipped} title(s) ignored via the "${SKIP_TAG_LABEL}" tag.`
   );
+  if (result.tvNewEpisodeRechecks) {
+    progress(
+      "info",
+      `${result.tvNewEpisodeRechecks} of those episode fetch(es) were early re-checks for a newly ` +
+        `aired episode Watchmode had not listed yet.`
+    );
+  }
+  if (result.tvAssumedEpisodes) {
+    progress(
+      "info",
+      `${result.tvAssumedEpisodes} newly aired episode(s) assumed on the same services as the ` +
+        `episode before them until Watchmode lists them. Their files are never deleted on that basis.`
+    );
+  }
   if (result.tvMissingLinks) {
     progress(
       "warn",
@@ -942,6 +1090,8 @@ async function syncSonarr(
   logos: Map<number, string | null>,
   // Configured Watchmode cache window, already clamped (lib/watchmodeCache.ts).
   ttlMs: number,
+  // The two newly-aired behaviours, from Settings.
+  newEpisodes: NewEpisodeOptions,
   checkAbort: CheckAbort,
   scope: SyncScope = FULL_SCOPE
 ) {
@@ -1048,6 +1198,25 @@ async function syncSonarr(
       }
     }
 
+    // Sonarr's episode list comes first, ahead of the skip decision, because
+    // the newly-aired check below needs current air dates: an episode that
+    // aired since the last sync is exactly the one the cached rows know least
+    // about. Sonarr calls are local and free, and this one was made for every
+    // series anyway — only its position moved.
+    let arrEpisodes: SonarrEpisode[] = [];
+    try {
+      arrEpisodes = await client.getEpisodes(series.id);
+    } catch (e) {
+      errors.push(`[${conn.name}] ${series.title} episodes: ${(e as Error).message}`);
+    }
+    // Ignore specials (season 0) for streaming roll-ups.
+    const realEpisodes = arrEpisodes.filter((e) => e.seasonNumber > 0);
+    const candidates: NewEpisodeCandidate[] = realEpisodes.map((e) => ({
+      seasonNumber: e.seasonNumber,
+      episodeNumber: e.episodeNumber,
+      airDateUtc: parseAirDate(e.airDateUtc),
+    }));
+
     // Decide whether we can skip the (metered) Watchmode episodes call.
     const fresh =
       !scope.force &&
@@ -1055,10 +1224,47 @@ async function syncSonarr(
       now - existing.providerSyncedAt.getTime() < ttlMs;
     const changed =
       changedIds !== null && watchmodeId !== null && changedIds.has(watchmodeId);
-    // Skip only when: we have a prior successful pull, it's still fresh, and the
-    // changes feed did NOT flag it (or the feed is unavailable but data is fresh).
-    const canSkipWatchmode =
+    // The cache may answer only when: we have a prior successful pull, it's
+    // still fresh, and the changes feed did NOT flag it (or the feed is
+    // unavailable but data is fresh).
+    const cacheAllows =
       !!existing && !existing.streamingUnknown && fresh && !changed && watchmodeId !== null;
+
+    // The cached rows are read only when the cache is going to be consulted —
+    // to answer from, and to see whether a newly aired episode overrides it.
+    const cachedEpisodes = cacheAllows
+      ? await prisma.episode.findMany({
+          where: { mediaId: existing!.id },
+          select: {
+            seasonNumber: true,
+            episodeNumber: true,
+            onStreaming: true,
+            streamingInfo: true,
+            streamingUnknown: true,
+            streamingInferred: true,
+          },
+        })
+      : [];
+
+    // A fresh cache still loses to a newly aired episode Watchmode has not
+    // confirmed yet — see `newEpisodesAwaitingStreaming`. Only what Watchmode
+    // itself confirmed counts here: an episode an earlier pass *assumed* on
+    // streaming is precisely the one still waiting to be checked.
+    let newEpisodeRecheck = false;
+    if (cacheAllows && newEpisodes.recheck) {
+      const confirmed = new Set(
+        cachedEpisodes
+          .filter((e) => e.onStreaming && !e.streamingUnknown && !e.streamingInferred)
+          .map((e) => `${e.seasonNumber}x${e.episodeNumber}`)
+      );
+      newEpisodeRecheck = newEpisodeRecheckDue(
+        newEpisodesAwaitingStreaming(candidates, confirmed, now),
+        existing!.providerSyncedAt!,
+        now
+      );
+    }
+    if (newEpisodeRecheck) result.tvNewEpisodeRechecks++;
+    const canSkipWatchmode = cacheAllows && !newEpisodeRecheck;
 
     // Build a season×episode -> matched-sources map, either from a fresh
     // Watchmode pull or from the cached episode rows.
@@ -1084,19 +1290,16 @@ async function syncSonarr(
     let streamingUnknown = false;
 
     if (canSkipWatchmode) {
-      // Reuse cached streaming info — NO Watchmode call. The episode rows are
-      // fetched only on this branch, which is the only one that reads them.
+      // Reuse cached streaming info — NO Watchmode call.
       result.tvSkipped++;
-      const cachedEpisodes = await prisma.episode.findMany({
-        where: { mediaId: existing!.id },
-        select: {
-          seasonNumber: true,
-          episodeNumber: true,
-          streamingInfo: true,
-          streamingUnknown: true,
-        },
-      });
       for (const ep of cachedEpisodes) {
+        // An assumed row is not a Watchmode answer, so it is not carried
+        // forward as one: dropped here, it is either assumed afresh below (if
+        // the setting is still on and the episode still qualifies) or read as
+        // unknown. Carrying it would let an assumption outlive its window, and
+        // would let it stand in for the confirmed predecessor the next new
+        // episode needs.
+        if (ep.streamingInferred) continue;
         const key = `${ep.seasonNumber}x${ep.episodeNumber}`;
         // The stored flag is what carries "Watchmode answered for this one"
         // across a cached pass; there is nothing else on the row that could.
@@ -1124,14 +1327,20 @@ async function syncSonarr(
       streamingUnknown = true;
     }
 
-    let arrEpisodes: SonarrEpisode[] = [];
-    try {
-      arrEpisodes = await client.getEpisodes(series.id);
-    } catch (e) {
-      errors.push(`[${conn.name}] ${series.title} episodes: ${(e as Error).message}`);
+    // Newly aired episodes that borrow their predecessor's services until
+    // Watchmode lists them (`Settings.assumeNewEpisodesStream`). `wmMap` holds
+    // only episodes Watchmode matched to the user's services — assumed rows
+    // were dropped on the way in — so it is exactly the "confirmed" set. Not
+    // attempted when the series lookup failed: with no answer at all there is
+    // no confirmed predecessor to borrow from.
+    const assumed = new Map<string, ReturnType<typeof streamingInfoJson>>();
+    if (newEpisodes.assume && !streamingUnknown) {
+      for (const a of newEpisodesAwaitingStreaming(candidates, new Set(wmMap.keys()), now)) {
+        const borrowed = wmMap.get(a.previousKey);
+        if (borrowed?.length) assumed.set(a.key, borrowed);
+      }
     }
-    // Ignore specials (season 0) for streaming roll-ups.
-    const realEpisodes = arrEpisodes.filter((e) => e.seasonNumber > 0);
+    result.tvAssumedEpisodes += assumed.size;
 
     let streamingEpisodes = 0;
     let monitoredEpisodes = 0;
@@ -1178,11 +1387,15 @@ async function syncSonarr(
     // leave a series with a partial set of episodes.
     const episodeRows = realEpisodes.map((ep) => {
       const key = `${ep.seasonNumber}x${ep.episodeNumber}`;
-      const matched = wmMap.get(key) ?? [];
+      const confirmedSources = wmMap.get(key);
+      const assumedSources = confirmedSources ? undefined : assumed.get(key);
+      const matched = confirmedSources ?? assumedSources ?? [];
       const onStreaming = matched.length > 0;
       // Unknown when the whole series lookup failed, and also when it succeeded
-      // but said nothing about this episode — see `wmSeen`.
-      const episodeUnknown = streamingUnknown || !wmSeen.has(key);
+      // but said nothing about this episode — see `wmSeen`. An assumed episode
+      // is not unknown: it carries a (flagged) answer the sweep may act on,
+      // within the limits `streamingInferred` puts on it.
+      const episodeUnknown = assumedSources ? false : streamingUnknown || !wmSeen.has(key);
       if (onStreaming) streamingEpisodes++;
       if (ep.monitored) monitoredEpisodes++;
       return {
@@ -1200,6 +1413,7 @@ async function syncSonarr(
         episodeFileId: ep.episodeFileId ?? null,
         onStreaming,
         streamingUnknown: episodeUnknown,
+        streamingInferred: !!assumedSources,
         streamingInfo: asJson(matched),
       };
     });
