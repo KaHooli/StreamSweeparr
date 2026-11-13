@@ -360,15 +360,16 @@ export interface ItemPlan {
  * catching. So the cancellation is decided before `hasFile` gets a say, and an
  * item can be cancelled while its `deleteFile` is null.
  *
- * An **assumed** episode (`streamingInferred`, see
- * `Settings.assumeNewEpisodesStream`) is on streaming only on the strength of
- * the episode before it, ahead of Watchmode confirming it. That is enough to
- * unmonitor it — the point of assuming is to stop Sonarr grabbing it while
- * Watchmode catches up, and unmonitoring is undone by the next sweep if the
- * assumption lapses — but not enough to destroy anything. So no file rule and
- * no cancellation applies to it, whichever setting would otherwise have asked:
- * a wrong guess must cost at most a re-monitor and a search, never a file or a
- * finished download.
+ * An **assumed** episode (`Episode.streamingInferred`, see
+ * `Settings.assumeNewEpisodesStream`) is planned exactly like a confirmed one,
+ * which is why nothing here asks about it. That is a deliberate choice, made by
+ * the user rather than defaulted to caution: an episode the user is about to be
+ * able to stream is one they want cleared like any other, and the file
+ * settings above are what they use to say how far "cleared" goes. The cost of
+ * a wrong guess is bounded by the assumption itself — it lapses a week after
+ * airing, at which point the episode reads as not on streaming and is
+ * re-monitored and searched for, so a deleted file is fetched again rather than
+ * lost for good.
  */
 export function planItem(
   item: {
@@ -378,8 +379,6 @@ export function planItem(
     hasFile: boolean;
     /** Currently mid-download in the *arr queue. Absent means "not in it". */
     inQueue?: boolean;
-    /** `onStreaming` is an assumption, not a provider answer. Absent means confirmed. */
-    streamingInferred?: boolean;
   },
   settings: {
     deleteFiles: boolean;
@@ -402,9 +401,6 @@ export function planItem(
   // docblock. `monitoredAfter` is what carries the purge case: an item this
   // sweep unmonitors and one that was already unmonitored both end it that way,
   // and only the second needs `purgeUnmonitoredFiles` to be in scope.
-  // An assumption may unmonitor, but nothing below it destroys data — see the
-  // docblock.
-  if (item.streamingInferred) return { monitor, deleteFile: null, cancelDownload: null };
 
   let cancelDownload: CancelReason | null = null;
   if (item.inQueue && settings.cancelQueuedDownloads) {
@@ -1216,7 +1212,7 @@ async function sweepSonarr(
         "action",
         `[${conn.name}] Unmonitor ${toUnmonitor.length} episode(s) of "${s.title}" (on streaming` +
           (assumedUnmonitors
-            ? `; ${assumedUnmonitors} newly aired, assumed until Watchmode lists them, files kept`
+            ? `; ${assumedUnmonitors} newly aired, assumed until Watchmode lists them`
             : "") +
           `).`
       );

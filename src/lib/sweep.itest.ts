@@ -740,11 +740,10 @@ describe("sweepSonarr", () => {
 });
 
 describe("sweepSonarr — episodes assumed on streaming ahead of Watchmode", () => {
-  it("unmonitors an assumed episode but deletes nothing, however the file settings are set", async () => {
+  it("handles an assumed episode like any other on streaming, file settings included", async () => {
     await makeSettings({
       applyChanges: true,
       deleteFiles: true,
-      purgeUnmonitoredFiles: true,
       searchAtEnd: false,
     });
     const conn = await makeConnection({ type: "SONARR" });
@@ -757,8 +756,8 @@ describe("sweepSonarr — episodes assumed on streaming ahead of Watchmode", () 
       hasFile: false,
       episodeFileId: null,
     });
-    // Sonarr grabbed E5 before the sweep got to it; the assumption must not
-    // cost that file.
+    // Sonarr grabbed E5 before the sweep got to it. With deleteFiles on, the
+    // assumption clears it exactly as a Watchmode answer would.
     await makeEpisode(show.id, {
       arrEpisodeId: 105,
       episodeNumber: 5,
@@ -770,14 +769,31 @@ describe("sweepSonarr — episodes assumed on streaming ahead of Watchmode", () 
 
     const run = await sweepAndWait();
     expect(run.unmonitoredEps).toBe(1);
-    expect(run.deletedFiles).toBe(0);
+    expect(run.deletedFiles).toBe(1);
     expect(callsTo("setEpisodeMonitored").map((c) => c.args)).toContainEqual([[105], false]);
-    expect(callsTo("deleteEpisodeFiles")).toHaveLength(0);
+    expect(callsTo("deleteEpisodeFiles").map((c) => c.args)).toEqual([[[905]]]);
 
     const ep = await prisma.episode.findFirstOrThrow({ where: { arrEpisodeId: 105 } });
     expect(ep.monitored).toBe(false);
-    expect(ep.hasFile).toBe(true);
-    expect(ep.episodeFileId).toBe(905);
+    expect(ep.hasFile).toBe(false);
+    expect(ep.episodeFileId).toBeNull();
+  });
+
+  it("keeps an assumed episode's file when file deletion is off", async () => {
+    await makeSettings({ applyChanges: true, deleteFiles: false, searchAtEnd: false });
+    const conn = await makeConnection({ type: "SONARR" });
+    const show = await makeMediaItem(conn.id, { type: "TV", arrId: 1 });
+    await makeEpisode(show.id, {
+      arrEpisodeId: 105,
+      monitored: true,
+      onStreaming: true,
+      streamingInferred: true,
+      episodeFileId: 905,
+    });
+
+    const run = await sweepAndWait();
+    expect(run.unmonitoredEps).toBe(1);
+    expect(callsTo("deleteEpisodeFiles")).toHaveLength(0);
   });
 });
 
