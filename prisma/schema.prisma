@@ -149,6 +149,18 @@ model Settings {
   // generated for the user when webhooks are switched on.
   webhookToken         String?
 
+  // --- Streaming-link feed for other apps ---
+  // `GET /api/feed/{tv,movies}` hands another self-hosted program (a portal,
+  // a dashboard) the streaming services and links for every title on the
+  // user's services. Off by default for the same reason webhooks are: it is an
+  // endpoint reachable without a session.
+  feedEnabled          Boolean @default(false)
+  // The key a feed consumer presents. Deliberately not the webhook token: the
+  // two are handed to different programs and revoked independently, and a
+  // credential that only reads must not double as one that starts sweeps.
+  // Encrypted at rest; generated when the feed is switched on.
+  feedToken            String?
+
   // --- Watchmode Title ID map dataset sync metadata ---
   // HTTP validators from the last successful title_id_map.csv download, used to
   // skip re-importing when the dataset has not changed.

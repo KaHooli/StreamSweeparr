@@ -12,12 +12,29 @@ import { prisma } from "./db";
 import { providerSearchUrl } from "./providerSites";
 import { sanitizeExternalUrl, tmdbWatchUrl } from "./urls";
 
+/**
+ * Where a service's `url` came from, best first. See `dedupeServices`.
+ *
+ *  - `direct` — a deep link to the title itself on that service;
+ *  - `search` — that service's own search page for the title;
+ *  - `tmdb`   — TMDB's "where to watch" page, which lists the providers.
+ *
+ * The dashboard does not need this — a link is a link to a logo — but the
+ * streaming-link feed hands it to other programs, which may well want to show
+ * a "search on Netflix" link differently from a "play on Netflix" one.
+ */
+export type ServiceLinkKind = "direct" | "search" | "tmdb";
+
 export interface DashboardService {
   name: string;
   type: string;
+  /** ISO country the service was matched in (the first one, if several). */
+  region: string | null;
   logo: string | null;
-  /** Deep link to the title on that service, when we have one. */
+  /** Link to the title on that service, resolved as described on `dedupeServices`. */
   url: string | null;
+  /** Which rung of that chain `url` is; null exactly when `url` is. */
+  linkKind: ServiceLinkKind | null;
 }
 
 export interface DashboardTvShow {
@@ -190,13 +207,24 @@ export function dedupeServices(
     out.push({
       name: s.name,
       type: s.type,
+      region: s.region ?? null,
       logo: s.logo ?? null,
-      url:
-        // Guard against non-URL values already persisted by earlier syncs.
-        sanitizeExternalUrl(s.webUrl) ??
-        providerSearchUrl(s.name, title, s.region) ??
-        fallbackUrl,
+      ...resolveServiceLink(s, fallbackUrl, title),
     });
   }
   return out;
+}
+
+function resolveServiceLink(
+  s: { name: string; region?: string | null; webUrl?: string | null },
+  fallbackUrl: string | null,
+  title: string
+): { url: string | null; linkKind: ServiceLinkKind | null } {
+  // Guard against non-URL values already persisted by earlier syncs.
+  const direct = sanitizeExternalUrl(s.webUrl);
+  if (direct) return { url: direct, linkKind: "direct" };
+  const search = providerSearchUrl(s.name, title, s.region);
+  if (search) return { url: search, linkKind: "search" };
+  if (fallbackUrl) return { url: fallbackUrl, linkKind: "tmdb" };
+  return { url: null, linkKind: null };
 }

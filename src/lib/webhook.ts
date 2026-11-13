@@ -14,41 +14,21 @@
  * Settings card has to build the same URLs in the browser.
  */
 
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { connectionTypeFor, type ArrKind } from "./webhookUrl";
+import { generateToken } from "./sharedSecret";
 
 export type { ArrKind };
 export { ARR_KINDS, connectionTypeFor, isArrKind, mediaTypeFor, webhookUrl } from "./webhookUrl";
+export { tokenMatches } from "./sharedSecret";
 
 /* ----------------------------- Shared secret ---------------------------- */
 
 /**
- * Mint a webhook token.
- *
- * 24 bytes of randomness rendered base64url: URL-safe, so it can be pasted
- * straight into the query string of the URL the user gives Sonarr, and long
- * enough that guessing it is not a strategy.
+ * Mint a webhook token. URL-safe, so it can be pasted straight into the query
+ * string of the URL the user gives Sonarr; see `lib/sharedSecret.ts`.
  */
 export function generateWebhookToken(): string {
-  return randomBytes(24).toString("base64url");
-}
-
-/**
- * Constant-time comparison of a presented token against the stored one.
- *
- * Both sides are hashed first so the comparison is over two fixed-length
- * buffers. Comparing the raw strings would need a length check up front, and
- * that check returns early — leaking the token's length to anyone willing to
- * time the endpoint.
- */
-export function tokenMatches(
-  presented: string | null | undefined,
-  expected: string | null | undefined
-): boolean {
-  if (!presented || !expected) return false;
-  const a = createHash("sha256").update(presented).digest();
-  const b = createHash("sha256").update(expected).digest();
-  return timingSafeEqual(a, b);
+  return generateToken();
 }
 
 /**

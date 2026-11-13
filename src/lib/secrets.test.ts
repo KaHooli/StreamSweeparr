@@ -113,6 +113,7 @@ describe("row helpers", () => {
       seerrApiKey: "seerr",
       oidcClientSecret: "oidc",
       webhookToken: "hook",
+      feedToken: "feed",
       seerrUrl: "http://seerr:5055",
       countries: ["US"],
       deleteFiles: true,

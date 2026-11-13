@@ -261,3 +261,45 @@ describe("PATCH /api/settings — Watchmode cache window", () => {
     expect((await (await GET()).json()).watchmodeCacheDays).toBe(90);
   });
 });
+
+describe("PATCH /api/settings — streaming-link feed", () => {
+  async function storedFeedToken(): Promise<string | null> {
+    const rows = await prisma.$queryRaw<
+      { feedToken: string | null }[]
+    >`SELECT "feedToken" FROM "Settings" WHERE id = 1`;
+    return rows[0].feedToken;
+  }
+
+  it("is off with no key until switched on", async () => {
+    await signInAsAdmin();
+    await makeSettings();
+    const body = await (await GET()).json();
+    expect(body.feedEnabled).toBe(false);
+    expect(body.feedToken).toBe("");
+  });
+
+  it("mints an encrypted key when switched on, separate from the webhook token", async () => {
+    await signInAsAdmin();
+    await makeSettings();
+    const res = await patch({ feedEnabled: true, webhookEnabled: true });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.feedEnabled).toBe(true);
+    expect(body.feedToken).toMatch(/^[A-Za-z0-9_-]{32}$/);
+    expect(body.feedToken).not.toBe(body.webhookToken);
+    // The admin sees it in full; the database holds only ciphertext.
+    expect(isEncrypted((await storedFeedToken())!)).toBe(true);
+    expect((await getSettings()).feedToken).toBe(body.feedToken);
+  });
+
+  it("keeps the key across off and on, and replaces it only on request", async () => {
+    await signInAsAdmin();
+    await makeSettings();
+    const first = (await (await patch({ feedEnabled: true })).json()).feedToken;
+    await patch({ feedEnabled: false });
+    expect((await (await patch({ feedEnabled: true })).json()).feedToken).toBe(first);
+
+    const regenerated = (await (await patch({ regenerateFeedToken: true })).json()).feedToken;
+    expect(regenerated).not.toBe(first);
+  });
+});

@@ -28,6 +28,10 @@ in step with what is already available on the streaming services you pay for:
   everything still unmonitored, then trigger a search for what remains
   monitored.
 
+Read-only, other self-hosted apps can also pull the snapshot's streaming links
+from `GET /api/feed/{tv,movies}` (`lib/feed.ts`) — no provider calls, just the
+dashboard's data with a key in front of it.
+
 A sweep starts three ways — the button, the schedule (`lib/scheduler.ts`), or a
 Sonarr/Radarr webhook saying a title was just added (`lib/sweepQueue.ts`). The
 third is the same sweep with every query narrowed to those titles, not a
@@ -81,7 +85,7 @@ npm run prisma:push        # prisma db push (local scratch only)
 **Before proposing a change as finished, run: `npm run lint && npm run typecheck
 && npm test`.** Add `npm run test:integration` when you touch `lib/sync.ts`,
 `lib/sweep.ts`, `lib/jobs.ts`, `lib/secrets.ts`, `lib/sweepQueue.ts`, the users
-API, the webhook route, or anything that writes to Postgres.
+API, the webhook route, the feed route, or anything that writes to Postgres.
 
 Integration tests need a real database and **refuse to start without an explicit
 `DATABASE_URL`** (they `TRUNCATE`, so pointing them at a live deployment has to
@@ -138,6 +142,8 @@ src/
 | Scheduled sweeps: pure interval maths / the timer | `lib/schedule.ts`, `lib/scheduler.ts` |
 | Webhook sweeps: payload parsing + shared secret / the URLs the UI builds | `lib/webhook.ts`, `lib/webhookUrl.ts` |
 | Webhook sweep queue: enqueue, claim, drain, the worker | `lib/sweepQueue.ts` |
+| Streaming-link feed: query + shape + key extraction / the URLs the UI builds | `lib/feed.ts`, `lib/feedUrl.ts` |
+| Token minting + constant-time comparison (webhook and feed) | `lib/sharedSecret.ts` |
 | Sessions (edge-safe HMAC) | `lib/session.ts` |
 | Route guards (Node, database-backed) | `lib/auth.ts` |
 | Credential encryption at rest | `lib/secrets.ts` |
@@ -223,7 +229,7 @@ export const POST = withGuard(requireAdmin, async (session, req: NextRequest) =>
 ```
 
 `withGuard` translates `AuthError` into the right JSON status. **A new route
-gets a guard.** There are exactly three exceptions, and all three are listed as
+gets a guard.** There are exactly four exceptions, and all four are listed as
 public in `proxy.ts` too:
 
 - `/api/health` — public probe, deliberately thin so it is not a recon surface.
@@ -234,8 +240,15 @@ public in `proxy.ts` too:
   caller's token against `Settings.webhookToken` in constant time, and
   rate-limits rejected calls. It queues and returns; it never sweeps inline.
   See `lib/webhook.ts`.
+- `/api/feed/{tv,movies}` — other apps reading streaming links, which cannot
+  hold a session either. Same treatment, separately: 503 unless `feedEnabled`,
+  its own `Settings.feedToken` (never the webhook token — a read credential must
+  not double as one that starts sweeps), its own rate-limit bucket. GET only,
+  and it never calls a provider. See `lib/feed.ts`. `proxy.ts` *imports* these
+  paths from `lib/feedUrl.ts`, which is allowed only because that file has no
+  imports at all — keep it that way.
 
-Do not add a fourth without the same treatment — a route outside the session
+Do not add a fifth without the same treatment — a route outside the session
 gate needs its own credential, its own kill switch, and its own rate limit.
 
 Bump `tokenVersion` whenever a session must stop being honoured (role change,
@@ -243,7 +256,7 @@ password change, admin revocation).
 
 ### 5. Credentials are encrypted at rest, and `getSettings()` hides it
 
-Watchmode/TMDB/Seerr keys, the OIDC client secret, the webhook token, and every
+Watchmode/TMDB/Seerr keys, the OIDC client secret, the webhook and feed tokens, and every
 Sonarr/Radarr API key are stored as `enc:v1:<base64url>` (AES-256-GCM, key
 derived from `AUTH_SECRET` via HKDF).
 
@@ -257,11 +270,12 @@ derived from `AUTH_SECRET` via HKDF).
 - **Secrets never reach the browser.** The settings API returns booleans
   (`tmdbApiKeySet`) and counts (`watchmodeApiKeyCount`), and the UI refers to an
   untouched stored key *by position*. Keep it that way.
-- **One deliberate exception: `webhookToken`.** It is returned in full, because
-  it has no use until the admin pastes it into Sonarr/Radarr and a masked value
-  cannot be pasted. That is the bar for an exception — the credential is
-  *outbound*, the endpoint returning it is `requireAdmin`, and the value is
-  still encrypted at rest. A credential the app uses on the user's behalf never
+- **Two deliberate exceptions: `webhookToken` and `feedToken`.** They are
+  returned in full, because they have no use until the admin pastes them into
+  Sonarr/Radarr or the consuming app, and a masked value cannot be pasted.
+  That is the bar for an exception — the credential is *outbound* (handed to
+  another program to present back to us), the endpoint returning it is
+  `requireAdmin`, and the value is still encrypted at rest. A credential the app uses on the user's behalf never
   qualifies.
 - `secretsUnreadable` distinguishes "never configured" from "`AUTH_SECRET`
   changed, so this can no longer be decrypted". Do not collapse the two.

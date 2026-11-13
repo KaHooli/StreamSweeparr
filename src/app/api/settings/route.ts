@@ -29,6 +29,7 @@ import {
   schedulerDisabledByEnv,
 } from "@/lib/schedule";
 import { generateWebhookToken } from "@/lib/webhook";
+import { generateToken } from "@/lib/sharedSecret";
 import { settleMs } from "@/lib/sweepQueue";
 
 export const dynamic = "force-dynamic";
@@ -94,6 +95,9 @@ const settingsSchema = z.object({
   // minted here when the feature is switched on, and replaced on request.
   webhookEnabled: z.boolean().optional(),
   regenerateWebhookToken: z.boolean().optional(),
+  // The streaming-link feed, on the same terms: the key is minted here.
+  feedEnabled: z.boolean().optional(),
+  regenerateFeedToken: z.boolean().optional(),
   localLoginEnabled: z.boolean().optional(),
   // OIDC
   oidcEnabled: z.boolean().optional(),
@@ -165,6 +169,11 @@ function serialize(
     webhookEnabled: s.webhookEnabled,
     webhookToken: s.webhookToken ?? "",
     webhookSettleSeconds: Math.round(settleMs() / 1000),
+    // The streaming-link feed key, returned in full for the same reason as the
+    // webhook token: it is presented *to* this app by another program, so it
+    // is useless until the admin can copy it, and it stays encrypted at rest.
+    feedEnabled: s.feedEnabled,
+    feedToken: s.feedToken ?? "",
     // Login options: the stored preference, the value actually in force, and
     // whether the UI control must be locked (OIDC unusable or env override).
     localLoginEnabled: s.localLoginEnabled,
@@ -274,6 +283,12 @@ export const PATCH = withGuard(requireAdmin, async (_session, req: NextRequest) 
   if (p.webhookEnabled !== undefined) data.webhookEnabled = p.webhookEnabled;
   if (p.regenerateWebhookToken || (p.webhookEnabled && !prev.webhookToken)) {
     data.webhookToken = generateWebhookToken();
+  }
+  // Same for the feed. A separate key, so regenerating one never breaks the
+  // other's consumer.
+  if (p.feedEnabled !== undefined) data.feedEnabled = p.feedEnabled;
+  if (p.regenerateFeedToken || (p.feedEnabled && !prev.feedToken)) {
+    data.feedToken = generateToken();
   }
   if (p.localLoginEnabled !== undefined) data.localLoginEnabled = p.localLoginEnabled;
   // OIDC (only overwrite the secret when a non-empty value is provided).
