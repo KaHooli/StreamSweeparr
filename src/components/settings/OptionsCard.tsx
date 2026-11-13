@@ -49,7 +49,7 @@ export function OptionsCard({ settings, onChange }: CardProps) {
       />
       <Toggle
         title="Assume newly aired episodes are on streaming"
-        desc="Until Watchmode lists it, treat an episode that aired in the last week as being on the same services as the episode before it, so it is unmonitored straight away instead of grabbed. Files and downloads are never deleted on this assumption, and it lapses after a week if Watchmode still hasn't confirmed it."
+        desc="Until Watchmode lists it, treat an episode that aired in the last week as being on the same services as the episode before it, so it is unmonitored straight away instead of grabbed. It is then treated like any other episode on streaming, so the file and download options above apply to it too. The assumption lapses after a week if Watchmode still hasn't confirmed it, and the episode is re-monitored and searched for again."
         checked={settings.assumeNewEpisodesStream}
         onChange={(v) => set({ assumeNewEpisodesStream: v })}
       />

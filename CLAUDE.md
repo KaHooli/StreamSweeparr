@@ -343,11 +343,14 @@ Anything that deletes or mutates Sonarr/Radarr must respect:
   than count them as absent.
 - `streamingInferred` — an `Episode` whose `onStreaming` is an assumption
   (`assumeNewEpisodesStream`): newly aired, borrowing the previous episode's
-  services until Watchmode lists it. `planItem` lets it be unmonitored but
-  gives it no file deletion, purge or download cancellation, whatever the
-  settings say. Sync never treats it as a Watchmode answer — a cached pass drops
-  it and works it out again, so it cannot outlive its 7-day window or vouch for
-  the next episode.
+  services until Watchmode lists it. The sweep acts on it exactly as on a
+  confirmed one — `planItem` does not distinguish them, so `deleteFiles`,
+  `purgeUnmonitoredFiles` and `cancelQueuedDownloads` all apply. That is the
+  user's explicit choice; what bounds a wrong guess is the lapse, after which
+  the episode reads as off streaming and is re-monitored and searched for. Sync
+  never treats it as a Watchmode answer — a cached pass drops it and works it
+  out again, so it cannot outlive its 7-day window or vouch for the next
+  episode.
 - `skipped` — the `ss-skip` tag (`SKIP_TAG_LABEL` in `lib/arr.ts`). Skipped
   titles are never looked up, never (un)monitored, never have files deleted, and
   are excluded from the end-of-run search.

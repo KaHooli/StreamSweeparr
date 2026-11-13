@@ -120,9 +120,10 @@ model Settings {
   // shortens how long a stale answer is believed, it never invents one.
   recheckNewEpisodes      Boolean @default(true)
   // Treat such an episode as on the same services as the one before it until
-  // Watchmode catches up. A guess, so the sweep may unmonitor it but never
-  // deletes, purges or cancels a download on its strength (planItem in
-  // lib/sweep.ts), and it lapses once the episode is a week old.
+  // Watchmode catches up. The sweep then handles it like any other episode on
+  // streaming — unmonitored, with its file and download following the usual
+  // file settings — and the assumption lapses once the episode is a week old,
+  // after which it is re-monitored and searched for if still unconfirmed.
   assumeNewEpisodesStream Boolean @default(true)
 
   // --- Scheduled sweeps ---
@@ -415,9 +416,10 @@ model Episode {
   streamingUnknown Boolean @default(false)
   // `onStreaming` here is an assumption, not a provider answer: the episode is
   // newly aired and borrowed the previous episode's services while Watchmode
-  // catches up (Settings.assumeNewEpisodesStream). The sweep will unmonitor it
-  // but never delete anything over it, and sync never treats it as confirmed —
-  // it is recomputed on every pass, so it lapses on its own.
+  // catches up (Settings.assumeNewEpisodesStream). The sweep treats it like any
+  // other on-streaming episode — unmonitored, and its file and download handled
+  // by the usual file settings — but sync never treats it as confirmed: it is
+  // recomputed on every pass, so it lapses on its own a week after airing.
   streamingInferred Boolean @default(false)
   streamingInfo Json?
 

@@ -763,7 +763,7 @@ export async function runSync(
     progress(
       "info",
       `${result.tvAssumedEpisodes} newly aired episode(s) assumed on the same services as the ` +
-        `episode before them until Watchmode lists them. Their files are never deleted on that basis.`
+        `episode before them until Watchmode lists them.`
     );
   }
   if (result.tvMissingLinks) {
@@ -1393,8 +1393,8 @@ async function syncSonarr(
       const onStreaming = matched.length > 0;
       // Unknown when the whole series lookup failed, and also when it succeeded
       // but said nothing about this episode — see `wmSeen`. An assumed episode
-      // is not unknown: it carries a (flagged) answer the sweep may act on,
-      // within the limits `streamingInferred` puts on it.
+      // is not unknown: it carries a (flagged) answer the sweep acts on like
+      // any other.
       const episodeUnknown = assumedSources ? false : streamingUnknown || !wmSeen.has(key);
       if (onStreaming) streamingEpisodes++;
       if (ep.monitored) monitoredEpisodes++;
