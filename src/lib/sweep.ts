@@ -359,6 +359,16 @@ export interface ItemPlan {
  * yet, and the item mid-download with nothing on disk is exactly the one worth
  * catching. So the cancellation is decided before `hasFile` gets a say, and an
  * item can be cancelled while its `deleteFile` is null.
+ *
+ * An **assumed** episode (`streamingInferred`, see
+ * `Settings.assumeNewEpisodesStream`) is on streaming only on the strength of
+ * the episode before it, ahead of Watchmode confirming it. That is enough to
+ * unmonitor it — the point of assuming is to stop Sonarr grabbing it while
+ * Watchmode catches up, and unmonitoring is undone by the next sweep if the
+ * assumption lapses — but not enough to destroy anything. So no file rule and
+ * no cancellation applies to it, whichever setting would otherwise have asked:
+ * a wrong guess must cost at most a re-monitor and a search, never a file or a
+ * finished download.
  */
 export function planItem(
   item: {
@@ -368,6 +378,8 @@ export function planItem(
     hasFile: boolean;
     /** Currently mid-download in the *arr queue. Absent means "not in it". */
     inQueue?: boolean;
+    /** `onStreaming` is an assumption, not a provider answer. Absent means confirmed. */
+    streamingInferred?: boolean;
   },
   settings: {
     deleteFiles: boolean;
@@ -390,6 +402,10 @@ export function planItem(
   // docblock. `monitoredAfter` is what carries the purge case: an item this
   // sweep unmonitors and one that was already unmonitored both end it that way,
   // and only the second needs `purgeUnmonitoredFiles` to be in scope.
+  // An assumption may unmonitor, but nothing below it destroys data — see the
+  // docblock.
+  if (item.streamingInferred) return { monitor, deleteFile: null, cancelDownload: null };
+
   let cancelDownload: CancelReason | null = null;
   if (item.inQueue && settings.cancelQueuedDownloads) {
     if (monitor === "unmonitor") cancelDownload = "on streaming";
@@ -1102,6 +1118,7 @@ async function sweepSonarr(
           hasFile: true,
           onStreaming: true,
           streamingUnknown: true,
+          streamingInferred: true,
         },
       },
     },
@@ -1144,6 +1161,8 @@ async function sweepSonarr(
     // stopping leaves nothing half-done.
     await checkAbort();
     const toUnmonitor: number[] = [];
+    /** Of `toUnmonitor`, how many are on an assumption, for the run log. */
+    let assumedUnmonitors = 0;
     const toRemonitor: number[] = [];
     const filesToDelete: PendingFileDelete[] = [];
     const seasonEpisodes: SeasonEpisode[] = [];
@@ -1157,8 +1176,10 @@ async function sweepSonarr(
         settings
       );
 
-      if (plan.monitor === "unmonitor") toUnmonitor.push(ep.arrEpisodeId);
-      else if (plan.monitor === "remonitor") toRemonitor.push(ep.arrEpisodeId);
+      if (plan.monitor === "unmonitor") {
+        toUnmonitor.push(ep.arrEpisodeId);
+        if (ep.streamingInferred) assumedUnmonitors++;
+      } else if (plan.monitor === "remonitor") toRemonitor.push(ep.arrEpisodeId);
 
       if (plan.cancelDownload) {
         cancelIds.set(ep.arrEpisodeId, plan.cancelDownload);
@@ -1191,7 +1212,14 @@ async function sweepSonarr(
     }
 
     if (toUnmonitor.length) {
-      push("action", `[${conn.name}] Unmonitor ${toUnmonitor.length} episode(s) of "${s.title}" (on streaming).`);
+      push(
+        "action",
+        `[${conn.name}] Unmonitor ${toUnmonitor.length} episode(s) of "${s.title}" (on streaming` +
+          (assumedUnmonitors
+            ? `; ${assumedUnmonitors} newly aired, assumed until Watchmode lists them, files kept`
+            : "") +
+          `).`
+      );
       counts.unmonitoredEps += toUnmonitor.length;
       if (!dryRun) {
         await errors.attempt(`[${conn.name}] unmonitor episodes of "${s.title}"`, async () => {

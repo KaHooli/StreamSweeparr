@@ -48,6 +48,10 @@ export interface SettingsDto {
   deleteFiles: boolean;
   purgeUnmonitoredFiles: boolean;
   cancelQueuedDownloads: boolean;
+  /** Look a series up again sooner while a newly aired episode is unconfirmed. */
+  recheckNewEpisodes: boolean;
+  /** Assume a newly aired episode follows its predecessor's services until confirmed. */
+  assumeNewEpisodesStream: boolean;
   searchAtEnd: boolean;
   removeMissingTmdbMovies: boolean;
   applyChanges: boolean;

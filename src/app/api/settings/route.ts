@@ -77,6 +77,8 @@ const settingsSchema = z.object({
   deleteFiles: z.boolean().optional(),
   purgeUnmonitoredFiles: z.boolean().optional(),
   cancelQueuedDownloads: z.boolean().optional(),
+  recheckNewEpisodes: z.boolean().optional(),
+  assumeNewEpisodesStream: z.boolean().optional(),
   searchAtEnd: z.boolean().optional(),
   removeMissingTmdbMovies: z.boolean().optional(),
   applyChanges: z.boolean().optional(),
@@ -143,6 +145,8 @@ function serialize(
     deleteFiles: s.deleteFiles,
     purgeUnmonitoredFiles: s.purgeUnmonitoredFiles,
     cancelQueuedDownloads: s.cancelQueuedDownloads,
+    recheckNewEpisodes: s.recheckNewEpisodes,
+    assumeNewEpisodesStream: s.assumeNewEpisodesStream,
     searchAtEnd: s.searchAtEnd,
     removeMissingTmdbMovies: s.removeMissingTmdbMovies,
     applyChanges: s.applyChanges,
@@ -246,6 +250,9 @@ export const PATCH = withGuard(requireAdmin, async (_session, req: NextRequest) 
     data.purgeUnmonitoredFiles = p.purgeUnmonitoredFiles;
   if (p.cancelQueuedDownloads !== undefined)
     data.cancelQueuedDownloads = p.cancelQueuedDownloads;
+  if (p.recheckNewEpisodes !== undefined) data.recheckNewEpisodes = p.recheckNewEpisodes;
+  if (p.assumeNewEpisodesStream !== undefined)
+    data.assumeNewEpisodesStream = p.assumeNewEpisodesStream;
   if (p.searchAtEnd !== undefined) data.searchAtEnd = p.searchAtEnd;
   if (p.removeMissingTmdbMovies !== undefined)
     data.removeMissingTmdbMovies = p.removeMissingTmdbMovies;

@@ -158,6 +158,8 @@ const info: SystemInfo = {
     deleteFiles: true,
     purgeUnmonitoredFiles: false,
     cancelQueuedDownloads: false,
+    recheckNewEpisodes: true,
+    assumeNewEpisodesStream: true,
     searchAtEnd: true,
     removeMissingTmdbMovies: false,
     watchmodeApiKeySet: true,

@@ -82,6 +82,8 @@ export interface ConfigInfo {
   deleteFiles: boolean;
   purgeUnmonitoredFiles: boolean;
   cancelQueuedDownloads: boolean;
+  recheckNewEpisodes: boolean;
+  assumeNewEpisodesStream: boolean;
   searchAtEnd: boolean;
   removeMissingTmdbMovies: boolean;
   watchmodeApiKeySet: boolean;
@@ -336,6 +338,8 @@ export function buildDiagnosticsText(info: SystemInfo): string {
     row("Delete files", yesNo(cfg.deleteFiles));
     row("Purge unmonitored files", yesNo(cfg.purgeUnmonitoredFiles));
     row("Cancel queued downloads", yesNo(cfg.cancelQueuedDownloads));
+    row("Re-check newly aired episodes", yesNo(cfg.recheckNewEpisodes));
+    row("Assume newly aired episodes stream", yesNo(cfg.assumeNewEpisodesStream));
     row("Search at end", yesNo(cfg.searchAtEnd));
     row("Remove missing TMDB movies", yesNo(cfg.removeMissingTmdbMovies));
     row(

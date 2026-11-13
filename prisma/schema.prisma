@@ -107,6 +107,24 @@ model Settings {
   // Perform destructive changes. When false the run is a dry-run (preview only).
   applyChanges      Boolean  @default(false)
 
+  // --- Newly aired episodes ---
+  // Watchmode typically lists a new episode's streaming sources a few days
+  // after it airs, and the cache window can then hold the stale answer for up
+  // to a week more. Both switches below act only on an episode that aired in
+  // the last week and directly follows one Watchmode has confirmed on the
+  // user's services — a show that is "keeping pace" with broadcast.
+  //
+  // Look such a series up again (at most daily) instead of serving it from the
+  // cache window. Costs Watchmode credits, bounded per episode — see
+  // newEpisodesAwaitingStreaming() in lib/sync.ts. On by default: it only
+  // shortens how long a stale answer is believed, it never invents one.
+  recheckNewEpisodes      Boolean @default(true)
+  // Treat such an episode as on the same services as the one before it until
+  // Watchmode catches up. A guess, so the sweep may unmonitor it but never
+  // deletes, purges or cancels a download on its strength (planItem in
+  // lib/sweep.ts), and it lapses once the episode is a week old.
+  assumeNewEpisodesStream Boolean @default(true)
+
   // --- Scheduled sweeps ---
   // Run a sweep automatically every `sweepIntervalHours` hours. Scheduled runs
   // honour applyChanges exactly like a manual sweep, so leaving LIVE mode off
@@ -395,6 +413,12 @@ model Episode {
   episodeFileId Int?
   onStreaming   Boolean  @default(false)
   streamingUnknown Boolean @default(false)
+  // `onStreaming` here is an assumption, not a provider answer: the episode is
+  // newly aired and borrowed the previous episode's services while Watchmode
+  // catches up (Settings.assumeNewEpisodesStream). The sweep will unmonitor it
+  // but never delete anything over it, and sync never treats it as confirmed —
+  // it is recomputed on every pass, so it lapses on its own.
+  streamingInferred Boolean @default(false)
   streamingInfo Json?
 
   media         MediaItem @relation(fields: [mediaId], references: [id], onDelete: Cascade)

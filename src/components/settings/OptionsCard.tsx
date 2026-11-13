@@ -42,6 +42,18 @@ export function OptionsCard({ settings, onChange }: CardProps) {
         onChange={(v) => set({ purgeUnmonitoredFiles: v })}
       />
       <Toggle
+        title="Re-check newly aired episodes"
+        desc="Watchmode usually takes a few days to list a new episode's streaming services. While an episode that aired in the last week is still unlisted, and the episode before it is on your services, look the series up again once a day instead of waiting out the Watchmode cache window. Costs a few extra Watchmode credits per new episode."
+        checked={settings.recheckNewEpisodes}
+        onChange={(v) => set({ recheckNewEpisodes: v })}
+      />
+      <Toggle
+        title="Assume newly aired episodes are on streaming"
+        desc="Until Watchmode lists it, treat an episode that aired in the last week as being on the same services as the episode before it, so it is unmonitored straight away instead of grabbed. Files and downloads are never deleted on this assumption, and it lapses after a week if Watchmode still hasn't confirmed it."
+        checked={settings.assumeNewEpisodesStream}
+        onChange={(v) => set({ assumeNewEpisodesStream: v })}
+      />
+      <Toggle
         title="Remove movies deleted from TMDB"
         // Nothing consults TMDB while Watchmode answers for movies, so no movie
         // is ever flagged and this switch has nothing to act on. Say so rather

@@ -119,6 +119,8 @@ vi.mock("./sync", () => ({
     onStreamingSeries: 0,
     tvProviderCalls: 0,
     tvSkipped: 0,
+    tvNewEpisodeRechecks: 0,
+    tvAssumedEpisodes: 0,
     movieProviderCalls: 0,
     movieSkipped: 0,
     tvLinkCalls: 0,
@@ -734,6 +736,48 @@ describe("sweepSonarr", () => {
     const run = await sweepAndWait();
     expect(run.deletedFiles).toBe(1);
     expect(callsTo("deleteEpisodeFiles")[0].args).toEqual([[950]]);
+  });
+});
+
+describe("sweepSonarr — episodes assumed on streaming ahead of Watchmode", () => {
+  it("unmonitors an assumed episode but deletes nothing, however the file settings are set", async () => {
+    await makeSettings({
+      applyChanges: true,
+      deleteFiles: true,
+      purgeUnmonitoredFiles: true,
+      searchAtEnd: false,
+    });
+    const conn = await makeConnection({ type: "SONARR" });
+    const show = await makeMediaItem(conn.id, { type: "TV", arrId: 1, title: "Grey's Anatomy" });
+    await makeEpisode(show.id, {
+      arrEpisodeId: 104,
+      episodeNumber: 4,
+      monitored: false,
+      onStreaming: true,
+      hasFile: false,
+      episodeFileId: null,
+    });
+    // Sonarr grabbed E5 before the sweep got to it; the assumption must not
+    // cost that file.
+    await makeEpisode(show.id, {
+      arrEpisodeId: 105,
+      episodeNumber: 5,
+      monitored: true,
+      onStreaming: true,
+      streamingInferred: true,
+      episodeFileId: 905,
+    });
+
+    const run = await sweepAndWait();
+    expect(run.unmonitoredEps).toBe(1);
+    expect(run.deletedFiles).toBe(0);
+    expect(callsTo("setEpisodeMonitored").map((c) => c.args)).toContainEqual([[105], false]);
+    expect(callsTo("deleteEpisodeFiles")).toHaveLength(0);
+
+    const ep = await prisma.episode.findFirstOrThrow({ where: { arrEpisodeId: 105 } });
+    expect(ep.monitored).toBe(false);
+    expect(ep.hasFile).toBe(true);
+    expect(ep.episodeFileId).toBe(905);
   });
 });
 
