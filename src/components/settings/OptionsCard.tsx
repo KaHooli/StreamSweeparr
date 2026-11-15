@@ -43,13 +43,13 @@ export function OptionsCard({ settings, onChange }: CardProps) {
       />
       <Toggle
         title="Re-check newly aired episodes"
-        desc="Watchmode usually takes a few days to list a new episode's streaming services. While an episode that aired in the last week is still unlisted, and the episode before it is on your services, look the series up again once a day instead of waiting out the Watchmode cache window. Costs a few extra Watchmode credits per new episode."
+        desc="Watchmode usually takes a few days to list a new episode's streaming services. While an episode that aired within your Watchmode cache window is still unlisted, and the episode before it is on your services, look the series up again once a day instead of waiting out the cache window. Costs a few extra Watchmode credits per new episode."
         checked={settings.recheckNewEpisodes}
         onChange={(v) => set({ recheckNewEpisodes: v })}
       />
       <Toggle
         title="Assume newly aired episodes are on streaming"
-        desc="Until Watchmode lists it, treat an episode that aired in the last week as being on the same services as the episode before it, so it is unmonitored straight away instead of grabbed. It is then treated like any other episode on streaming, so the file and download options above apply to it too. The assumption lapses after a week if Watchmode still hasn't confirmed it, and the episode is re-monitored and searched for again."
+        desc="Until Watchmode lists them, treat as on streaming an episode that aired within your Watchmode cache window and follows one on your services, and every episode, aired or not, of a season whose older episodes are all on your services. They are unmonitored straight away instead of grabbed, and the file and download options above apply to them too. An assumption lapses once the episode is older than the cache window and Watchmode still hasn't confirmed it, and the episode is re-monitored and searched for again."
         checked={settings.assumeNewEpisodesStream}
         onChange={(v) => set({ assumeNewEpisodesStream: v })}
       />

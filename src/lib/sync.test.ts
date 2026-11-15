@@ -6,7 +6,9 @@ import {
   parseAirDate,
   newEpisodesAwaitingStreaming,
   newEpisodeRecheckDue,
-  NEW_EPISODE_WINDOW_MS,
+  DEFAULT_NEW_EPISODE_WINDOW_MS,
+  newEpisodeWindowMs,
+  seasonEpisodesAssumedStreaming,
   NEW_EPISODE_RECHECK_MS,
   type NewEpisodeCandidate,
   type StreamingInfoEntry,
@@ -122,6 +124,8 @@ describe("parseAirDate", () => {
   });
 });
 
+const W = DEFAULT_NEW_EPISODE_WINDOW_MS;
+
 describe("newEpisodesAwaitingStreaming", () => {
   const DAY = 24 * 60 * 60 * 1000;
   const now = Date.UTC(2026, 10, 13, 12);
@@ -135,38 +139,38 @@ describe("newEpisodesAwaitingStreaming", () => {
   const confirmed = (...eps: number[]) => new Set(eps.map((n) => `23x${n}`));
 
   it("finds a newly aired episode whose predecessor is confirmed", () => {
-    expect(newEpisodesAwaitingStreaming(season, confirmed(1, 2, 3, 4), now)).toEqual([
+    expect(newEpisodesAwaitingStreaming(season, confirmed(1, 2, 3, 4), now, W)).toEqual([
       { key: "23x5", airDateUtc: new Date(now - DAY), previousKey: "23x4" },
     ]);
   });
 
   it("ignores an episode Watchmode has already confirmed", () => {
-    expect(newEpisodesAwaitingStreaming(season, confirmed(1, 2, 3, 4, 5), now)).toEqual([]);
+    expect(newEpisodesAwaitingStreaming(season, confirmed(1, 2, 3, 4, 5), now, W)).toEqual([]);
   });
 
   it("ignores a show whose previous episode is not on the user's services", () => {
     // A service running a season behind, or a show the user does not stream:
     // nothing says the new episode is coming, so it earns neither a recheck
     // nor an assumption.
-    expect(newEpisodesAwaitingStreaming(season, confirmed(1, 2, 3), now)).toEqual([]);
-    expect(newEpisodesAwaitingStreaming(season, confirmed(), now)).toEqual([]);
+    expect(newEpisodesAwaitingStreaming(season, confirmed(1, 2, 3), now, W)).toEqual([]);
+    expect(newEpisodesAwaitingStreaming(season, confirmed(), now, W)).toEqual([]);
   });
 
   it("does not let one unconfirmed episode vouch for the next", () => {
     const later = [...season.slice(0, 4), weekly(5, 6), weekly(6, 1)];
-    expect(newEpisodesAwaitingStreaming(later, confirmed(1, 2, 3, 4), now).map((a) => a.key)).toEqual([
+    expect(newEpisodesAwaitingStreaming(later, confirmed(1, 2, 3, 4), now, W).map((a) => a.key)).toEqual([
       "23x5",
     ]);
   });
 
   it("ignores an episode older than the window, and one not yet aired", () => {
-    const old = [weekly(4, 20), { ...weekly(5, 0), airDateUtc: new Date(now - NEW_EPISODE_WINDOW_MS - 1) }];
-    expect(newEpisodesAwaitingStreaming(old, confirmed(4), now)).toEqual([]);
-    expect(newEpisodesAwaitingStreaming([weekly(4, 8), weekly(5, -1)], confirmed(4), now)).toEqual([]);
+    const old = [weekly(4, 20), { ...weekly(5, 0), airDateUtc: new Date(now - DEFAULT_NEW_EPISODE_WINDOW_MS - 1) }];
+    expect(newEpisodesAwaitingStreaming(old, confirmed(4), now, W)).toEqual([]);
+    expect(newEpisodesAwaitingStreaming([weekly(4, 8), weekly(5, -1)], confirmed(4), now, W)).toEqual([]);
   });
 
   it("ignores an episode with no air date", () => {
-    expect(newEpisodesAwaitingStreaming([weekly(4, 8), weekly(5, null)], confirmed(4), now)).toEqual([]);
+    expect(newEpisodesAwaitingStreaming([weekly(4, 8), weekly(5, null)], confirmed(4), now, W)).toEqual([]);
   });
 
   it("covers a season premiere through the previous season's finale", () => {
@@ -174,12 +178,12 @@ describe("newEpisodesAwaitingStreaming", () => {
       { seasonNumber: 22, episodeNumber: 18, airDateUtc: new Date(now - 180 * DAY) },
       { seasonNumber: 23, episodeNumber: 1, airDateUtc: new Date(now - DAY) },
     ];
-    expect(newEpisodesAwaitingStreaming(eps, new Set(["22x18"]), now).map((a) => a.key)).toEqual(["23x1"]);
+    expect(newEpisodesAwaitingStreaming(eps, new Set(["22x18"]), now, W).map((a) => a.key)).toEqual(["23x1"]);
   });
 
   it("orders by season and episode, whatever order Sonarr lists them in", () => {
     const shuffled = [weekly(5, 1), weekly(3, 15), weekly(4, 8)];
-    expect(newEpisodesAwaitingStreaming(shuffled, confirmed(3, 4), now).map((a) => a.key)).toEqual([
+    expect(newEpisodesAwaitingStreaming(shuffled, confirmed(3, 4), now, W).map((a) => a.key)).toEqual([
       "23x5",
     ]);
   });
@@ -189,7 +193,7 @@ describe("newEpisodesAwaitingStreaming", () => {
       { seasonNumber: 0, episodeNumber: 1, airDateUtc: new Date(now - 10 * DAY) },
       { seasonNumber: 1, episodeNumber: 1, airDateUtc: new Date(now - DAY) },
     ];
-    expect(newEpisodesAwaitingStreaming(eps, new Set(["0x1"]), now)).toEqual([]);
+    expect(newEpisodesAwaitingStreaming(eps, new Set(["0x1"]), now, W)).toEqual([]);
   });
 });
 
@@ -210,5 +214,100 @@ describe("newEpisodeRecheckDue", () => {
 
   it("is never due with nothing awaiting", () => {
     expect(newEpisodeRecheckDue([], new Date(now - 30 * 24 * HOUR), now)).toBe(false);
+  });
+});
+
+describe("newEpisodeWindowMs", () => {
+  const DAY = 24 * 60 * 60 * 1000;
+
+  it("is the configured Watchmode cache window", () => {
+    expect(newEpisodeWindowMs(14 * DAY)).toBe(14 * DAY);
+    expect(newEpisodeWindowMs(DAY)).toBe(DAY);
+  });
+
+  it("falls back to seven days when caching is switched off", () => {
+    expect(newEpisodeWindowMs(0)).toBe(DEFAULT_NEW_EPISODE_WINDOW_MS);
+    expect(DEFAULT_NEW_EPISODE_WINDOW_MS).toBe(7 * DAY);
+  });
+
+  it("widens the episode-by-episode rule along with the cache window", () => {
+    const now = Date.UTC(2026, 10, 15);
+    const eps: NewEpisodeCandidate[] = [
+      { seasonNumber: 1, episodeNumber: 1, airDateUtc: new Date(now - 20 * DAY) },
+      { seasonNumber: 1, episodeNumber: 2, airDateUtc: new Date(now - 10 * DAY) },
+    ];
+    const confirmed = new Set(["1x1"]);
+    expect(newEpisodesAwaitingStreaming(eps, confirmed, now, newEpisodeWindowMs(7 * DAY))).toEqual([]);
+    expect(
+      newEpisodesAwaitingStreaming(eps, confirmed, now, newEpisodeWindowMs(14 * DAY)).map((a) => a.key)
+    ).toEqual(["1x2"]);
+  });
+});
+
+describe("seasonEpisodesAssumedStreaming", () => {
+  const DAY = 24 * 60 * 60 * 1000;
+  const now = Date.UTC(2026, 10, 15, 12);
+  /** Season 23 of a weekly show; `daysAgo` negative = not aired yet, null = no date. */
+  const ep = (n: number, daysAgo: number | null, season = 23): NewEpisodeCandidate => ({
+    seasonNumber: season,
+    episodeNumber: n,
+    airDateUtc: daysAgo === null ? null : new Date(now - daysAgo * DAY),
+  });
+  const keys = (out: { key: string }[]) => out.map((o) => o.key);
+  // E1–E4 settled (older than the 7-day window); E5 aired 3 days ago; E6–E7 to come.
+  const season = [ep(1, 31), ep(2, 24), ep(3, 17), ep(4, 10), ep(5, 3), ep(6, -4), ep(7, null)];
+  const settledConfirmed = new Set(["23x1", "23x2", "23x3", "23x4"]);
+
+  it("assumes every unsettled episode, aired or not, when all settled ones are confirmed", () => {
+    expect(seasonEpisodesAssumedStreaming(season, settledConfirmed, now, W)).toEqual([
+      { key: "23x5", sourceKey: "23x4" },
+      { key: "23x6", sourceKey: "23x4" },
+      { key: "23x7", sourceKey: "23x4" },
+    ]);
+  });
+
+  it("does nothing when any settled episode is unconfirmed", () => {
+    expect(seasonEpisodesAssumedStreaming(season, new Set(["23x1", "23x2", "23x4"]), now, W)).toEqual([]);
+  });
+
+  it("does not repeat episodes Watchmode already confirmed", () => {
+    const confirmed = new Set([...settledConfirmed, "23x5"]);
+    expect(keys(seasonEpisodesAssumedStreaming(season, confirmed, now, W))).toEqual(["23x6", "23x7"]);
+  });
+
+  it("lifts the whole season once an assumed episode settles without being confirmed", () => {
+    // Eight days on, E5 is older than the window and Watchmode never listed
+    // it: the show has stopped arriving on the service, so E6 and E7 go too.
+    const later = season.map((e) => ({
+      ...e,
+      airDateUtc: e.airDateUtc && new Date(e.airDateUtc.getTime() - 8 * DAY),
+    }));
+    expect(seasonEpisodesAssumedStreaming(later, settledConfirmed, now, W)).toEqual([]);
+  });
+
+  it("leaves a season with no settled episodes to the episode-by-episode rule", () => {
+    expect(seasonEpisodesAssumedStreaming([ep(1, 3), ep(2, -4)], new Set(["23x1"]), now, W)).toEqual([]);
+  });
+
+  it("judges each season on its own", () => {
+    // Season 22 fully confirmed says nothing about season 23.
+    const eps = [ep(1, 400, 22), ep(2, 393, 22), ep(1, 3), ep(2, -4)];
+    expect(seasonEpisodesAssumedStreaming(eps, new Set(["22x1", "22x2"]), now, W)).toEqual([]);
+  });
+
+  it("follows the window: a longer one leaves fewer episodes settled", () => {
+    const confirmed = new Set(["23x1", "23x2"]);
+    expect(seasonEpisodesAssumedStreaming(season, confirmed, now, W)).toEqual([]);
+    expect(keys(seasonEpisodesAssumedStreaming(season, confirmed, now, 21 * DAY))).toEqual([
+      "23x3",
+      "23x4",
+      "23x5",
+      "23x6",
+      "23x7",
+    ]);
+  });
+
+  it("ignores specials", () => {
+    expect(seasonEpisodesAssumedStreaming([ep(1, 30, 0), ep(2, -1, 0)], new Set(["0x1"]), now, W)).toEqual([]);
   });
 });
