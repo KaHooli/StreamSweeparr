@@ -122,8 +122,13 @@ export interface SyncOptions {
 interface NewEpisodeOptions {
   /** `Settings.recheckNewEpisodes` — see `newEpisodeRecheckDue`. */
   recheck: boolean;
-  /** `Settings.assumeNewEpisodesStream` — see `newEpisodesAwaitingStreaming`. */
+  /**
+   * `Settings.assumeNewEpisodesStream` — see `newEpisodesAwaitingStreaming` and
+   * `seasonEpisodesAssumedStreaming`.
+   */
   assume: boolean;
+  /** How long an episode counts as new — see `newEpisodeWindowMs`. */
+  windowMs: number;
 }
 
 /** How much of one connection a sync pass should cover. */
@@ -212,12 +217,35 @@ export function parseAirDate(raw: string | undefined): Date | null {
 }
 
 /**
- * How long after airing an episode counts as "new" for the two newly-aired
- * behaviours below. Long enough to cover Watchmode's usual lag of a few days,
- * short enough that an episode which is never coming to the user's services
- * stops costing credits — and stops being assumed — within a week.
+ * The newly-aired window used when the Watchmode cache is switched off.
+ *
+ * Seven days covers Watchmode's usual lag of a few days while making sure an
+ * episode that is never coming to the user's services stops costing credits,
+ * and stops being assumed, within a week. It is also the cache window's own
+ * default, so on a default install the two are the same either way.
  */
-export const NEW_EPISODE_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+export const DEFAULT_NEW_EPISODE_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * How long after airing an episode counts as "new" for the newly-aired rules
+ * below: the configured Watchmode cache window.
+ *
+ * The cache window is the question these rules answer. It is how long a
+ * Watchmode answer is believed, so it is also how long a new episode can sit
+ * behind a stale "not on streaming" — and therefore how long it is worth
+ * re-checking or assuming before treating Watchmode's silence as an answer.
+ * Lengthening the window to save credits lengthens this with it, which costs
+ * more re-checks per episode but is the same trade the user made for the rest
+ * of the library.
+ *
+ * Caching switched off (a zero window) falls back to
+ * `DEFAULT_NEW_EPISODE_WINDOW_MS` rather than switching both rules off: with
+ * no cache nothing needs re-checking early, but Watchmode's lag is still
+ * there, and a zero-length window would make the assumption impossible.
+ */
+export function newEpisodeWindowMs(cacheTtlMs: number): number {
+  return cacheTtlMs > 0 ? cacheTtlMs : DEFAULT_NEW_EPISODE_WINDOW_MS;
+}
 
 /**
  * How often a series with an unconfirmed new episode is looked up again.
@@ -257,7 +285,8 @@ export interface AwaitingEpisode {
  * services in the meantime.
  *
  * An episode qualifies when it:
- *   - aired within `NEW_EPISODE_WINDOW_MS` (not in the future, not long gone);
+ *   - aired within `windowMs` (see `newEpisodeWindowMs`) — not in the future,
+ *     not long gone;
  *   - is not in `confirmed`, the episodes Watchmode itself put on the user's
  *     services (an assumption from an earlier pass does not count); and
  *   - directly follows, in season/episode order, an episode that *is* in
@@ -276,7 +305,8 @@ export interface AwaitingEpisode {
 export function newEpisodesAwaitingStreaming(
   episodes: NewEpisodeCandidate[],
   confirmed: Set<string>,
-  now: number
+  now: number,
+  windowMs: number
 ): AwaitingEpisode[] {
   const ordered = episodes
     .filter((e) => e.seasonNumber > 0)
@@ -287,13 +317,85 @@ export function newEpisodesAwaitingStreaming(
     const air = ep.airDateUtc;
     if (!air) continue;
     const age = now - air.getTime();
-    if (age < 0 || age > NEW_EPISODE_WINDOW_MS) continue;
+    if (age < 0 || age > windowMs) continue;
     const key = `${ep.seasonNumber}x${ep.episodeNumber}`;
     if (confirmed.has(key)) continue;
     const prev = ordered[i - 1];
     const previousKey = `${prev.seasonNumber}x${prev.episodeNumber}`;
     if (!confirmed.has(previousKey)) continue;
     out.push({ key, airDateUtc: air, previousKey });
+  }
+  return out;
+}
+
+/** An episode a season-wide assumption covers, and where its services come from. */
+export interface SeasonAssumedEpisode {
+  /** `${season}x${episode}`, the key the sync's maps use. */
+  key: string;
+  /** The latest of the season's settled episodes, all confirmed by Watchmode. */
+  sourceKey: string;
+}
+
+/**
+ * Episodes assumed on streaming because the rest of their season already is
+ * (`Settings.assumeNewEpisodesStream`, alongside `newEpisodesAwaitingStreaming`).
+ *
+ * The episode-by-episode rule only reaches one episode past the last confirmed
+ * one, so a season whose service drops two at once, or one Watchmode falls more
+ * than an episode behind on, still had episodes read as "not on streaming". This
+ * rule looks at the season instead: if its **settled** episodes — those that
+ * aired before `now − windowMs`, long enough ago for Watchmode to have caught
+ * up — are *all* confirmed on the user's services, the season is being released
+ * there, and every other episode of it is assumed to follow.
+ *
+ * "Every other" includes episodes that have not aired yet, and ones with no
+ * announced date. That is the point: they are unmonitored ahead of time, so
+ * Sonarr never grabs what the user's service is about to carry. The cost of
+ * being wrong is bounded the same way as everywhere else here. Once an
+ * assumed episode has itself been out longer than the window, it counts as
+ * settled; if Watchmode still has not confirmed it, the season no longer
+ * qualifies, and the assumption lifts from **all** of its remaining episodes at
+ * once — the show has stopped arriving on the service, and the next sweep
+ * re-monitors what it had unmonitored.
+ *
+ * A season with no settled episodes (a premiere still inside the window) gives
+ * nothing to go on and is left to the episode-by-episode rule, which reaches a
+ * premiere through the previous season's finale. Each season is judged on its
+ * own: an earlier season being on streaming says nothing about this one, since
+ * services often carry back seasons long before current ones. Specials
+ * (season 0) are ignored, as everywhere else in sync.
+ *
+ * Episodes already in `confirmed` are not returned — they need no assumption.
+ * Each assumed episode borrows the services of the season's latest settled
+ * episode, the closest evidence of where the season is being released now.
+ */
+export function seasonEpisodesAssumedStreaming(
+  episodes: NewEpisodeCandidate[],
+  confirmed: Set<string>,
+  now: number,
+  windowMs: number
+): SeasonAssumedEpisode[] {
+  const settledBefore = now - windowMs;
+  const bySeason = new Map<number, NewEpisodeCandidate[]>();
+  for (const e of episodes) {
+    if (e.seasonNumber <= 0) continue;
+    const list = bySeason.get(e.seasonNumber);
+    if (list) list.push(e);
+    else bySeason.set(e.seasonNumber, [e]);
+  }
+  const keyOf = (e: NewEpisodeCandidate) => `${e.seasonNumber}x${e.episodeNumber}`;
+  const out: SeasonAssumedEpisode[] = [];
+  for (const [, eps] of [...bySeason.entries()].sort(([a], [b]) => a - b)) {
+    eps.sort((a, b) => a.episodeNumber - b.episodeNumber);
+    const isSettled = (e: NewEpisodeCandidate) =>
+      e.airDateUtc !== null && e.airDateUtc.getTime() < settledBefore;
+    const settled = eps.filter(isSettled);
+    if (!settled.length || !settled.every((e) => confirmed.has(keyOf(e)))) continue;
+    const sourceKey = keyOf(settled[settled.length - 1]);
+    for (const e of eps) {
+      if (isSettled(e) || confirmed.has(keyOf(e))) continue;
+      out.push({ key: keyOf(e), sourceKey });
+    }
   }
   return out;
 }
@@ -307,10 +409,16 @@ export function newEpisodesAwaitingStreaming(
  * has been waiting at least `NEW_EPISODE_RECHECK_MS` since that lookup.
  *
  * What bounds the credits: one lookup per series per day at most, only for
- * series with an episode under a week old whose predecessor is confirmed on
- * the user's services, and it stops the moment Watchmode confirms the episode.
- * So a weekly show costs at most about eight lookups per episode in the worst
- * case (one on airing, then daily), and usually two or three.
+ * series with an episode inside the newly-aired window whose predecessor is
+ * confirmed on the user's services, and it stops the moment Watchmode confirms
+ * the episode. So on the default 7-day window a weekly show costs at most
+ * about eight lookups per episode in the worst case (one on airing, then
+ * daily), and usually two or three.
+ *
+ * Deliberately fed only by `newEpisodesAwaitingStreaming`, not by
+ * `seasonEpisodesAssumedStreaming`: the season rule covers unaired episodes
+ * that no lookup could confirm yet, and widening the recheck to it would spend
+ * credits on exactly those.
  */
 export function newEpisodeRecheckDue(
   awaiting: AwaitingEpisode[],
@@ -710,6 +818,7 @@ export async function runSync(
           {
             recheck: settings.recheckNewEpisodes,
             assume: settings.assumeNewEpisodesStream,
+            windowMs: newEpisodeWindowMs(wmTtlMs),
           },
           checkAbort,
           scope
@@ -1258,7 +1367,7 @@ async function syncSonarr(
           .map((e) => `${e.seasonNumber}x${e.episodeNumber}`)
       );
       newEpisodeRecheck = newEpisodeRecheckDue(
-        newEpisodesAwaitingStreaming(candidates, confirmed, now),
+        newEpisodesAwaitingStreaming(candidates, confirmed, now, newEpisodes.windowMs),
         existing!.providerSyncedAt!,
         now
       );
@@ -1327,16 +1436,26 @@ async function syncSonarr(
       streamingUnknown = true;
     }
 
-    // Newly aired episodes that borrow their predecessor's services until
-    // Watchmode lists them (`Settings.assumeNewEpisodesStream`). `wmMap` holds
-    // only episodes Watchmode matched to the user's services — assumed rows
-    // were dropped on the way in — so it is exactly the "confirmed" set. Not
-    // attempted when the series lookup failed: with no answer at all there is
-    // no confirmed predecessor to borrow from.
+    // Episodes assumed on streaming until Watchmode lists them
+    // (`Settings.assumeNewEpisodesStream`): newly aired ones that borrow their
+    // predecessor's services, and every unsettled episode of a season whose
+    // settled episodes are all confirmed. `wmMap` holds only episodes Watchmode
+    // matched to the user's services — assumed rows were dropped on the way in
+    // — so it is exactly the "confirmed" set. Not attempted when the series
+    // lookup failed: with no answer at all there is nothing to borrow from.
+    // The predecessor rule goes first because its evidence is the nearer one;
+    // the season rule only fills in what it left.
     const assumed = new Map<string, ReturnType<typeof streamingInfoJson>>();
     if (newEpisodes.assume && !streamingUnknown) {
-      for (const a of newEpisodesAwaitingStreaming(candidates, new Set(wmMap.keys()), now)) {
+      const confirmedKeys = new Set(wmMap.keys());
+      const { windowMs } = newEpisodes;
+      for (const a of newEpisodesAwaitingStreaming(candidates, confirmedKeys, now, windowMs)) {
         const borrowed = wmMap.get(a.previousKey);
+        if (borrowed?.length) assumed.set(a.key, borrowed);
+      }
+      for (const a of seasonEpisodesAssumedStreaming(candidates, confirmedKeys, now, windowMs)) {
+        if (assumed.has(a.key)) continue;
+        const borrowed = wmMap.get(a.sourceKey);
         if (borrowed?.length) assumed.set(a.key, borrowed);
       }
     }

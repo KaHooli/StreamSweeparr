@@ -1001,6 +1001,60 @@ describe("syncSonarr — newly aired episodes Watchmode has not listed yet", () 
     expect(watchmodeEpisodeCalls).toEqual([3001, 3001]);
   });
 
+  it("assumes the rest of a season, unaired episodes included, once its settled episodes are all on streaming", async () => {
+    await setup();
+    // E5 aired yesterday (Watchmode lists it with no matching source), E6 airs
+    // in six days and E7 has no date yet. E1–E4 are older than the 7-day
+    // window and all confirmed.
+    sonarrEpisodes = {
+      1: [1, 2, 3, 4, 5].map((n) => arrEpisode(n)).concat(arrEpisode(6, -6), {
+        ...arrEpisode(7),
+        airDateUtc: undefined as unknown as string,
+      }),
+    };
+    const result = await runSync();
+
+    const eps = await prisma.episode.findMany({
+      where: { episodeNumber: { gte: 5 } },
+      orderBy: { episodeNumber: "asc" },
+    });
+    expect(eps.map((e) => [e.episodeNumber, e.onStreaming, e.streamingInferred])).toEqual([
+      [5, true, true],
+      [6, true, true],
+      [7, true, true],
+    ]);
+    expect(eps[1].streamingInfo).toEqual([expect.objectContaining({ sourceId: WM_NETFLIX })]);
+    expect(result.tvAssumedEpisodes).toBe(3);
+  });
+
+  it("assumes nothing for the season when a settled episode is not on the user's services", async () => {
+    await setup();
+    sonarrEpisodes = { 1: [1, 2, 3, 4, 5].map((n) => arrEpisode(n)).concat(arrEpisode(6, -6)) };
+    watchmodeEpisodes = {
+      3001: [wmEpisode(1), wmEpisode(2, []), wmEpisode(3), wmEpisode(4), wmEpisode(5, [])],
+    };
+    await runSync();
+
+    const eps = await prisma.episode.findMany({
+      where: { episodeNumber: { gte: 5 } },
+      orderBy: { episodeNumber: "asc" },
+    });
+    // E5 still qualifies on its own through E4; the unaired E6 does not.
+    expect(eps.map((e) => [e.episodeNumber, e.streamingInferred])).toEqual([
+      [5, true],
+      [6, false],
+    ]);
+  });
+
+  it("measures 'newly aired' by the Watchmode cache window", async () => {
+    await setup({ watchmodeCacheDays: 14 });
+    // E5 aired ten days ago: past a 7-day window, inside a 14-day one.
+    sonarrEpisodes = { 1: [1, 2, 3, 4].map((n) => arrEpisode(n, 40 - n * 7)).concat(arrEpisode(5, 10)) };
+    await runSync();
+
+    expect((await episode5()).streamingInferred).toBe(true);
+  });
+
   it("serves the series from cache as before when re-checking is off", async () => {
     await setup({ recheckNewEpisodes: false });
     await runSync();

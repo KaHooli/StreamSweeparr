@@ -529,7 +529,7 @@ All of these live under **Settings → Run options**.
 | **Remove files for all unmonitored items** | ❌ off | Wider: at the end of a sweep, delete the file for **every** unmonitored movie/episode, including a back-catalogue you unmonitored by hand years ago. See below. |
 | **Remove movies deleted from TMDB** | ✅ on | If TMDB says a movie's id no longer exists, remove it from Radarr. **Files are kept.** |
 | **Re-check newly aired episodes** | ✅ on | Watchmode usually takes a few days to list a new episode's services. While it hasn't, look the show up again once a day instead of waiting out the [cache window](#-keeping-api-usage-low). Costs a few credits per new episode. See below. |
-| **Assume newly aired episodes are on streaming** | ✅ on | Until Watchmode lists it, treat a new episode as being on the same services as the episode before it, so it's unmonitored instead of grabbed. The file and download options apply to it as to any other episode on streaming. See below. |
+| **Assume newly aired episodes are on streaming** | ✅ on | Until Watchmode lists them, treat a new episode as being on the same services as the one before it — and, once a season's older episodes are all on your services, every remaining episode of that season, unaired ones included — so they're unmonitored instead of grabbed. The file and download options apply to them as to any other episode on streaming. See below. |
 | **Search monitored items at end of run** | ✅ on | Trigger a Sonarr/Radarr search once the sweep finishes, for everything still monitored that is **missing its file**. See below. |
 | **Scheduled sweeps** | ❌ off | Run the sweep on a timer — see [below](#-scheduled-sweeps). |
 
@@ -643,7 +643,7 @@ it was wrong you can simply re-add the title. Removals are counted on the
 </details>
 
 <details>
-<summary><b>Newly aired episodes — why Watchmode lags, and the two options for it</b></summary>
+<summary><b>Newly aired episodes — why Watchmode lags, and the options for it</b></summary>
 
 When a new episode lands on a service you pay for, Watchmode typically takes a
 few days to list it there. Until then it either leaves the episode out or lists
@@ -653,32 +653,51 @@ cache window — 7 days by default — so even after Watchmode catches up the ap
 may not ask again for most of a week. A show you stream week to week could sit
 monitored, and get grabbed, for a week or more.
 
-Both options act only on an episode that:
+"Newly aired" means **within your Watchmode cache window** (**Settings →
+Watchmode → Cache lookups for**, 7 days by default) — the same window that
+decides how long a Watchmode answer is believed, and so how long a new episode
+can sit behind a stale one. With caching set to **Disabled**, it's 7 days.
 
-- aired **within the last 7 days**,
+**Re-check newly aired episodes** acts on an episode that:
+
+- aired within that window,
 - isn't yet confirmed by Watchmode on your services, and
 - comes **straight after an episode that is** — the sign that this show is
   released on your service as it airs. A season premiere counts the previous
   season's finale. A show you don't stream, or one your service runs a season
-  behind on, never qualifies, so it costs nothing and is never assumed.
+  behind on, never qualifies, so it costs nothing.
 
-**Re-check newly aired episodes** looks such a show up again instead of serving
-it from cache: once if it hasn't been looked up since the episode aired, then at
-most daily until Watchmode confirms it or the week is up. That's usually two or
-three extra credits per new episode, eight at worst. The run log says how many
-episode fetches were these early re-checks.
+It looks such a show up again instead of serving it from cache: once if it
+hasn't been looked up since the episode aired, then at most daily until
+Watchmode confirms it or the window is up. On the default 7-day window that's
+usually two or three extra credits per new episode, eight at worst — a longer
+window means more. The run log says how many episode fetches were these early
+re-checks.
 
-**Assume newly aired episodes are on streaming** fills the gap until then: the
-new episode is treated as being on the same services as the one before it. A
-sweep will unmonitor it, so Sonarr doesn't grab what you're about to be able to
-stream, and from there it's **handled like any other episode on streaming**:
-**Delete files when unmonitoring**, **Remove files for all unmonitored items**
-and **Cancel downloads in progress** all apply to it as they're set. If
-Watchmode still hasn't confirmed it after a week, the assumption lapses, and the
-next sweep re-monitors the episode and searches for it like anything else that
-isn't on streaming — so a file deleted on a guess that turned out wrong is
-fetched again, not lost for good. The run log marks which unmonitored episodes
-were assumptions.
+**Assume newly aired episodes are on streaming** fills the gap until then. It
+covers two cases:
+
+- **The next episode.** The same episode the re-check looks for is treated as
+  being on the same services as the one before it.
+- **The rest of the season.** If every episode of a season that aired *before*
+  the window started is confirmed on your services, the season is clearly being
+  released there, so **every other episode of that season is assumed to
+  follow** — ones that aired inside the window, and ones that haven't aired yet
+  or have no date. Those future episodes are unmonitored ahead of time, so
+  Sonarr never grabs them. Each season is judged on its own: a back season being
+  on streaming says nothing about the current one.
+
+A sweep unmonitors an assumed episode, so Sonarr doesn't grab what you're about
+to be able to stream, and from there it's **handled like any other episode on
+streaming**: **Delete files when unmonitoring**, **Remove files for all
+unmonitored items** and **Cancel downloads in progress** all apply to it as
+they're set. If an assumed episode is still unconfirmed once it's older than the
+window, the assumption lapses — and for the season rule, it lapses for **every
+remaining episode of that season at once**, since the show has evidently stopped
+arriving on your service. The next sweep re-monitors those episodes and searches
+for them like anything else that isn't on streaming, so a file deleted on a
+guess that turned out wrong is fetched again, not lost for good. The run log
+marks which unmonitored episodes were assumptions.
 
 </details>
 
@@ -1158,10 +1177,12 @@ and `pg_restore` commands, and they work anywhere Docker does.
 - **Assumed episodes follow your file settings.** A newly aired episode assumed
   on streaming ahead of Watchmode is unmonitored and, if your file options say
   so, has its file deleted or its download cancelled — before Watchmode has
-  confirmed it. If that guess is wrong, the assumption lapses after a week and
-  the episode is re-monitored and searched for again. Turn off **Assume newly
-  aired episodes are on streaming** if you'd rather nothing happened until
-  Watchmode confirms.
+  confirmed it — and, once a season's older episodes are all on streaming, its
+  unaired episodes are unmonitored ahead of time too. If that guess is wrong,
+  the assumption lapses once the episode is older than the Watchmode cache
+  window, and the episode is re-monitored and searched for again. Turn off
+  **Assume newly aired episodes are on streaming** if you'd rather nothing
+  happened until Watchmode confirms.
 - **Transient failures never cause churn.** If a title's status can't be
   determined, it's flagged *unknown* and never re-monitored on that basis.
 - **API keys are encrypted at rest** and never sent back to the browser — the UI
@@ -1419,10 +1440,11 @@ The same applies to a series Watchmode has no id for, or one whose lookup
 failed: every episode of it is unknown, and the sweep leaves the lot alone.
 
 The one place the app answers ahead of Watchmode is a **newly aired episode** of
-a show you already stream, and only if **Assume newly aired episodes are on
-streaming** is on — see [the run options](#-every-run-option-in-plain-english).
-That answer is flagged as an assumption, lapses a week after the episode airs,
-and is otherwise acted on like any other.
+a show you already stream — or the rest of a season whose older episodes are all
+on your services — and only if **Assume newly aired episodes are on streaming**
+is on; see [the run options](#-every-run-option-in-plain-english). That answer is
+flagged as an assumption, lapses once the episode is older than the Watchmode
+cache window, and is otherwise acted on like any other.
 
 ---
 
@@ -1450,7 +1472,7 @@ small:
    The one exception is a **newly aired episode** of a show you already stream:
    with **Settings → Run options → Re-check newly aired episodes** on, that show
    is looked up at most daily until Watchmode lists the episode — a few credits
-   per episode, and only for the first week after it airs.
+   per episode, and only within the cache window after it airs.
 
 A LIVE sweep also **doesn't re-sync afterwards** — the snapshot is updated in
 place as changes are applied. The run log reports how many episode fetches were
